@@ -8,32 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.0] - 2026-02-17
 
 ### Added
-- **Parallel workers for discovery/enrichment** — `applypilot run --workers N` enables
+- **Parallel workers for discovery/enrichment** - `applypilot run --workers N` enables
   ThreadPoolExecutor-based parallelism for Workday scraping, smart extract, and detail
   enrichment. Default is sequential (1); power users can scale up.
-- **Apply utility modes** — `--gen` (generate prompt for manual debugging), `--mark-applied`,
+- **Apply utility modes** - `--gen` (generate prompt for manual debugging), `--mark-applied`,
   `--mark-failed`, `--reset-failed` flags on `applypilot apply`
-- **Dry-run mode** — `applypilot apply --dry-run` fills forms without clicking Submit
-- **5 new tracking columns** — `agent_id`, `last_attempted_at`, `apply_duration_ms`,
+- **Dry-run mode** - `applypilot apply --dry-run` fills forms without clicking Submit
+- **5 new tracking columns** - `agent_id`, `last_attempted_at`, `apply_duration_ms`,
   `apply_task_id`, `verification_confidence` for better apply-stage observability
-- **Manual ATS detection** — `manual_ats` list in `config/sites.yaml` skips sites with
+- **Manual ATS detection** - `manual_ats` list in `config/sites.yaml` skips sites with
   unsolvable CAPTCHAs (e.g. TCS iBegin)
-- **Qwen3 `/no_think` optimization** — automatically saves tokens when using Qwen models
-- **`config.DEFAULTS`** — centralized dict for magic numbers (`min_score`, `max_apply_attempts`,
+- **Qwen3 `/no_think` optimization** - automatically saves tokens when using Qwen models
+- **`config.DEFAULTS`** - centralized dict for magic numbers (`min_score`, `max_apply_attempts`,
   `poll_interval`, `apply_timeout`, `viewport`)
 
 ### Changed
-- **Blocked sites externalized** — moved from hardcoded sets in launcher.py to
+- **Blocked sites externalized** - moved from hardcoded sets in launcher.py to
   `config/sites.yaml` under `blocked:` key
-- **Site base URLs externalized** — moved from hardcoded dict in detail.py to
+- **Site base URLs externalized** - moved from hardcoded dict in detail.py to
   `config/sites.yaml` under `base_urls:` key
-- **SSO domains externalized** — moved from hardcoded list in prompt.py to
+- **SSO domains externalized** - moved from hardcoded list in prompt.py to
   `config/sites.yaml` under `blocked_sso:` key
-- **Prompt improvements** — screening context uses `target_role` from profile,
+- **Prompt improvements** - screening context uses `target_role` from profile,
   salary section includes `currency_conversion_note` and dynamic hourly rate examples
-- **`acquire_job()` fixed** — writes `agent_id` and `last_attempted_at` to proper columns
+- **`acquire_job()` fixed** - writes `agent_id` and `last_attempted_at` to proper columns
   instead of misusing `apply_error`
-- **`profile.example.json`** — added `currency_conversion_note` and `target_role` fields
+- **`profile.example.json`** - added `currency_conversion_note` and `target_role` fields
 
 ## [0.1.0] - 2026-02-17
 
