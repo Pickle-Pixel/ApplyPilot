@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **numpy install failure** - added `numpy>=2.0` to dependencies so pip resolves pre-built
   wheels instead of backtracking to source-only versions that require a C++ compiler
+- **Config YAML not found after install** - moved `config/` into the package at
+  `src/applypilot/config/` so YAML files (employers, sites, searches) ship with `pip install`
 
 ### Changed
 - **Blocked sites externalized** - moved from hardcoded sets in launcher.py to
