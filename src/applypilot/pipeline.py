@@ -1,9 +1,10 @@
 """ApplyPilot Pipeline Orchestrator.
 
-Runs pipeline stages in sequence: discover -> enrich -> score -> tailor -> cover -> pdf.
+Runs pipeline stages in sequence or concurrently (streaming mode).
 
 Usage (via CLI):
-    applypilot run                        # all stages
+    applypilot run                        # all stages, sequential
+    applypilot run --stream               # all stages, concurrent
     applypilot run discover enrich        # specific stages
     applypilot run score tailor cover     # LLM-only stages
     applypilot run --dry-run              # preview without executing
@@ -12,6 +13,7 @@ Usage (via CLI):
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import datetime
 
@@ -20,7 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from applypilot.config import load_env, ensure_dirs
-from applypilot.database import init_db, get_stats
+from applypilot.database import init_db, get_connection, get_stats
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -39,6 +41,17 @@ STAGE_META: dict[str, dict] = {
     "tailor":   {"desc": "Resume tailoring (LLM + validation)"},
     "cover":    {"desc": "Cover letter generation"},
     "pdf":      {"desc": "PDF conversion (tailored resumes + cover letters)"},
+}
+
+# Upstream dependency: a stage only finishes when its upstream is done AND
+# it has no remaining pending work.
+_UPSTREAM: dict[str, str | None] = {
+    "discover": None,
+    "enrich":   "discover",
+    "score":    "enrich",
+    "tailor":   "score",
+    "cover":    "tailor",
+    "pdf":      "cover",
 }
 
 
@@ -177,56 +190,136 @@ def _resolve_stages(stage_names: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline orchestrator
+# Streaming pipeline helpers
 # ---------------------------------------------------------------------------
 
-def run_pipeline(
-    stages: list[str] | None = None,
+class _StageTracker:
+    """Thread-safe tracker for which stages have finished producing work."""
+
+    def __init__(self):
+        self._events: dict[str, threading.Event] = {
+            stage: threading.Event() for stage in STAGE_ORDER
+        }
+        self._results: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def mark_done(self, stage: str, result: dict | None = None) -> None:
+        with self._lock:
+            self._results[stage] = result or {"status": "ok"}
+        self._events[stage].set()
+
+    def is_done(self, stage: str) -> bool:
+        return self._events[stage].is_set()
+
+    def wait(self, stage: str, timeout: float | None = None) -> bool:
+        return self._events[stage].wait(timeout=timeout)
+
+    def get_results(self) -> dict[str, dict]:
+        with self._lock:
+            return dict(self._results)
+
+
+# SQL to count pending work for each stage
+_PENDING_SQL: dict[str, str] = {
+    "enrich": "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL",
+    "score":  "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL AND fit_score IS NULL",
+    "tailor": (
+        "SELECT COUNT(*) FROM jobs WHERE fit_score >= ? "
+        "AND full_description IS NOT NULL "
+        "AND tailored_resume_path IS NULL "
+        "AND COALESCE(tailor_attempts, 0) < 5"
+    ),
+    "cover": (
+        "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL "
+        "AND (cover_letter_path IS NULL OR cover_letter_path = '') "
+        "AND COALESCE(cover_attempts, 0) < 5"
+    ),
+    "pdf": (
+        "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL "
+        "AND tailored_resume_path LIKE '%.txt'"
+    ),
+}
+
+# How long to sleep between polling loops in streaming mode (seconds)
+_STREAM_POLL_INTERVAL = 10
+
+
+def _count_pending(stage: str, min_score: int = 7) -> int:
+    """Count pending work items for a stage."""
+    sql = _PENDING_SQL.get(stage)
+    if sql is None:
+        return 0
+    conn = get_connection()
+    if "?" in sql:
+        return conn.execute(sql, (min_score,)).fetchone()[0]
+    return conn.execute(sql).fetchone()[0]
+
+
+def _run_stage_streaming(
+    stage: str,
+    tracker: _StageTracker,
+    stop_event: threading.Event,
     min_score: int = 7,
-    dry_run: bool = False,
-) -> dict:
-    """Run pipeline stages in sequence.
+) -> None:
+    """Run a single stage in streaming mode: loop until upstream done + no work.
 
-    Args:
-        stages: List of stage names, or None / ["all"] for full pipeline.
-        min_score: Minimum fit score for tailor/cover stages.
-        dry_run: If True, preview stages without executing.
-
-    Returns:
-        Dict with keys: stages (list of result dicts), errors (dict), elapsed (float).
+    For discover: runs once, then marks done.
+    For all others: polls DB for pending work, runs the batch processor,
+    and repeats until upstream is done and no pending work remains.
     """
-    # Bootstrap
-    load_env()
-    ensure_dirs()
-    init_db()
+    runner = _STAGE_RUNNERS[stage]
+    kwargs: dict = {}
+    if stage in ("tailor", "cover"):
+        kwargs["min_score"] = min_score
 
-    # Resolve stages
-    if stages is None:
-        stages = ["all"]
-    ordered = _resolve_stages(stages)
+    upstream = _UPSTREAM[stage]
 
-    # Banner
-    console.print()
-    console.print(Panel.fit(
-        "[bold]ApplyPilot Pipeline[/bold]",
-        border_style="blue",
-    ))
-    console.print(f"  Min score: {min_score}")
-    console.print(f"  Stages:    {' -> '.join(ordered)}")
+    if stage == "discover":
+        # Discover runs once (its sub-scrapers already do their full crawl)
+        try:
+            result = runner(**kwargs)
+            tracker.mark_done(stage, result)
+        except Exception as e:
+            log.exception("Stage '%s' crashed", stage)
+            tracker.mark_done(stage, {"status": f"error: {e}"})
+        return
 
-    # Pre-run stats
-    pre_stats = get_stats()
-    console.print(f"  DB:        {pre_stats['total']} jobs, {pre_stats['pending_detail']} pending enrichment")
+    # For downstream stages: loop until upstream done + no pending work
+    passes = 0
+    while not stop_event.is_set():
+        # Wait for upstream to start producing work (first pass only)
+        if passes == 0 and upstream and not tracker.is_done(upstream):
+            # Wait a bit for upstream to produce some work before first run
+            tracker.wait(upstream, timeout=_STREAM_POLL_INTERVAL)
 
-    if dry_run:
-        console.print(f"\n  [yellow]DRY RUN[/yellow] — would execute:")
-        for name in ordered:
-            meta = STAGE_META[name]
-            console.print(f"    {name:<12s}  {meta['desc']}")
-        console.print(f"\n  No changes made.")
-        return {"stages": [], "errors": {}, "elapsed": 0.0}
+        pending = _count_pending(stage, min_score)
 
-    # Execute stages sequentially
+        if pending > 0:
+            try:
+                runner(**kwargs)
+                passes += 1
+            except Exception as e:
+                log.error("Stage '%s' error (pass %d): %s", stage, passes, e)
+                passes += 1
+        else:
+            # No work right now
+            upstream_done = upstream is None or tracker.is_done(upstream)
+            if upstream_done:
+                # No work and upstream is done — this stage is finished
+                break
+            # Upstream still running, wait and retry
+            if stop_event.wait(timeout=_STREAM_POLL_INTERVAL):
+                break  # Stop requested
+
+    tracker.mark_done(stage, {"status": "ok", "passes": passes})
+
+
+# ---------------------------------------------------------------------------
+# Pipeline orchestrators
+# ---------------------------------------------------------------------------
+
+def _run_sequential(ordered: list[str], min_score: int) -> dict:
+    """Execute stages one at a time (original behavior)."""
     results: list[dict] = []
     errors: dict[str, str] = {}
     pipeline_start = time.time()
@@ -242,7 +335,6 @@ def run_pipeline(
         runner = _STAGE_RUNNERS[name]
 
         try:
-            # Pass kwargs supported by each runner
             kwargs: dict = {}
             if name in ("tailor", "cover"):
                 kwargs["min_score"] = min_score
@@ -252,7 +344,6 @@ def run_pipeline(
             status = "ok"
             if isinstance(result, dict):
                 status = result.get("status", "ok")
-                # Check sub-statuses for discover
                 if name == "discover":
                     sub_errors = [
                         f"{k}: {v}" for k, v in result.items()
@@ -274,6 +365,126 @@ def run_pipeline(
         console.print(f"\n  Stage '{name}' completed in {elapsed:.1f}s — {status}")
 
     total_elapsed = time.time() - pipeline_start
+    return {"stages": results, "errors": errors, "elapsed": total_elapsed}
+
+
+def _run_streaming(ordered: list[str], min_score: int) -> dict:
+    """Execute stages concurrently with DB as conveyor belt."""
+    tracker = _StageTracker()
+    stop_event = threading.Event()
+    pipeline_start = time.time()
+
+    console.print(f"\n  [bold cyan]STREAMING MODE[/bold cyan] — stages run concurrently")
+    console.print(f"  Poll interval: {_STREAM_POLL_INTERVAL}s\n")
+
+    # Mark stages NOT in `ordered` as done so downstream doesn't wait for them
+    for stage in STAGE_ORDER:
+        if stage not in ordered:
+            tracker.mark_done(stage, {"status": "skipped"})
+
+    # Launch each stage in its own thread
+    threads: dict[str, threading.Thread] = {}
+    start_times: dict[str, float] = {}
+
+    for name in ordered:
+        start_times[name] = time.time()
+        t = threading.Thread(
+            target=_run_stage_streaming,
+            args=(name, tracker, stop_event, min_score),
+            name=f"stage-{name}",
+            daemon=True,
+        )
+        threads[name] = t
+        t.start()
+        console.print(f"  [dim]Started thread:[/dim] {name}")
+
+    # Wait for all threads to finish
+    try:
+        for name in ordered:
+            threads[name].join()
+            elapsed = time.time() - start_times[name]
+            console.print(
+                f"  [green]Completed:[/green] {name} ({elapsed:.1f}s)"
+            )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted — stopping stages...[/yellow]")
+        stop_event.set()
+        for t in threads.values():
+            t.join(timeout=10)
+
+    total_elapsed = time.time() - pipeline_start
+
+    # Build results from tracker
+    all_results = tracker.get_results()
+    results: list[dict] = []
+    errors: dict[str, str] = {}
+
+    for name in ordered:
+        r = all_results.get(name, {"status": "unknown"})
+        elapsed = time.time() - start_times.get(name, pipeline_start)
+        status = r.get("status", "ok")
+
+        results.append({"stage": name, "status": status, "elapsed": elapsed})
+        if status not in ("ok", "partial", "skipped"):
+            errors[name] = status
+
+    return {"stages": results, "errors": errors, "elapsed": total_elapsed}
+
+
+def run_pipeline(
+    stages: list[str] | None = None,
+    min_score: int = 7,
+    dry_run: bool = False,
+    stream: bool = False,
+) -> dict:
+    """Run pipeline stages.
+
+    Args:
+        stages: List of stage names, or None / ["all"] for full pipeline.
+        min_score: Minimum fit score for tailor/cover stages.
+        dry_run: If True, preview stages without executing.
+        stream: If True, run stages concurrently (streaming mode).
+
+    Returns:
+        Dict with keys: stages (list of result dicts), errors (dict), elapsed (float).
+    """
+    # Bootstrap
+    load_env()
+    ensure_dirs()
+    init_db()
+
+    # Resolve stages
+    if stages is None:
+        stages = ["all"]
+    ordered = _resolve_stages(stages)
+
+    # Banner
+    mode = "streaming" if stream else "sequential"
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]ApplyPilot Pipeline[/bold] ({mode})",
+        border_style="blue",
+    ))
+    console.print(f"  Min score: {min_score}")
+    console.print(f"  Stages:    {' -> '.join(ordered)}")
+
+    # Pre-run stats
+    pre_stats = get_stats()
+    console.print(f"  DB:        {pre_stats['total']} jobs, {pre_stats['pending_detail']} pending enrichment")
+
+    if dry_run:
+        console.print(f"\n  [yellow]DRY RUN[/yellow] — would execute ({mode}):")
+        for name in ordered:
+            meta = STAGE_META[name]
+            console.print(f"    {name:<12s}  {meta['desc']}")
+        console.print(f"\n  No changes made.")
+        return {"stages": [], "errors": {}, "elapsed": 0.0}
+
+    # Execute
+    if stream:
+        result = _run_streaming(ordered, min_score)
+    else:
+        result = _run_sequential(ordered, min_score)
 
     # Summary table
     console.print(f"\n{'=' * 70}")
@@ -282,19 +493,19 @@ def run_pipeline(
     summary.add_column("Status")
     summary.add_column("Time", justify="right")
 
-    for r in results:
+    for r in result["stages"]:
         elapsed_str = f"{r['elapsed']:.1f}s"
         status_display = r["status"][:30]
         if r["status"] == "ok":
             style = "green"
-        elif r["status"] == "partial":
+        elif r["status"] in ("partial", "skipped"):
             style = "yellow"
         else:
             style = "red"
         summary.add_row(r["stage"], f"[{style}]{status_display}[/{style}]", elapsed_str)
 
     summary.add_row("", "", "")
-    summary.add_row("[bold]Total[/bold]", "", f"[bold]{total_elapsed:.1f}s[/bold]")
+    summary.add_row("[bold]Total[/bold]", "", f"[bold]{result['elapsed']:.1f}s[/bold]")
     console.print(summary)
 
     # Final DB stats
@@ -309,4 +520,4 @@ def run_pipeline(
     console.print(f"    Applied:        {final['applied']}")
     console.print(f"{'=' * 70}\n")
 
-    return {"stages": results, "errors": errors, "elapsed": total_elapsed}
+    return result

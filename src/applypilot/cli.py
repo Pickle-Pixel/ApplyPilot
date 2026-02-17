@@ -78,6 +78,7 @@ def run(
         ),
     ),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for tailor/cover stages."),
+    stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
 ) -> None:
     """Run pipeline stages: discover, enrich, score, tailor, cover, pdf."""
@@ -106,6 +107,7 @@ def run(
         stages=stage_list,
         min_score=min_score,
         dry_run=dry_run,
+        stream=stream,
     )
 
     if result.get("errors"):
