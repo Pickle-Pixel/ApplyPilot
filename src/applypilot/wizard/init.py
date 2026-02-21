@@ -1,7 +1,10 @@
 """ApplyPilot first-time setup wizard.
 
 LLM-first interactive flow that creates ~/.applypilot/ with:
+LLM-first interactive flow that creates ~/.applypilot/ with:
   - resume.txt (and optionally resume.pdf)
+  - .env (LLM API key) - REQUIRED
+  - profile.json (extracted from resume + user input)
   - .env (LLM API key) - REQUIRED
   - profile.json (extracted from resume + user input)
   - searches.yaml
@@ -11,6 +14,7 @@ LLM-first interactive flow that creates ~/.applypilot/ with:
 from __future__ import annotations
 
 import json
+import os
 import os
 import shutil
 from pathlib import Path
@@ -22,7 +26,6 @@ from rich.table import Table
 
 try:
     from pypdf import PdfReader
-
     HAS_PYPDF = True
 except ImportError:
     HAS_PYPDF = False
@@ -42,8 +45,8 @@ console = Console()
 
 # ---------------------------------------------------------------------------
 # Step 1: Resume
+# Step 1: Resume
 # ---------------------------------------------------------------------------
-
 
 def _setup_resume() -> str | None:
     """Prompt for resume file, copy into APP_DIR, return extracted text."""
@@ -64,10 +67,14 @@ def _setup_resume() -> str | None:
 
         resume_text = ""
 
+        resume_text = ""
+
         if suffix == ".txt":
             shutil.copy2(src, RESUME_PATH)
             resume_text = src.read_text(encoding="utf-8")
+            resume_text = src.read_text(encoding="utf-8")
             console.print(f"[green]Copied to {RESUME_PATH}[/green]")
+
 
         elif suffix == ".pdf":
             shutil.copy2(src, RESUME_PDF_PATH)
@@ -108,16 +115,13 @@ def _setup_resume() -> str | None:
 # Step 2: LLM Setup (Required)
 # ---------------------------------------------------------------------------
 
-
 def _setup_llm() -> bool:
     """Configure LLM provider - REQUIRED for ApplyPilot."""
-    console.print(
-        Panel(
-            "[bold]Step 2: LLM Setup (Required)[/bold]\n"
-            "ApplyPilot needs an LLM for scoring, tailoring, and profile extraction.\n"
-            "Gemini offers a free tier (15 requests/min)."
-        )
-    )
+    console.print(Panel(
+        "[bold]Step 2: LLM Setup (Required)[/bold]\n"
+        "ApplyPilot needs an LLM for scoring, tailoring, and profile extraction.\n"
+        "Gemini offers a free tier (15 requests/min)."
+    ))
 
     console.print("Supported providers: [bold]Gemini[/bold] (recommended, free), OpenAI, local (Ollama/llama.cpp)")
     provider = Prompt.ask(
@@ -156,7 +160,6 @@ def _setup_llm() -> bool:
         # Validate the API key
         console.print("[dim]Validating API key...[/dim]")
         from applypilot.llm import validate_api_key
-
         is_valid, error = validate_api_key(provider, api_key, model, endpoint)
 
         if is_valid:
@@ -189,12 +192,15 @@ def _setup_llm() -> bool:
 
 # ---------------------------------------------------------------------------
 # Step 3: Profile Extraction + Review
+# Step 3: Profile Extraction + Review
 # ---------------------------------------------------------------------------
-
 
 def _extract_and_review_profile(resume_text: str) -> dict:
     """Extract profile from resume using LLM, then let user review and fill gaps."""
-    console.print(Panel("[bold]Step 3: Profile Setup[/bold]\nExtracting your profile from your resume..."))
+    console.print(Panel(
+        "[bold]Step 3: Profile Setup[/bold]\n"
+        "Extracting your profile from your resume..."
+    ))
 
     # Extract from resume
     from applypilot.wizard.resume_parser import extract_resume_data, extracted_to_profile
@@ -261,9 +267,7 @@ def _display_extracted_profile(profile: dict) -> None:
     if personal.get("phone"):
         table.add_row("Phone", personal["phone"])
     if personal.get("city") or personal.get("country"):
-        location = ", ".join(
-            filter(None, [personal.get("city"), personal.get("province_state"), personal.get("country")])
-        )
+        location = ", ".join(filter(None, [personal.get("city"), personal.get("province_state"), personal.get("country")]))
         table.add_row("Location", location)
     if personal.get("linkedin_url"):
         table.add_row("LinkedIn", personal["linkedin_url"])
@@ -306,13 +310,9 @@ def _edit_profile(profile: dict) -> dict:
     personal["email"] = Prompt.ask("Email", default=personal.get("email", ""))
     personal["phone"] = Prompt.ask("Phone", default=personal.get("phone", ""))
     experience["current_title"] = Prompt.ask("Current title", default=experience.get("current_title", ""))
-    experience["years_of_experience_total"] = Prompt.ask(
-        "Years of experience", default=experience.get("years_of_experience_total", "")
-    )
+    experience["years_of_experience_total"] = Prompt.ask("Years of experience", default=experience.get("years_of_experience_total", ""))
 
-    langs = Prompt.ask(
-        "Programming languages (comma-separated)", default=", ".join(skills.get("programming_languages", []))
-    )
+    langs = Prompt.ask("Programming languages (comma-separated)", default=", ".join(skills.get("programming_languages", [])))
     skills["programming_languages"] = [s.strip() for s in langs.split(",") if s.strip()]
 
     frameworks = Prompt.ask("Frameworks (comma-separated)", default=", ".join(skills.get("frameworks", [])))
@@ -336,8 +336,15 @@ def _manual_profile_entry() -> dict:
     profile["personal"] = {
         "full_name": Prompt.ask("Full name"),
         "preferred_name": "",
+        "full_name": Prompt.ask("Full name"),
+        "preferred_name": "",
         "email": Prompt.ask("Email address"),
         "phone": Prompt.ask("Phone number", default=""),
+        "city": "",
+        "province_state": "",
+        "country": "",
+        "postal_code": "",
+        "address": "",
         "city": "",
         "province_state": "",
         "country": "",
@@ -394,7 +401,10 @@ def _fill_non_resume_fields(profile: dict) -> dict:
 
     # Target role
     current_title = experience.get("current_title", "")
-    experience["target_role"] = Prompt.ask("Target role (what you're applying for)", default=current_title)
+    experience["target_role"] = Prompt.ask(
+        "Target role (what you're applying for)",
+        default=current_title
+    )
 
     # Work authorization
     console.print("\n[bold cyan]Work Authorization[/bold cyan]")
@@ -402,8 +412,11 @@ def _fill_non_resume_fields(profile: dict) -> dict:
         "legally_authorized_to_work": Confirm.ask("Are you legally authorized to work in your target country?"),
         "require_sponsorship": Confirm.ask("Will you need sponsorship now or in the future?"),
         "work_permit_type": Prompt.ask("Work permit type (Citizen, PR, Work Permit, etc.)", default=""),
+        "require_sponsorship": Confirm.ask("Will you need sponsorship now or in the future?"),
+        "work_permit_type": Prompt.ask("Work permit type (Citizen, PR, Work Permit, etc.)", default=""),
     }
 
+    # Compensation
     # Compensation
     console.print("\n[bold cyan]Compensation[/bold cyan]")
     salary = Prompt.ask("Expected annual salary (number)", default="")
@@ -414,11 +427,7 @@ def _fill_non_resume_fields(profile: dict) -> dict:
         "salary_expectation": salary,
         "salary_currency": salary_currency,
         "salary_range_min": range_parts[0].strip() if range_parts else "",
-        "salary_range_max": range_parts[1].strip()
-        if len(range_parts) > 1
-        else range_parts[0].strip()
-        if range_parts
-        else "",
+        "salary_range_max": range_parts[1].strip() if len(range_parts) > 1 else range_parts[0].strip() if range_parts else "",
     }
 
     # Availability
@@ -427,7 +436,11 @@ def _fill_non_resume_fields(profile: dict) -> dict:
     }
 
     # Password for job sites
-    personal["password"] = Prompt.ask("Job site password (for auto-apply login walls)", password=True, default="")
+    personal["password"] = Prompt.ask(
+        "Job site password (for auto-apply login walls)",
+        password=True,
+        default=""
+    )
 
     # EEO defaults
     profile["eeo_voluntary"] = {
@@ -440,16 +453,22 @@ def _fill_non_resume_fields(profile: dict) -> dict:
     profile["personal"] = personal
     profile["experience"] = experience
 
+    profile["personal"] = personal
+    profile["experience"] = experience
+
     return profile
 
 
 # ---------------------------------------------------------------------------
 # Step 4: Search Config
+# Step 4: Search Config
 # ---------------------------------------------------------------------------
-
 
 def _setup_searches(profile: dict) -> None:
     """Generate a searches.yaml from user input."""
+    console.print(Panel("[bold]Step 4: Job Search Config[/bold]\nDefine what you're looking for."))
+
+    target_role = profile.get("experience", {}).get("target_role", "Software Engineer")
     console.print(Panel("[bold]Step 4: Job Search Config[/bold]\nDefine what you're looking for."))
 
     target_role = profile.get("experience", {}).get("target_role", "Software Engineer")
@@ -461,7 +480,10 @@ def _setup_searches(profile: dict) -> None:
     except ValueError:
         distance = 0
 
-    roles_raw = Prompt.ask("Target job titles (comma-separated)", default=target_role)
+    roles_raw = Prompt.ask(
+        "Target job titles (comma-separated)",
+        default=target_role
+    )
     roles = [r.strip() for r in roles_raw.split(",") if r.strip()]
 
     if not roles:
@@ -609,6 +631,7 @@ def _setup_auto_apply() -> None:
                 )
         else:
             ENV_PATH.write_text(f"CAPSOLVER_API_KEY={capsolver_key}\n", encoding="utf-8")
+            ENV_PATH.write_text(f"CAPSOLVER_API_KEY={capsolver_key}\n", encoding="utf-8")
         console.print("[green]CapSolver key saved.[/green]")
     else:
         console.print("[dim]Skipped. Add CAPSOLVER_API_KEY to .env later if needed.[/dim]")
@@ -637,8 +660,16 @@ def run_wizard() -> None:
 
     # Step 1: Resume
     resume_text = _setup_resume()
+    resume_text = _setup_resume()
     console.print()
 
+    if not resume_text:
+        console.print("[yellow]Warning: No resume text available. Profile extraction will be limited.[/yellow]")
+        resume_text = ""
+
+    # Step 2: LLM setup (REQUIRED)
+    if not _setup_llm():
+        raise typer.Exit(1)
     if not resume_text:
         console.print("[yellow]Warning: No resume text available. Profile extraction will be limited.[/yellow]")
         resume_text = ""
@@ -650,16 +681,22 @@ def run_wizard() -> None:
 
     # Step 3: Extract profile from resume + fill gaps
     profile = _extract_and_review_profile(resume_text)
+    # Step 3: Extract profile from resume + fill gaps
+    profile = _extract_and_review_profile(resume_text)
     console.print()
 
+    # Step 4: Search config
+    _setup_searches(profile)
     # Step 4: Search config
     _setup_searches(profile)
     console.print()
 
     # Step 5: Auto-apply (optional)
+    # Step 5: Auto-apply (optional)
     _setup_auto_apply()
     console.print()
 
+    # Done - show tier status
     # Done - show tier status
     from applypilot.config import get_tier, TIER_LABELS, TIER_COMMANDS
 
@@ -671,9 +708,12 @@ def run_wizard() -> None:
         cmds = ", ".join(f"[bold]{c}[/bold]" for c in TIER_COMMANDS[t])
         if t <= tier:
             tier_lines.append(f"  [green]* Tier {t} - {label}[/green]  ({cmds})")
+            tier_lines.append(f"  [green]* Tier {t} - {label}[/green]  ({cmds})")
         elif t == tier + 1:
             tier_lines.append(f"  [yellow]-> Tier {t} - {label}[/yellow]  ({cmds})")
+            tier_lines.append(f"  [yellow]-> Tier {t} - {label}[/yellow]  ({cmds})")
         else:
+            tier_lines.append(f"  [dim]x Tier {t} - {label}  ({cmds})[/dim]")
             tier_lines.append(f"  [dim]x Tier {t} - {label}  ({cmds})[/dim]")
 
     unlock_hint = ""
@@ -685,7 +725,9 @@ def run_wizard() -> None:
     console.print(
         Panel.fit(
             "[bold green]Setup complete![/bold green]\n\n"
-            f"[bold]Your tier: Tier {tier} - {TIER_LABELS[tier]}[/bold]\n\n" + "\n".join(tier_lines) + unlock_hint,
+            f"[bold]Your tier: Tier {tier} - {TIER_LABELS[tier]}[/bold]\n\n"
+            + "\n".join(tier_lines)
+            + unlock_hint,
             border_style="green",
         )
     )
