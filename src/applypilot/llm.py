@@ -295,3 +295,58 @@ def get_client() -> LLMClient:
         log.info("LLM provider: %s  model: %s", base_url, model)
         _instance = LLMClient(base_url, model, api_key)
     return _instance
+
+
+def validate_api_key(provider: str, api_key: str, model: str = "", endpoint: str = "") -> tuple[bool, str]:
+    """Validate an API key by making a minimal test request.
+
+    Args:
+        provider: "gemini", "openai", or "local"
+        api_key: The API key to validate
+        model: Optional model name override
+        endpoint: Required for "local" provider
+
+    Returns:
+        (is_valid, error_message) - error_message is empty if valid
+    """
+    try:
+        if provider == "gemini":
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+            test_model = model or "gemini-2.0-flash"
+            client = LLMClient(base_url, test_model, api_key)
+        elif provider == "openai":
+            base_url = "https://api.openai.com/v1"
+            test_model = model or "gpt-4o-mini"
+            client = LLMClient(base_url, test_model, api_key)
+        elif provider == "local":
+            if not endpoint:
+                return False, "Local endpoint URL is required"
+            base_url = endpoint.rstrip("/")
+            test_model = model or "local-model"
+            client = LLMClient(base_url, test_model, api_key)
+        else:
+            return False, f"Unknown provider: {provider}"
+
+        # Simple test request
+        response = client.ask("Reply with only the word 'ok'.", temperature=0.0, max_tokens=10)
+        client.close()
+
+        if response and len(response.strip()) > 0:
+            return True, ""
+        return False, "Empty response from API"
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return False, "Invalid API key"
+        elif e.response.status_code == 403:
+            return False, "API key lacks required permissions"
+        elif e.response.status_code == 429:
+            # Rate limited but key is valid
+            return True, ""
+        return False, f"API error: {e.response.status_code}"
+    except httpx.ConnectError:
+        return False, "Could not connect to API endpoint"
+    except httpx.TimeoutException:
+        return False, "API request timed out"
+    except Exception as e:
+        return False, f"Validation failed: {str(e)}"
