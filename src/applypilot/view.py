@@ -77,7 +77,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
         SELECT url, title, salary, description, location, site, strategy,
                full_description, application_url, detail_error,
                fit_score, score_reasoning,
-               applied_at, apply_status
+               applied_at, apply_status, apply_error, last_attempted_at
         FROM jobs
         WHERE fit_score >= 5
         ORDER BY fit_score DESC, site, title
@@ -197,9 +197,50 @@ def generate_dashboard(output_path: str | None = None) -> str:
             applied_banner = f'<div class="applied-banner">&#10003; Applied on {applied_date_str}</div>'
             applied_attr = ' data-applied="true"'
 
+        # Failed indicator
+        _status_reasons = {
+            "expired": "Job posting expired",
+            "captcha": "CAPTCHA blocked",
+            "login_issue": "Login required",
+            "not_eligible_location": "Location not eligible",
+            "not_eligible_salary": "Salary not eligible",
+            "already_applied": "Already applied",
+            "account_required": "Account required",
+            "not_a_job_application": "Not a job posting",
+            "unsafe_permissions": "Unsafe permissions",
+            "unsafe_verification": "Unsafe verification",
+            "sso_required": "SSO required",
+            "site_blocked": "Site blocked",
+            "cloudflare_blocked": "Cloudflare blocked",
+            "failed": "Application failed",
+        }
+        was_failed = (
+            j["apply_status"] and j["apply_status"] != "applied"
+            and j["last_attempted_at"]
+        )
+        failed_banner = ""
+        if was_failed:
+            try:
+                from datetime import datetime as _dt
+                failed_dt = _dt.fromisoformat(j["last_attempted_at"].replace("Z", "+00:00"))
+                failed_date_str = failed_dt.strftime("%b %-d, %Y")
+            except (ValueError, AttributeError):
+                failed_date_str = j["last_attempted_at"][:10]
+            short_reason = (
+                escape((j["apply_error"] or "")[:60]) or
+                _status_reasons.get(j["apply_status"], j["apply_status"].replace("_", " ").title())
+            )
+            failed_banner = f'<div class="failed-banner">&#10007; Failed on {failed_date_str} &middot; {short_reason}</div>'
+
+        card_extra_class = ""
+        if was_applied:
+            card_extra_class = "  job-card--applied"
+        elif was_failed:
+            card_extra_class = "  job-card--failed"
+
         job_sections += f"""
-        <div class="job-card{'  job-card--applied' if was_applied else ''}" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}"{applied_attr}>
-          {applied_banner}
+        <div class="job-card{card_extra_class}" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}"{applied_attr}>
+          {applied_banner}{failed_banner}
           <div class="card-header">
             <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
             <a href="{url}" class="job-title" target="_blank">{title}</a>
@@ -326,6 +367,13 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .applied-banner {{ background: #10b981; color: #022c22; font-size: 0.75rem; font-weight: 700;
     padding: 0.3rem 0.75rem; margin: -1rem -1rem 0.75rem -1rem; border-radius: 7px 7px 0 0;
     letter-spacing: 0.03em; }}
+
+  /* Failed indicator */
+  .job-card--failed {{ border-left-color: #ef4444 !important; background: #1f0f0f; }}
+  .job-card--failed:hover {{ box-shadow: 0 4px 16px #ef444433; }}
+  .failed-banner {{ background: #7f1d1d; color: #fca5a5; font-size: 0.75rem; font-weight: 700;
+    padding: 0.3rem 0.75rem; margin: -1rem -1rem 0.75rem -1rem; border-radius: 7px 7px 0 0;
+    letter-spacing: 0.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 
   @media (max-width: 768px) {{
     .summary {{ grid-template-columns: repeat(2, 1fr); }}
