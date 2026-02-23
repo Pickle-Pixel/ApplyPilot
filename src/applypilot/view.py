@@ -76,7 +76,8 @@ def generate_dashboard(output_path: str | None = None) -> str:
     jobs = conn.execute("""
         SELECT url, title, salary, description, location, site, strategy,
                full_description, application_url, detail_error,
-               fit_score, score_reasoning
+               fit_score, score_reasoning,
+               applied_at, apply_status
         FROM jobs
         WHERE fit_score >= 5
         ORDER BY fit_score DESC, site, title
@@ -178,8 +179,23 @@ def generate_dashboard(output_path: str | None = None) -> str:
         if apply_url:
             apply_html = f'<a href="{apply_url}" class="apply-link" target="_blank">Apply</a>'
 
+        # Applied indicator
+        was_applied = j["apply_status"] == "applied" and j["applied_at"]
+        applied_banner = ""
+        applied_attr = ""
+        if was_applied:
+            try:
+                from datetime import datetime as _dt
+                applied_dt = _dt.fromisoformat(j["applied_at"].replace("Z", "+00:00"))
+                applied_date_str = applied_dt.strftime("%b %-d, %Y")
+            except (ValueError, AttributeError):
+                applied_date_str = j["applied_at"][:10]
+            applied_banner = f'<div class="applied-banner">&#10003; Applied on {applied_date_str}</div>'
+            applied_attr = ' data-applied="true"'
+
         job_sections += f"""
-        <div class="job-card" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}">
+        <div class="job-card{'  job-card--applied' if was_applied else ''}" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}"{applied_attr}>
+          {applied_banner}
           <div class="card-header">
             <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
             <a href="{url}" class="job-title" target="_blank">{title}</a>
@@ -291,6 +307,13 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .hidden {{ display: none !important; }}
   .job-count {{ color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem; }}
 
+  /* Applied indicator */
+  .job-card--applied {{ border-left-color: #10b981 !important; background: #0d2b1e; }}
+  .job-card--applied:hover {{ box-shadow: 0 4px 16px #10b98133; }}
+  .applied-banner {{ background: #10b981; color: #022c22; font-size: 0.75rem; font-weight: 700;
+    padding: 0.3rem 0.75rem; margin: -1rem -1rem 0.75rem -1rem; border-radius: 7px 7px 0 0;
+    letter-spacing: 0.03em; }}
+
   @media (max-width: 768px) {{
     .summary {{ grid-template-columns: repeat(2, 1fr); }}
     .score-section {{ grid-template-columns: 1fr; }}
@@ -319,6 +342,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
   <button class="filter-btn" onclick="filterScore(9)">9+ Perfect</button>
   <span class="filter-label" style="margin-left:1rem">Search:</span>
   <input type="text" class="search-input" placeholder="Filter by title, site..." oninput="filterText(this.value)">
+  <button class="filter-btn" id="hide-applied-btn" onclick="toggleHideApplied()" style="margin-left:auto">Hide Applied</button>
 </div>
 
 <div class="score-section">
@@ -339,16 +363,25 @@ def generate_dashboard(output_path: str | None = None) -> str:
 <script>
 let minScore = 0;
 let searchText = '';
+let hideApplied = false;
 
 function filterScore(min) {{
   minScore = min;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.filter-btn:not(#hide-applied-btn)').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
   applyFilters();
 }}
 
 function filterText(text) {{
   searchText = text.toLowerCase();
+  applyFilters();
+}}
+
+function toggleHideApplied() {{
+  hideApplied = !hideApplied;
+  const btn = document.getElementById('hide-applied-btn');
+  btn.textContent = hideApplied ? 'Show Applied' : 'Hide Applied';
+  btn.classList.toggle('active', hideApplied);
   applyFilters();
 }}
 
@@ -361,7 +394,8 @@ function applyFilters() {{
     const text = card.textContent.toLowerCase();
     const scoreMatch = score >= (minScore || 5);
     const textMatch = !searchText || text.includes(searchText);
-    if (scoreMatch && textMatch) {{
+    const appliedMatch = !hideApplied || card.dataset.applied !== 'true';
+    if (scoreMatch && textMatch && appliedMatch) {{
       card.classList.remove('hidden');
       shown++;
     }} else {{
