@@ -179,6 +179,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
         if apply_url:
             apply_html = f'<a href="{apply_url}" class="apply-link" target="_blank">Apply</a>'
 
+        # Auto-apply command button (only for jobs not yet applied)
+        raw_url = j["url"] or ""
+        auto_apply_cmd = f"applypilot apply --url {raw_url}"
+
         # Applied indicator
         was_applied = j["apply_status"] == "applied" and j["applied_at"]
         applied_banner = ""
@@ -205,7 +209,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
           {f'<div class="reasoning-row">{escape(reasoning)}</div>' if reasoning else ''}
           <p class="desc-preview">{desc_preview}...</p>
           {"<details class='full-desc-details'><summary class='expand-btn'>Full Description (" + f'{desc_len:,}' + " chars)</summary><div class='full-desc'>" + full_desc_html + "</div></details>" if j["full_description"] else ""}
-          <div class="card-footer">{apply_html}</div>
+          <div class="card-footer">
+            {apply_html}
+            {"" if was_applied else f'<button class="auto-apply-btn" onclick="copyApplyCmd(this)" data-cmd="{escape(auto_apply_cmd)}" title="{escape(auto_apply_cmd)}">&#9654; Auto-Apply</button>'}
+          </div>
         </div>"""
 
     if current_score is not None:
@@ -307,6 +314,12 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .hidden {{ display: none !important; }}
   .job-count {{ color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem; }}
 
+  /* Auto-apply button */
+  .auto-apply-btn {{ background: transparent; border: 1px solid #6366f1; color: #818cf8; padding: 0.3rem 0.8rem;
+    border-radius: 6px; cursor: pointer; font-size: 0.78rem; font-weight: 600; transition: all 0.15s; white-space: nowrap; }}
+  .auto-apply-btn:hover {{ background: #6366f122; color: #a5b4fc; border-color: #a5b4fc; }}
+  .auto-apply-btn.copied {{ background: #064e3b; border-color: #10b981; color: #6ee7b7; }}
+
   /* Applied indicator */
   .job-card--applied {{ border-left-color: #10b981 !important; background: #0d2b1e; }}
   .job-card--applied:hover {{ box-shadow: 0 4px 16px #10b98133; }}
@@ -364,6 +377,34 @@ def generate_dashboard(output_path: str | None = None) -> str:
 let minScore = 0;
 let searchText = '';
 let hideApplied = false;
+
+function copyApplyCmd(btn) {{
+  const cmd = btn.dataset.cmd;
+  navigator.clipboard.writeText(cmd).then(() => {{
+    btn.textContent = '✓ Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {{
+      btn.innerHTML = '&#9654; Auto-Apply';
+      btn.classList.remove('copied');
+    }}, 2000);
+  }}).catch(() => {{
+    // Fallback for browsers that block clipboard in file:// context
+    const ta = document.createElement('textarea');
+    ta.value = cmd;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = '✓ Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {{
+      btn.innerHTML = '&#9654; Auto-Apply';
+      btn.classList.remove('copied');
+    }}, 2000);
+  }});
+}}
 
 function filterScore(min) {{
   minScore = min;
