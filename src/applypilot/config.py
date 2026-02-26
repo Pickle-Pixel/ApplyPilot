@@ -206,10 +206,12 @@ def get_tier() -> int:
     """
     load_env()
 
-    has_llm = any(
+    has_model = bool((os.environ.get("LLM_MODEL") or "").strip())
+    has_credentials_or_url = any(
         os.environ.get(k)
-        for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLM_URL")
+        for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLM_API_KEY", "LLM_URL")
     )
+    has_llm = has_model and has_credentials_or_url
     if not has_llm:
         return 1
 
@@ -241,13 +243,16 @@ def check_tier(required: int, feature: str) -> None:
     _console = Console(stderr=True)
 
     missing: list[str] = []
-    if required >= 2 and not any(
+    has_model = bool((os.environ.get("LLM_MODEL") or "").strip())
+    has_credentials_or_url = any(
         os.environ.get(k)
-        for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLM_URL")
-    ):
+        for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLM_API_KEY", "LLM_URL")
+    )
+    if required >= 2 and not (has_model and has_credentials_or_url):
         missing.append(
-            "LLM API key — run [bold]applypilot init[/bold] or set "
-            "GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY / LLM_URL"
+            "LLM config — run [bold]applypilot init[/bold] or set "
+            "LLM_MODEL plus one of GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY / "
+            "LLM_API_KEY / LLM_URL"
         )
     if required >= 3:
         if not shutil.which("claude"):

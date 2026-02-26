@@ -1,17 +1,12 @@
 """Unified LLM client for ApplyPilot using LiteLLM.
 
-Auto-detects provider from environment:
-  GEMINI_API_KEY      -> Google Gemini (default: gemini-2.0-flash)
-  OPENAI_API_KEY      -> OpenAI (default: gpt-4o-mini)
-  ANTHROPIC_API_KEY   -> Anthropic Claude (default: claude-3-5-haiku-latest)
-  LLM_URL             -> Local OpenAI-compatible endpoint
-
-LLM_MODEL env var overrides the model name for any provider.
-
-Gemini provider behavior:
-  - Uses LiteLLM's native Gemini provider path (no OpenAI-compat base URL).
-  - Google v1 is considered stable while v1beta can change; endpoint version choice is delegated to LiteLLM.
-  - Provider is inferred from configured credentials; model prefixes are handled internally.
+Runtime contract:
+  - LLM_MODEL must be a fully-qualified LiteLLM model string
+    (for example: openai/gpt-4o-mini, anthropic/claude-3-5-haiku-latest,
+    gemini/gemini-3.0-flash).
+  - Credentials come from provider env vars (GEMINI_API_KEY, OPENAI_API_KEY,
+    ANTHROPIC_API_KEY) or generic LLM_API_KEY.
+  - LLM_URL is optional for custom OpenAI-compatible endpoints.
 """
 
 from __future__ import annotations
@@ -25,20 +20,13 @@ import litellm
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_MODEL_BY_PROVIDER = {
-    "local": "local-model",
-    "gemini": "gemini-2.0-flash",
-    "openai": "gpt-4o-mini",
-    "anthropic": "claude-3-5-haiku-latest",
-}
-
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
 
 
 @dataclass(frozen=True)
 class LLMConfig:
-    """Normalized LLM configuration consumed by LLMClient."""
+    """LLM configuration consumed by LLMClient."""
 
     provider: str
     api_base: str | None
@@ -53,126 +41,51 @@ def _env_get(env: Mapping[str, str], key: str) -> str:
     return str(value).strip()
 
 
-def _provider_model(provider: str, model: str) -> str:
-    if provider == "local":
-        return model
-    if model.startswith(f"{provider}/"):
-        return model
-    return f"{provider}/{model}"
-
-
-def _default_model(provider: str) -> str:
-    return _DEFAULT_MODEL_BY_PROVIDER[provider]
-
-
-def _normalize_model_for_provider(provider: str, model: str) -> str:
-    normalized = model.strip()
-    if provider == "local":
-        return normalized
-    if normalized.startswith("models/"):
-        normalized = normalized.split("/", 1)[1]
-
-    provider_prefix = f"{provider}/"
-    if normalized.startswith(provider_prefix):
-        return normalized[len(provider_prefix):]
-
-    for other in ("gemini", "openai", "anthropic", "vertex_ai"):
-        other_prefix = f"{other}/"
-        if normalized.startswith(other_prefix):
-            return normalized.split("/", 1)[1]
-
-    return normalized
+def _provider_from_model(model: str) -> str:
+    provider, _, model_name = model.partition("/")
+    if not provider or not model_name:
+        raise RuntimeError(
+            "LLM_MODEL must include a provider prefix (for example 'openai/gpt-4o-mini')."
+        )
+    return provider
 
 
 def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
-    """Resolve provider configuration from environment with deterministic precedence."""
+    """Resolve LLM configuration from environment."""
     env_map = env if env is not None else os.environ
 
-    model_override = _env_get(env_map, "LLM_MODEL")
-    local_url = _env_get(env_map, "LLM_URL")
-    gemini_key = _env_get(env_map, "GEMINI_API_KEY")
-    openai_key = _env_get(env_map, "OPENAI_API_KEY")
-    anthropic_key = _env_get(env_map, "ANTHROPIC_API_KEY")
-    llm_provider = _env_get(env_map, "LLM_PROVIDER").lower()
-
-    providers_present = {
-        "local": bool(local_url),
-        "gemini": bool(gemini_key),
-        "openai": bool(openai_key),
-        "anthropic": bool(anthropic_key),
-    }
-    precedence = ["local", "gemini", "openai", "anthropic"]
-    configured = [provider for provider in precedence if providers_present[provider]]
-
-    if not configured:
+    model = _env_get(env_map, "LLM_MODEL")
+    if not model:
         raise RuntimeError(
-            "No LLM provider configured. "
-            "Set one of LLM_URL, GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY."
+            "LLM_MODEL is required. Set it to a LiteLLM model string like "
+            "'openai/gpt-4o-mini'."
         )
-
-    chosen = ""
-    override_aliases = {
-        "local": "local",
-        "gemini": "gemini",
-        "openai": "openai",
-        "anthropic": "anthropic",
+    provider = _provider_from_model(model)
+    local_url = _env_get(env_map, "LLM_URL")
+    provider_api_key_env = {
+        "gemini": "GEMINI_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
     }
+    api_key_env = provider_api_key_env.get(provider, "LLM_API_KEY")
+    api_key = _env_get(env_map, api_key_env) or _env_get(env_map, "LLM_API_KEY")
 
-    # Optional override only when multiple providers are configured.
-    if len(configured) > 1 and llm_provider:
-        overridden = override_aliases.get(llm_provider)
-        if overridden and overridden in configured:
-            chosen = overridden
-            log.warning(
-                "Multiple LLM providers configured (%s). Using '%s' via LLM_PROVIDER override.",
-                ", ".join(configured),
-                chosen,
-            )
-        else:
-            log.warning(
-                "Ignoring LLM_PROVIDER='%s' because it is not configured. "
-                "Using precedence: LLM_URL > GEMINI_API_KEY > OPENAI_API_KEY > ANTHROPIC_API_KEY.",
-                llm_provider,
-            )
+    if not api_key and not local_url:
+        key_help = (
+            f"{api_key_env} or LLM_API_KEY"
+            if provider in provider_api_key_env
+            else "LLM_API_KEY"
+        )
+        raise RuntimeError(
+            f"Missing credentials for LLM_MODEL '{model}'. Set {key_help}, or set LLM_URL for "
+            "a local OpenAI-compatible endpoint."
+        )
 
-    if not chosen:
-        chosen = configured[0]
-        if len(configured) > 1:
-            log.warning(
-                "Multiple LLM providers configured (%s). Using '%s' based on precedence: "
-                "LLM_URL > GEMINI_API_KEY > OPENAI_API_KEY > ANTHROPIC_API_KEY.",
-                ", ".join(configured),
-                chosen,
-            )
-    model = model_override or _default_model(chosen)
-    model = _normalize_model_for_provider(chosen, model)
-
-    if chosen == "local":
-        return LLMConfig(
-            provider="local",
-            api_base=local_url.rstrip("/"),
-            model=model,
-            api_key=_env_get(env_map, "LLM_API_KEY"),
-        )
-    if chosen == "gemini":
-        return LLMConfig(
-            provider="gemini",
-            api_base=None,
-            model=model,
-            api_key=gemini_key,
-        )
-    if chosen == "openai":
-        return LLMConfig(
-            provider="openai",
-            api_base=None,
-            model=model,
-            api_key=openai_key,
-        )
     return LLMConfig(
-        provider="anthropic",
-        api_base=None,
+        provider=provider,
+        api_base=local_url.rstrip("/") if local_url else None,
         model=model,
-        api_key=anthropic_key,
+        api_key=api_key,
     )
 
 
@@ -192,7 +105,7 @@ class LLMClient:
         response_kwargs: Mapping[str, object] | None,
     ) -> dict:
         args: dict = {
-            "model": _provider_model(self.provider, self.model),
+            "model": self.model,
             "messages": messages,
             "max_tokens": max_output_tokens,
             "timeout": _TIMEOUT,
@@ -204,10 +117,8 @@ class LLMClient:
         if self.config.api_key:
             args["api_key"] = self.config.api_key
 
-        if self.provider == "local":
-            args["model"] = self.model
-            if self.config.api_base:
-                args["api_base"] = self.config.api_base
+        if self.config.api_base:
+            args["api_base"] = self.config.api_base
 
         if response_kwargs:
             args.update(response_kwargs)

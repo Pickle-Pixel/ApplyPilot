@@ -397,8 +397,8 @@ def doctor() -> None:
 
     try:
         llm_cfg = resolve_llm_config()
-        if llm_cfg.provider == "local":
-            results.append(("LLM API key", ok_mark, f"Local: {llm_cfg.api_base} ({llm_cfg.model})"))
+        if llm_cfg.api_base:
+            results.append(("LLM API key", ok_mark, f"Custom endpoint: {llm_cfg.api_base} ({llm_cfg.model})"))
         else:
             label = {
                 "gemini": "Gemini",
@@ -409,7 +409,7 @@ def doctor() -> None:
     except RuntimeError:
         results.append(
             ("LLM API key", fail_mark,
-             "Set GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or LLM_URL in ~/.applypilot/.env")
+             "Set LLM_MODEL plus provider key (or LLM_API_KEY), and optionally LLM_URL in ~/.applypilot/.env")
         )
 
     # --- Tier 3 checks ---

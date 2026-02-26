@@ -277,12 +277,18 @@ def _setup_ai_features() -> None:
         console.print("[dim]No AI provider configured. You can add one later with [bold]applypilot init[/bold].[/dim]")
         return
 
+    default_model_by_source = {
+        "gemini": "gemini/gemini-3.0-flash",
+        "openai": "openai/gpt-4o-mini",
+        "anthropic": "anthropic/claude-3-5-haiku-latest",
+        "local": "openai/local-model",
+    }
+    default_model = default_model_by_source.get(configured_sources[0], "openai/gpt-4o-mini")
     model = Prompt.ask(
-        "LLM model override (optional, leave blank to use provider defaults)",
-        default="",
+        "LLM model (required, include provider prefix)",
+        default=default_model,
     ).strip()
-    if model:
-        env_lines.append(f"LLM_MODEL={model}")
+    env_lines.append(f"LLM_MODEL={model}")
 
     env_lines.append("")
     ENV_PATH.write_text("\n".join(env_lines), encoding="utf-8")
@@ -290,7 +296,7 @@ def _setup_ai_features() -> None:
         configured = ", ".join(configured_sources)
         console.print(
             f"[yellow]Multiple LLM providers saved ({configured}). "
-            "Runtime selects one deterministically by precedence.[/yellow]"
+            "Runtime routing follows LLM_MODEL's provider prefix.[/yellow]"
         )
     console.print(f"[green]AI configuration saved to {ENV_PATH}[/green]")
 

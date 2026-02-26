@@ -1,65 +1,39 @@
-import logging
-
 import pytest
 
 from applypilot.llm import resolve_llm_config
 
 
-def test_only_gemini_api_key_selects_gemini() -> None:
-    cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key"})
+def test_requires_llm_model() -> None:
+    with pytest.raises(RuntimeError, match="LLM_MODEL is required"):
+        resolve_llm_config({"GEMINI_API_KEY": "g-key"})
+
+
+def test_requires_model_provider_prefix() -> None:
+    with pytest.raises(RuntimeError, match="must include a provider prefix"):
+        resolve_llm_config({"LLM_MODEL": "gpt-4o-mini", "OPENAI_API_KEY": "o-key"})
+
+
+def test_provider_and_api_key_come_from_model_contract() -> None:
+    cfg = resolve_llm_config({"LLM_MODEL": "gemini/gemini-3.0-flash", "GEMINI_API_KEY": "g-key"})
     assert cfg.provider == "gemini"
     assert cfg.api_base is None
-    assert cfg.model == "gemini-2.0-flash"
+    assert cfg.model == "gemini/gemini-3.0-flash"
+    assert cfg.api_key == "g-key"
 
 
-def test_only_openai_api_key_selects_openai() -> None:
-    cfg = resolve_llm_config({"OPENAI_API_KEY": "o-key"})
-    assert cfg.provider == "openai"
+def test_uses_generic_api_key_for_unmapped_provider() -> None:
+    cfg = resolve_llm_config({"LLM_MODEL": "vertex_ai/gemini-3.0-flash", "LLM_API_KEY": "v-key"})
+    assert cfg.provider == "vertex_ai"
+    assert cfg.api_key == "v-key"
 
 
-def test_gemini_model_override_without_prefix_is_normalized() -> None:
-    cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key", "LLM_MODEL": "gemini-2.5-flash"})
-    assert cfg.model == "gemini-2.5-flash"
-
-
-def test_gemini_model_override_google_models_prefix_is_normalized() -> None:
-    cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key", "LLM_MODEL": "models/gemini-2.5-flash"})
-    assert cfg.model == "gemini-2.5-flash"
-
-
-def test_gemini_model_override_gemini_prefix_is_stripped() -> None:
-    cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key", "LLM_MODEL": "gemini/gemini-2.5-flash"})
-    assert cfg.model == "gemini-2.5-flash"
-
-
-def test_llm_url_with_keys_selects_local() -> None:
+def test_llm_url_allows_missing_api_key() -> None:
     cfg = resolve_llm_config(
         {
-            "LLM_URL": "http://127.0.0.1:8080/v1",
-            "GEMINI_API_KEY": "g-key",
-            "OPENAI_API_KEY": "o-key",
-            "ANTHROPIC_API_KEY": "a-key",
+            "LLM_MODEL": "openai/local-model",
+            "LLM_URL": "http://127.0.0.1:8080/v1/",
         }
     )
-    assert cfg.provider == "local"
-
-
-def test_multiple_keys_selects_deterministically_and_warns(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING):
-        cfg = resolve_llm_config(
-            {
-                "GEMINI_API_KEY": "g-key",
-                "OPENAI_API_KEY": "o-key",
-                "ANTHROPIC_API_KEY": "a-key",
-            }
-        )
-    assert cfg.provider == "gemini"
-    assert any(
-        "Multiple LLM providers configured" in rec.message and "Using 'gemini' based on precedence" in rec.message
-        for rec in caplog.records
-    )
-
-
-def test_missing_everything_raises_clear_error() -> None:
-    with pytest.raises(RuntimeError, match="No LLM provider configured"):
-        resolve_llm_config({})
+    assert cfg.provider == "openai"
+    assert cfg.api_base == "http://127.0.0.1:8080/v1"
+    assert cfg.api_key == ""

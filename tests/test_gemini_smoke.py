@@ -6,7 +6,7 @@ litellm = pytest.importorskip("litellm")
 
 
 def _gemini_smoke_model() -> str:
-    raw = os.getenv("GEMINI_SMOKE_MODEL", "gemini-2.0-flash").strip()
+    raw = os.getenv("GEMINI_SMOKE_MODEL", "gemini-3.0-flash").strip()
     if raw.startswith("gemini/"):
         return raw
     if raw.startswith("models/"):
