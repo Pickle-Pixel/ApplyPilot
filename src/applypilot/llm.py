@@ -27,11 +27,6 @@ log = logging.getLogger(__name__)
 
 _OPENAI_BASE = "https://api.openai.com/v1"
 _ANTHROPIC_BASE = "https://api.anthropic.com/v1"
-_PROVIDER_API_ENV_KEY = {
-    "gemini": "GEMINI_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-}
 _DEFAULT_MODEL_BY_PROVIDER = {
     "local": "local-model",
     "gemini": "gemini-2.0-flash",
@@ -41,8 +36,6 @@ _DEFAULT_MODEL_BY_PROVIDER = {
 
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
-
-_THINKING_LEVELS = {"none", "low", "medium", "high"}
 
 
 @dataclass(frozen=True)
@@ -60,14 +53,6 @@ def _env_get(env: Mapping[str, str], key: str) -> str:
     if value is None:
         return ""
     return str(value).strip()
-
-
-def _normalize_thinking_level(thinking_level: str) -> str:
-    level = (thinking_level or "low").strip().lower()
-    if level not in _THINKING_LEVELS:
-        log.warning("Invalid thinking_level '%s', defaulting to 'low'.", thinking_level)
-        return "low"
-    return level
 
 
 def _provider_model(provider: str, model: str) -> str:
@@ -200,12 +185,6 @@ class LLMClient:
         self.config = config
         self.provider = config.provider
         self.model = config.model
-        self._apply_provider_env()
-
-    def _apply_provider_env(self) -> None:
-        env_key = _PROVIDER_API_ENV_KEY.get(self.provider)
-        if env_key and self.config.api_key:
-            os.environ[env_key] = self.config.api_key
 
     def _build_completion_args(
         self,
@@ -225,14 +204,16 @@ class LLMClient:
         if temperature is not None:
             args["temperature"] = temperature
 
+        if self.config.api_key:
+            args["api_key"] = self.config.api_key
+
         if self.provider == "local":
             args["model"] = self.model
             args["api_base"] = self.config.base_url
-            if self.config.api_key:
-                args["api_key"] = self.config.api_key
-        if thinking_level is not None:
-            level = _normalize_thinking_level(thinking_level)
-            args["reasoning_effort"] = level
+        if thinking_level:
+            effort = thinking_level.strip()
+            if effort:
+                args["reasoning_effort"] = effort
 
         if response_kwargs:
             args.update(response_kwargs)
