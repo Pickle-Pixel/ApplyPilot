@@ -12,11 +12,24 @@ from rich.table import Table
 
 from applypilot import __version__
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%H:%M:%S",
-)
+
+def _configure_logging() -> None:
+    """Set consistent logging output for CLI runs."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # Keep LiteLLM internals quiet by default; warnings/errors still surface.
+    for name in ("LiteLLM", "litellm"):
+        noisy = logging.getLogger(name)
+        noisy.handlers.clear()
+        noisy.setLevel(logging.WARNING)
+        noisy.propagate = True
+
+
+_configure_logging()
 
 app = typer.Typer(
     name="applypilot",

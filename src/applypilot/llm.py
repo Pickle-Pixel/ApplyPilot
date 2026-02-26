@@ -295,16 +295,20 @@ class LLMClient:
     ) -> str:
         """Send a completion request and return plain text content."""
         try:
-            from litellm import completion as litellm_completion
+            import litellm
         except ModuleNotFoundError as exc:
             raise RuntimeError(
                 "LiteLLM is required for AI stages but is not installed. "
                 "Install dependencies and re-run."
             ) from exc
 
+        # Suppress LiteLLM's verbose multiline info logs (e.g. completion() traces).
+        litellm.set_verbose = False
+        litellm.suppress_debug_info = True
+
         for attempt in range(_MAX_RETRIES):
             try:
-                response = litellm_completion(
+                response = litellm.completion(
                     **self._build_completion_args(
                         messages=messages,
                         temperature=temperature,
