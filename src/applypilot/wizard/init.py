@@ -4,7 +4,7 @@ Interactive flow that creates ~/.applypilot/ with:
   - resume.txt (and optionally resume.pdf)
   - profile.json
   - searches.yaml
-  - .env (LLM API key)
+  - .env (LLM API keys and runtime settings)
 """
 
 from __future__ import annotations
@@ -245,33 +245,51 @@ def _setup_ai_features() -> None:
         console.print("[dim]Discovery-only mode. You can configure AI later with [bold]applypilot init[/bold].[/dim]")
         return
 
-    console.print("Supported providers: [bold]Gemini[/bold] (recommended, free tier), OpenAI, local (Ollama/llama.cpp)")
-    provider = Prompt.ask(
-        "Provider",
-        choices=["gemini", "openai", "local"],
-        default="gemini",
+    console.print(
+        "Supported providers: [bold]Gemini[/bold] (recommended, free tier), "
+        "OpenAI, Claude, local (Ollama/llama.cpp)."
     )
+    console.print("[dim]Enter any credentials you want to save now. Leave blank to skip each field.[/dim]")
 
     env_lines = ["# ApplyPilot configuration", ""]
+    configured_sources: list[str] = []
 
-    if provider == "gemini":
-        api_key = Prompt.ask("Gemini API key (from aistudio.google.com)")
-        model = Prompt.ask("Model", default="gemini-2.0-flash")
-        env_lines.append(f"GEMINI_API_KEY={api_key}")
-        env_lines.append(f"LLM_MODEL={model}")
-    elif provider == "openai":
-        api_key = Prompt.ask("OpenAI API key")
-        model = Prompt.ask("Model", default="gpt-4o-mini")
-        env_lines.append(f"OPENAI_API_KEY={api_key}")
-        env_lines.append(f"LLM_MODEL={model}")
-    elif provider == "local":
-        url = Prompt.ask("Local LLM endpoint URL", default="http://localhost:8080/v1")
-        model = Prompt.ask("Model name", default="local-model")
-        env_lines.append(f"LLM_URL={url}")
+    gemini_key = Prompt.ask("Gemini API key (optional, from aistudio.google.com)", default="").strip()
+    if gemini_key:
+        env_lines.append(f"GEMINI_API_KEY={gemini_key}")
+        configured_sources.append("gemini")
+
+    openai_key = Prompt.ask("OpenAI API key (optional)", default="").strip()
+    if openai_key:
+        env_lines.append(f"OPENAI_API_KEY={openai_key}")
+        configured_sources.append("openai")
+
+    anthropic_key = Prompt.ask("Anthropic API key (optional)", default="").strip()
+    if anthropic_key:
+        env_lines.append(f"ANTHROPIC_API_KEY={anthropic_key}")
+        configured_sources.append("anthropic")
+
+    local_url = Prompt.ask("Local LLM endpoint URL (optional)", default="").strip()
+    if local_url:
+        env_lines.append(f"LLM_URL={local_url}")
+        configured_sources.append("local")
+
+    if not configured_sources:
+        console.print("[dim]No AI provider configured. You can add one later with [bold]applypilot init[/bold].[/dim]")
+        return
+
+    model = Prompt.ask("LLM model override (optional, leave blank to use provider defaults)", default="").strip()
+    if model:
         env_lines.append(f"LLM_MODEL={model}")
 
     env_lines.append("")
     ENV_PATH.write_text("\n".join(env_lines), encoding="utf-8")
+    if len(configured_sources) > 1:
+        configured = ", ".join(configured_sources)
+        console.print(
+            f"[yellow]Multiple LLM providers saved ({configured}). "
+            "Deterministic provider resolution is added in the next phase.[/yellow]"
+        )
     console.print(f"[green]AI configuration saved to {ENV_PATH}[/green]")
 
 
