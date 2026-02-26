@@ -15,7 +15,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 import os
-import time
 
 import litellm
 
@@ -38,7 +37,6 @@ _DEFAULT_MODEL_BY_PROVIDER = {
 
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
-_RATE_LIMIT_BASE_WAIT = 10
 
 _THINKING_LEVELS = {"none", "low", "medium", "high"}
 
@@ -171,39 +169,6 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
     )
 
 
-def _extract_status_code(exc: Exception) -> int | None:
-    status_code = getattr(exc, "status_code", None)
-    if isinstance(status_code, int):
-        return status_code
-    response = getattr(exc, "response", None)
-    if response is not None:
-        status_code = getattr(response, "status_code", None)
-        if isinstance(status_code, int):
-            return status_code
-    return None
-
-
-def _extract_retry_after(exc: Exception) -> float | None:
-    response = getattr(exc, "response", None)
-    if response is None:
-        return None
-    headers = getattr(response, "headers", {}) or {}
-    retry_after = headers.get("Retry-After") or headers.get("X-RateLimit-Reset-Requests")
-    if not retry_after:
-        return None
-    try:
-        return float(retry_after)
-    except (TypeError, ValueError):
-        return None
-
-
-def _is_timeout_error(exc: Exception) -> bool:
-    if isinstance(exc, TimeoutError):
-        return True
-    text = str(exc).lower()
-    return "timed out" in text or "timeout" in text
-
-
 def _extract_text_content(resp: object) -> str:
     output_text = getattr(resp, "output_text", None)
     if output_text is None and isinstance(resp, dict):
@@ -291,7 +256,7 @@ class LLMClient:
             "messages": messages,
             "max_output_tokens": max_output_tokens,
             "timeout": _TIMEOUT,
-            "num_retries": 0,  # ApplyPilot handles retries centrally below.
+            "num_retries": _MAX_RETRIES,  # Delegate retry handling to LiteLLM.
         }
         if temperature is not None:
             args["temperature"] = temperature
@@ -324,39 +289,19 @@ class LLMClient:
         if hasattr(litellm, 'suppress_debug_info'):
             litellm.suppress_debug_info = True
 
-        for attempt in range(_MAX_RETRIES):
-            try:
-                response = litellm.responses(
-                    **self._build_response_args(
-                        messages=messages,
-                        temperature=temperature,
-                        max_output_tokens=max_output_tokens,
-                        thinking_level=thinking_level,
-                        response_kwargs=response_kwargs,
-                    )
+        try:
+            response = litellm.responses(
+                **self._build_response_args(
+                    messages=messages,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    thinking_level=thinking_level,
+                    response_kwargs=response_kwargs,
                 )
-                return _extract_text_content(response)
-            except Exception as exc:  # pragma: no cover - provider SDK exception types vary by backend/version.
-                status_code = _extract_status_code(exc)
-                if status_code in (429, 503, 529) and attempt < _MAX_RETRIES - 1:
-                    wait = _extract_retry_after(exc) or min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
-                    log.warning(
-                        "LLM rate limited (HTTP %s). Waiting %ds before retry %d/%d.",
-                        status_code, wait, attempt + 1, _MAX_RETRIES,
-                    )
-                    time.sleep(wait)
-                    continue
-                if _is_timeout_error(exc) and attempt < _MAX_RETRIES - 1:
-                    wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
-                    log.warning(
-                        "LLM request timed out, retrying in %ds (attempt %d/%d)",
-                        wait, attempt + 1, _MAX_RETRIES,
-                    )
-                    time.sleep(wait)
-                    continue
-                raise RuntimeError(f"LLM request failed ({self.provider}/{self.model}): {exc}") from exc
-
-        raise RuntimeError("LLM request failed after all retries")
+            )
+            return _extract_text_content(response)
+        except Exception as exc:  # pragma: no cover - provider SDK exception types vary by backend/version.
+            raise RuntimeError(f"LLM request failed ({self.provider}/{self.model}): {exc}") from exc
 
     def ask(self, prompt: str, **kwargs) -> str:
         """Convenience: single user prompt -> assistant response."""
