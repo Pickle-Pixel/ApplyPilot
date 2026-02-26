@@ -4,15 +4,18 @@ Unified LLM client for ApplyPilot.
 Auto-detects provider from environment:
   GEMINI_API_KEY  -> Google Gemini (default: gemini-2.0-flash)
   OPENAI_API_KEY  -> OpenAI (default: gpt-4o-mini)
+  ANTHROPIC_API_KEY / CLAUDE_API_KEY -> Anthropic Claude (default: claude-3-5-haiku-latest)
   LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
 """
 
+from dataclasses import dataclass
 import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 
 import httpx
 
@@ -22,41 +25,118 @@ log = logging.getLogger(__name__)
 # Provider detection
 # ---------------------------------------------------------------------------
 
-def _detect_provider() -> tuple[str, str, str]:
-    """Return (base_url, model, api_key) based on environment variables.
+_OPENAI_BASE = "https://api.openai.com/v1"
+_ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+
+
+@dataclass(frozen=True)
+class LLMConfig:
+    """Normalized LLM configuration consumed by LLMClient."""
+    provider: str
+    base_url: str
+    model: str
+    api_key: str
+
+
+def _env_get(env: Mapping[str, str], key: str) -> str:
+    value = env.get(key, "")
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
+    """Resolve provider configuration from environment with deterministic precedence.
 
     Reads env at call time (not module import time) so that load_env() called
     in _bootstrap() is always visible here.
     """
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
-    local_url = os.environ.get("LLM_URL", "")
-    model_override = os.environ.get("LLM_MODEL", "")
+    env_map = env if env is not None else os.environ
 
-    if gemini_key and not local_url:
-        return (
-            "https://generativelanguage.googleapis.com/v1beta/openai",
-            model_override or "gemini-2.0-flash",
-            gemini_key,
+    model_override = _env_get(env_map, "LLM_MODEL")
+    local_url = _env_get(env_map, "LLM_URL")
+    gemini_key = _env_get(env_map, "GEMINI_API_KEY")
+    openai_key = _env_get(env_map, "OPENAI_API_KEY")
+    anthropic_key = _env_get(env_map, "ANTHROPIC_API_KEY") or _env_get(env_map, "CLAUDE_API_KEY")
+    llm_provider = _env_get(env_map, "LLM_PROVIDER").lower()
+
+    providers_present = {
+        "local": bool(local_url),
+        "gemini": bool(gemini_key),
+        "openai": bool(openai_key),
+        "anthropic": bool(anthropic_key),
+    }
+    precedence = ["local", "gemini", "openai", "anthropic"]
+    configured = [provider for provider in precedence if providers_present[provider]]
+
+    if not configured:
+        raise RuntimeError(
+            "No LLM provider configured. "
+            "Set one of LLM_URL, GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY."
         )
 
-    if openai_key and not local_url:
-        return (
-            "https://api.openai.com/v1",
-            model_override or "gpt-4o-mini",
-            openai_key,
-        )
+    chosen = ""
+    override_aliases = {
+        "local": "local",
+        "gemini": "gemini",
+        "openai": "openai",
+        "anthropic": "anthropic",
+        "claude": "anthropic",
+    }
 
-    if local_url:
-        return (
-            local_url.rstrip("/"),
-            model_override or "local-model",
-            os.environ.get("LLM_API_KEY", ""),
-        )
+    # Optional override only when multiple providers are configured.
+    if len(configured) > 1 and llm_provider:
+        overridden = override_aliases.get(llm_provider)
+        if overridden and overridden in configured:
+            chosen = overridden
+            log.warning(
+                "Multiple LLM providers configured (%s). Using '%s' via LLM_PROVIDER override.",
+                ", ".join(configured),
+                chosen,
+            )
+        else:
+            log.warning(
+                "Ignoring LLM_PROVIDER='%s' because it is not configured. "
+                "Using precedence: LLM_URL > GEMINI_API_KEY > OPENAI_API_KEY > ANTHROPIC_API_KEY.",
+                llm_provider,
+            )
 
-    raise RuntimeError(
-        "No LLM provider configured. "
-        "Set GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
+    if not chosen:
+        chosen = configured[0]
+        if len(configured) > 1:
+            log.warning(
+                "Multiple LLM providers configured (%s). Using '%s' based on precedence: "
+                "LLM_URL > GEMINI_API_KEY > OPENAI_API_KEY > ANTHROPIC_API_KEY.",
+                ", ".join(configured),
+                chosen,
+            )
+
+    if chosen == "local":
+        return LLMConfig(
+            provider="local",
+            base_url=local_url.rstrip("/"),
+            model=model_override or "local-model",
+            api_key=_env_get(env_map, "LLM_API_KEY"),
+        )
+    if chosen == "gemini":
+        return LLMConfig(
+            provider="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model=model_override or "gemini-2.0-flash",
+            api_key=gemini_key,
+        )
+    if chosen == "openai":
+        return LLMConfig(
+            provider="openai",
+            base_url=_OPENAI_BASE,
+            model=model_override or "gpt-4o-mini",
+            api_key=openai_key,
+        )
+    return LLMConfig(
+        provider="anthropic",
+        base_url=_ANTHROPIC_BASE,
+        model=model_override or "claude-3-5-haiku-latest",
+        api_key=anthropic_key,
     )
 
 
@@ -107,14 +187,16 @@ class LLMClient:
     for the lifetime of the process.
     """
 
-    def __init__(self, base_url: str, model: str, api_key: str) -> None:
+    def __init__(self, provider: str, base_url: str, model: str, api_key: str) -> None:
+        self.provider = provider
         self.base_url = base_url
         self.model = model
         self.api_key = api_key
         self._client = httpx.Client(timeout=_TIMEOUT)
         # True once we've confirmed the native Gemini API works for this model
         self._use_native_gemini: bool = False
-        self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
+        self._is_gemini: bool = provider == "gemini"
+        self._is_anthropic: bool = provider == "anthropic"
 
     @staticmethod
     def _normalize_thinking_level(thinking_level: str) -> str:
@@ -220,6 +302,58 @@ class LLMClient:
 
         return self._handle_compat_response(resp)
 
+    def _chat_anthropic(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Call Anthropic Messages API."""
+        system_chunks: list[str] = []
+        anth_messages: list[dict] = []
+
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = str(msg.get("content", ""))
+            if role == "system":
+                system_chunks.append(content)
+                continue
+            if role not in ("user", "assistant"):
+                role = "user"
+            anth_messages.append({"role": role, "content": content})
+
+        payload: dict = {
+            "model": self.model,
+            "messages": anth_messages or [{"role": "user", "content": ""}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if system_chunks:
+            payload["system"] = "\n\n".join(system_chunks)
+
+        resp = self._client.post(
+            f"{self.base_url}/messages",
+            json=payload,
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        text_blocks = [
+            block.get("text", "")
+            for block in data.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        text = "\n".join(part for part in text_blocks if part).strip()
+        if text:
+            return text
+
+        raise RuntimeError("Anthropic response did not include text content.")
+
     @staticmethod
     def _handle_compat_response(resp: httpx.Response) -> str:
         resp.raise_for_status()
@@ -252,6 +386,9 @@ class LLMClient:
 
         for attempt in range(_MAX_RETRIES):
             try:
+                if self._is_anthropic:
+                    return self._chat_anthropic(messages, temperature, max_tokens)
+
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
                     return self._chat_native_gemini(messages, temperature, max_tokens, thinking_level)
@@ -279,7 +416,7 @@ class LLMClient:
 
             except httpx.HTTPStatusError as exc:
                 resp = exc.response
-                if resp.status_code in (429, 503) and attempt < _MAX_RETRIES - 1:
+                if resp.status_code in (429, 503, 529) and attempt < _MAX_RETRIES - 1:
                     # Respect Retry-After header if provided (Gemini sends this).
                     retry_after = (
                         resp.headers.get("Retry-After")
@@ -342,7 +479,12 @@ def get_client() -> LLMClient:
     """Return (or create) the module-level LLMClient singleton."""
     global _instance
     if _instance is None:
-        base_url, model, api_key = _detect_provider()
-        log.info("LLM provider: %s  model: %s", base_url, model)
-        _instance = LLMClient(base_url, model, api_key)
+        config = resolve_llm_config()
+        log.info("LLM provider: %s  model: %s", config.provider, config.model)
+        _instance = LLMClient(
+            provider=config.provider,
+            base_url=config.base_url,
+            model=config.model,
+            api_key=config.api_key,
+        )
     return _instance

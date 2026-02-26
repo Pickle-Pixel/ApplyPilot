@@ -288,7 +288,7 @@ def _setup_ai_features() -> None:
         configured = ", ".join(configured_sources)
         console.print(
             f"[yellow]Multiple LLM providers saved ({configured}). "
-            "Deterministic provider resolution is added in the next phase.[/yellow]"
+            "Runtime selects one deterministically by precedence.[/yellow]"
         )
     console.print(f"[green]AI configuration saved to {ENV_PATH}[/green]")
 

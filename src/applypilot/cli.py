@@ -379,21 +379,24 @@ def doctor() -> None:
                         "pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex"))
 
     # --- Tier 2 checks ---
-    import os
-    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
-    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_local = bool(os.environ.get("LLM_URL"))
-    if has_gemini:
-        model = os.environ.get("LLM_MODEL", "gemini-2.0-flash")
-        results.append(("LLM API key", ok_mark, f"Gemini ({model})"))
-    elif has_openai:
-        model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-        results.append(("LLM API key", ok_mark, f"OpenAI ({model})"))
-    elif has_local:
-        results.append(("LLM API key", ok_mark, f"Local: {os.environ.get('LLM_URL')}"))
-    else:
-        results.append(("LLM API key", fail_mark,
-                        "Set GEMINI_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
+    from applypilot.llm import resolve_llm_config
+
+    try:
+        llm_cfg = resolve_llm_config()
+        if llm_cfg.provider == "local":
+            results.append(("LLM API key", ok_mark, f"Local: {llm_cfg.base_url} ({llm_cfg.model})"))
+        else:
+            label = {
+                "gemini": "Gemini",
+                "openai": "OpenAI",
+                "anthropic": "Anthropic",
+            }.get(llm_cfg.provider, llm_cfg.provider)
+            results.append(("LLM API key", ok_mark, f"{label} ({llm_cfg.model})"))
+    except RuntimeError:
+        results.append(
+            ("LLM API key", fail_mark,
+             "Set GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or LLM_URL in ~/.applypilot/.env")
+        )
 
     # --- Tier 3 checks ---
     # Claude Code CLI
