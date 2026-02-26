@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 _OPENAI_BASE = "https://api.openai.com/v1"
 _ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+_PROVIDER_API_ENV_KEY = {
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
 _DEFAULT_MODEL_BY_PROVIDER = {
     "local": "local-model",
     "gemini": "gemini-2.0-flash",
@@ -242,13 +247,20 @@ class LLMClient:
         self.config = config
         self.provider = config.provider
         self.model = config.model
+        self._apply_provider_env()
+
+    def _apply_provider_env(self) -> None:
+        env_key = _PROVIDER_API_ENV_KEY.get(self.provider)
+        if env_key and self.config.api_key:
+            os.environ[env_key] = self.config.api_key
 
     def _build_completion_args(
         self,
         messages: list[dict],
         temperature: float,
         max_tokens: int,
-        thinking_level: str,
+        thinking_level: str | None,
+        completion_kwargs: Mapping[str, object] | None,
     ) -> dict:
         args: dict = {
             "model": _provider_model(self.provider, self.model),
@@ -264,19 +276,12 @@ class LLMClient:
             args["api_base"] = self.config.base_url
             if self.config.api_key:
                 args["api_key"] = self.config.api_key
-            return args
-
-        if self.provider == "gemini":
+        elif self.provider == "gemini" and thinking_level is not None:
             level = _normalize_thinking_level(thinking_level)
             args["reasoning_effort"] = _GEMINI_COMPAT_REASONING_EFFORT[level]
-            os.environ["GEMINI_API_KEY"] = self.config.api_key
-        elif self.provider == "openai":
-            os.environ["OPENAI_API_KEY"] = self.config.api_key
-        elif self.provider == "anthropic":
-            os.environ["ANTHROPIC_API_KEY"] = self.config.api_key
 
-        if self.config.api_key:
-            args["api_key"] = self.config.api_key
+        if completion_kwargs:
+            args.update(completion_kwargs)
         return args
 
     def chat(
@@ -284,7 +289,8 @@ class LLMClient:
         messages: list[dict],
         temperature: float = 0.0,
         max_tokens: int = 10000,
-        thinking_level: str = "low",
+        thinking_level: str | None = None,
+        completion_kwargs: Mapping[str, object] | None = None,
     ) -> str:
         """Send a completion request and return plain text content."""
         try:
@@ -295,13 +301,6 @@ class LLMClient:
                 "Install dependencies and re-run."
             ) from exc
 
-        # Qwen3 optimization: prepend /no_think to skip chain-of-thought
-        # reasoning, saving tokens on structured extraction tasks.
-        if "qwen" in self.model.lower() and messages:
-            first = messages[0]
-            if first.get("role") == "user" and not first["content"].startswith("/no_think"):
-                messages = [{"role": first["role"], "content": f"/no_think\n{first['content']}"}] + messages[1:]
-
         for attempt in range(_MAX_RETRIES):
             try:
                 response = litellm_completion(
@@ -310,6 +309,7 @@ class LLMClient:
                         temperature=temperature,
                         max_tokens=max_tokens,
                         thinking_level=thinking_level,
+                        completion_kwargs=completion_kwargs,
                     )
                 )
                 return _extract_text_content(response)
@@ -331,7 +331,7 @@ class LLMClient:
                     )
                     time.sleep(wait)
                     continue
-                raise RuntimeError(f"LLM request failed: {exc}") from exc
+                raise RuntimeError(f"LLM request failed ({self.provider}/{self.model}): {exc}") from exc
 
         raise RuntimeError("LLM request failed after all retries")
 
@@ -351,6 +351,9 @@ def get_client() -> LLMClient:
     """Return (or create) the module-level LLMClient singleton."""
     global _instance
     if _instance is None:
+        from applypilot.config import load_env
+
+        load_env()
         config = resolve_llm_config()
         log.info("LLM provider: %s  model: %s", config.provider, config.model)
         _instance = LLMClient(config)
