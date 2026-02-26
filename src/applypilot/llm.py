@@ -93,7 +93,7 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
     local_url = _env_get(env_map, "LLM_URL")
     gemini_key = _env_get(env_map, "GEMINI_API_KEY")
     openai_key = _env_get(env_map, "OPENAI_API_KEY")
-    anthropic_key = _env_get(env_map, "ANTHROPIC_API_KEY")
+    anthropic_key = _env_get(env_map, "ANTHROPIC_API_KEY") or _env_get(env_map, "CLAUDE_API_KEY")
     llm_provider = _env_get(env_map, "LLM_PROVIDER").lower()
 
     providers_present = {
