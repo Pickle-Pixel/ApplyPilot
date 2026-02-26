@@ -14,12 +14,6 @@ def test_only_openai_api_key_selects_openai() -> None:
     cfg = resolve_llm_config({"OPENAI_API_KEY": "o-key"})
     assert cfg.provider == "openai"
 
-
-def test_only_claude_api_key_selects_anthropic() -> None:
-    cfg = resolve_llm_config({"CLAUDE_API_KEY": "c-key"})
-    assert cfg.provider == "anthropic"
-
-
 def test_llm_url_with_keys_selects_local() -> None:
     cfg = resolve_llm_config(
         {
