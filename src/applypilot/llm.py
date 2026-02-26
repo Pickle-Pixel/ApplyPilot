@@ -9,6 +9,7 @@ Auto-detects provider from environment:
 LLM_MODEL env var overrides the model name for any provider.
 """
 
+import json
 import logging
 import os
 import time
@@ -73,6 +74,28 @@ _RATE_LIMIT_BASE_WAIT = 10
 
 _GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 _GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_GEMINI_THINKING_LEVELS = {"none", "minimal", "low", "medium", "high"}
+_GEMINI_COMPAT_REASONING_EFFORT = {
+    "none": "none",
+    "minimal": "low",
+    "low": "low",
+    "medium": "high",
+    "high": "high",
+}
+_GEMINI_25_THINKING_BUDGET = {
+    "none": 0,
+    "minimal": 1024,
+    "low": 1024,
+    "medium": 8192,
+    "high": 24576,
+}
+_GEMINI_NATIVE_THINKING_LEVEL = {
+    "none": "low",
+    "minimal": "low",
+    "low": "low",
+    "medium": "high",
+    "high": "high",
+}
 
 
 class LLMClient:
@@ -93,6 +116,20 @@ class LLMClient:
         self._use_native_gemini: bool = False
         self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
 
+    @staticmethod
+    def _normalize_thinking_level(thinking_level: str) -> str:
+        level = (thinking_level or "low").strip().lower()
+        if level not in _GEMINI_THINKING_LEVELS:
+            log.warning("Invalid thinking_level '%s', defaulting to 'low'.", thinking_level)
+            return "low"
+        return level
+
+    def _gemini_native_thinking_config(self, thinking_level: str) -> dict:
+        level = self._normalize_thinking_level(thinking_level)
+        if "2.5" in self.model:
+            return {"thinkingBudget": _GEMINI_25_THINKING_BUDGET[level]}
+        return {"thinkingLevel": _GEMINI_NATIVE_THINKING_LEVEL[level]}
+
     # -- Native Gemini API --------------------------------------------------
 
     def _chat_native_gemini(
@@ -100,6 +137,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        thinking_level: str,
     ) -> str:
         """Call the native Gemini generateContent API.
 
@@ -128,6 +166,7 @@ class LLMClient:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_tokens,
+                "thinkingConfig": self._gemini_native_thinking_config(thinking_level),
             },
         }
         if system_parts:
@@ -151,6 +190,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        thinking_level: str,
     ) -> str:
         """Call the OpenAI-compatible endpoint."""
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -163,6 +203,9 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if self._is_gemini:
+            level = self._normalize_thinking_level(thinking_level)
+            payload["reasoning_effort"] = _GEMINI_COMPAT_REASONING_EFFORT[level]
 
         resp = self._client.post(
             f"{self.base_url}/chat/completions",
@@ -181,6 +224,10 @@ class LLMClient:
     def _handle_compat_response(resp: httpx.Response) -> str:
         resp.raise_for_status()
         data = resp.json()
+        if resp.status_code == 200:
+            # Intentionally log the full JSON payload for every successful
+            # chat/completions response to aid truncation/debug analysis.
+            log.info("LLM compat full response JSON:\n%s", json.dumps(data, indent=2, ensure_ascii=False))
         return data["choices"][0]["message"]["content"]
 
     # -- public API ---------------------------------------------------------
@@ -189,9 +236,13 @@ class LLMClient:
         self,
         messages: list[dict],
         temperature: float = 0.0,
-        max_tokens: int = 4096,
+        max_tokens: int = 10000,
+        thinking_level: str = "low",
     ) -> str:
-        """Send a chat completion request and return the assistant message text."""
+        """Send a chat completion request and return the assistant message text.
+
+        thinking_level applies to Gemini requests and defaults to "low".
+        """
         # Qwen3 optimization: prepend /no_think to skip chain-of-thought
         # reasoning, saving tokens on structured extraction tasks.
         if "qwen" in self.model.lower() and messages:
@@ -203,9 +254,9 @@ class LLMClient:
             try:
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
-                    return self._chat_native_gemini(messages, temperature, max_tokens)
+                    return self._chat_native_gemini(messages, temperature, max_tokens, thinking_level)
 
-                return self._chat_compat(messages, temperature, max_tokens)
+                return self._chat_compat(messages, temperature, max_tokens, thinking_level)
 
             except _GeminiCompatForbidden as exc:
                 # Model not available on OpenAI-compat layer — switch to native.
@@ -218,7 +269,7 @@ class LLMClient:
                 self._use_native_gemini = True
                 # Retry immediately with native — don't count as a rate-limit wait
                 try:
-                    return self._chat_native_gemini(messages, temperature, max_tokens)
+                    return self._chat_native_gemini(messages, temperature, max_tokens, thinking_level)
                 except httpx.HTTPStatusError as native_exc:
                     raise RuntimeError(
                         f"Both Gemini endpoints failed. Compat: 403 Forbidden. "
