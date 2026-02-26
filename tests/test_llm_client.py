@@ -16,7 +16,7 @@ def test_client_init_does_not_mutate_provider_env(monkeypatch) -> None:
     assert "OPENAI_API_KEY" not in os.environ
 
 
-def test_build_completion_args_passes_reasoning_effort_through_unchanged() -> None:
+def test_build_completion_args_does_not_include_reasoning_effort_by_default() -> None:
     client = LLMClient(
         LLMConfig(
             provider="openai",
@@ -29,10 +29,9 @@ def test_build_completion_args_passes_reasoning_effort_through_unchanged() -> No
         messages=[{"role": "user", "content": "hello"}],
         temperature=None,
         max_output_tokens=128,
-        thinking_level="minimal",
         response_kwargs=None,
     )
-    assert args["reasoning_effort"] == "minimal"
+    assert "reasoning_effort" not in args
     assert args["max_tokens"] == 128
 
 
@@ -49,7 +48,6 @@ def test_build_completion_args_includes_api_key_for_remote_provider() -> None:
         messages=[{"role": "user", "content": "hello"}],
         temperature=None,
         max_output_tokens=64,
-        thinking_level=None,
         response_kwargs=None,
     )
     assert args["api_key"] == "g-key"
@@ -68,7 +66,6 @@ def test_build_completion_args_sets_local_api_base_and_api_key() -> None:
         messages=[{"role": "user", "content": "hello"}],
         temperature=None,
         max_output_tokens=64,
-        thinking_level=None,
         response_kwargs=None,
     )
     assert args["api_base"] == "http://127.0.0.1:8080/v1"

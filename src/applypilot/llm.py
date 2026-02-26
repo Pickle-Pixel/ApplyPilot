@@ -191,7 +191,6 @@ class LLMClient:
         messages: list[dict],
         temperature: float | None,
         max_output_tokens: int,
-        thinking_level: str | None,
         response_kwargs: Mapping[str, object] | None,
     ) -> dict:
         args: dict = {
@@ -210,10 +209,6 @@ class LLMClient:
         if self.provider == "local":
             args["model"] = self.model
             args["api_base"] = self.config.base_url
-        if thinking_level:
-            effort = thinking_level.strip()
-            if effort:
-                args["reasoning_effort"] = effort
 
         if response_kwargs:
             args.update(response_kwargs)
@@ -224,7 +219,6 @@ class LLMClient:
         messages: list[dict],
         temperature: float | None = None,
         max_output_tokens: int = 10000,
-        thinking_level: str | None = None,
         response_kwargs: Mapping[str, object] | None = None,
     ) -> str:
         """Send a completion request and return plain text content."""
@@ -240,7 +234,6 @@ class LLMClient:
                     messages=messages,
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
-                    thinking_level=thinking_level,
                     response_kwargs=response_kwargs,
                 )
             )
