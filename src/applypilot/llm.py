@@ -22,6 +22,12 @@ log = logging.getLogger(__name__)
 _OPENAI_BASE = "https://api.openai.com/v1"
 _ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+_DEFAULT_MODEL_BY_PROVIDER = {
+    "local": "local-model",
+    "gemini": "gemini-2.0-flash",
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-3-5-haiku-latest",
+}
 
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
@@ -68,6 +74,10 @@ def _provider_model(provider: str, model: str) -> str:
     if model.startswith(f"{provider}/"):
         return model
     return f"{provider}/{model}"
+
+
+def _default_model(provider: str) -> str:
+    return _DEFAULT_MODEL_BY_PROVIDER[provider]
 
 
 def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
@@ -130,32 +140,33 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
                 ", ".join(configured),
                 chosen,
             )
+    model = model_override or _default_model(chosen)
 
     if chosen == "local":
         return LLMConfig(
             provider="local",
             base_url=local_url.rstrip("/"),
-            model=model_override or "local-model",
+            model=model,
             api_key=_env_get(env_map, "LLM_API_KEY"),
         )
     if chosen == "gemini":
         return LLMConfig(
             provider="gemini",
             base_url=_GEMINI_BASE,
-            model=model_override or "gemini-2.0-flash",
+            model=model,
             api_key=gemini_key,
         )
     if chosen == "openai":
         return LLMConfig(
             provider="openai",
             base_url=_OPENAI_BASE,
-            model=model_override or "gpt-4o-mini",
+            model=model,
             api_key=openai_key,
         )
     return LLMConfig(
         provider="anthropic",
         base_url=_ANTHROPIC_BASE,
-        model=model_override or "claude-3-5-haiku-latest",
+        model=model,
         api_key=anthropic_key,
     )
 
