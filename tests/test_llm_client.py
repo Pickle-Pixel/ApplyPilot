@@ -35,6 +35,24 @@ def test_build_completion_args_does_not_include_reasoning_effort_by_default() ->
     assert args["max_tokens"] == 128
 
 
+def test_build_completion_args_uses_litellm_native_gemini_model_prefix() -> None:
+    client = LLMClient(
+        LLMConfig(
+            provider="gemini",
+            base_url="",
+            model="gemini-2.0-flash",
+            api_key="g-key",
+        )
+    )
+    args = client._build_completion_args(
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=None,
+        max_output_tokens=64,
+        response_kwargs=None,
+    )
+    assert args["model"] == "gemini/gemini-2.0-flash"
+
+
 def test_build_completion_args_includes_api_key_for_remote_provider() -> None:
     client = LLMClient(
         LLMConfig(

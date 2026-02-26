@@ -57,3 +57,6 @@ line-length = 120
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "smoke: live-provider smoke tests that require external API keys",
+]

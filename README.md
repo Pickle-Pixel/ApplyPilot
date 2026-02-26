@@ -101,6 +101,12 @@ ApplyPilot uses Gemini through LiteLLM's native Gemini provider path, and Gemini
 |-----------|-------------|
 | CapSolver API key | Solves CAPTCHAs during auto-apply (hCaptcha, reCAPTCHA, Turnstile, FunCaptcha). Without it, CAPTCHA-blocked applications just fail gracefully |
 
+### Gemini Smoke Check (optional)
+
+```bash
+GEMINI_API_KEY=your_key_here pytest -m smoke -q tests/test_gemini_smoke.py
+```
+
 > **Note:** python-jobspy is installed separately with `--no-deps` because it pins an exact numpy version in its metadata that conflicts with pip's resolver. It works fine with modern numpy at runtime.
 
 ---
