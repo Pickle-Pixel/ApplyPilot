@@ -5,13 +5,12 @@ job description. All personal data is loaded at runtime from the user's
 profile and resume file.
 """
 
-import json
 import logging
 import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import RESUME_PATH, load_profile
+from applypilot.config import RESUME_PATH
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 

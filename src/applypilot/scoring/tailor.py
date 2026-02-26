@@ -14,17 +14,14 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
     BANNED_WORDS,
-    FABRICATION_WATCHLIST,
     sanitize_text,
     validate_json_fields,
-    validate_tailored_resume,
 )
 
 log = logging.getLogger(__name__)

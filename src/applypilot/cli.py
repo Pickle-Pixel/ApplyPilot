@@ -212,7 +212,7 @@ def apply(
             raise typer.Exit(code=1)
 
     if gen:
-        from applypilot.apply.launcher import gen_prompt, BASE_CDP_PORT
+        from applypilot.apply.launcher import gen_prompt
         target = url or ""
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
@@ -223,7 +223,7 @@ def apply(
             raise typer.Exit(code=1)
         mcp_path = _profile_path.parent / ".mcp-apply-0.json"
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
-        console.print(f"\n[bold]Run manually:[/bold]")
+        console.print("\n[bold]Run manually:[/bold]")
         console.print(
             f"  claude --model {model} -p "
             f"--mcp-config {mcp_path} "
@@ -339,7 +339,7 @@ def doctor() -> None:
     import shutil
     from applypilot.config import (
         load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
+        SEARCH_CONFIG_PATH, get_chrome_path,
     )
 
     load_env()
