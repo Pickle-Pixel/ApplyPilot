@@ -38,14 +38,7 @@ _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
 _RATE_LIMIT_BASE_WAIT = 10
 
-_GEMINI_THINKING_LEVELS = {"none", "minimal", "low", "medium", "high"}
-_GEMINI_COMPAT_REASONING_EFFORT = {
-    "none": "none",
-    "minimal": "low",
-    "low": "low",
-    "medium": "high",
-    "high": "high",
-}
+_THINKING_LEVELS = {"none", "low", "medium", "high"}
 
 
 @dataclass(frozen=True)
@@ -67,7 +60,7 @@ def _env_get(env: Mapping[str, str], key: str) -> str:
 
 def _normalize_thinking_level(thinking_level: str) -> str:
     level = (thinking_level or "low").strip().lower()
-    if level not in _GEMINI_THINKING_LEVELS:
+    if level not in _THINKING_LEVELS:
         log.warning("Invalid thinking_level '%s', defaulting to 'low'.", thinking_level)
         return "low"
     return level
@@ -210,6 +203,35 @@ def _is_timeout_error(exc: Exception) -> bool:
 
 
 def _extract_text_content(resp: object) -> str:
+    output_text = getattr(resp, "output_text", None)
+    if output_text is None and isinstance(resp, dict):
+        output_text = resp.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    output = getattr(resp, "output", None)
+    if output is None and isinstance(resp, dict):
+        output = resp.get("output")
+    if isinstance(output, list):
+        chunks: list[str] = []
+        for item in output:
+            if isinstance(item, dict):
+                content = item.get("content")
+            else:
+                content = getattr(item, "content", None)
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                else:
+                    text = getattr(part, "text", None)
+                if isinstance(text, str):
+                    chunks.append(text)
+        text = "".join(chunks).strip()
+        if text:
+            return text
+
     choices = getattr(resp, "choices", None)
     if choices is None and isinstance(resp, dict):
         choices = resp.get("choices", [])
@@ -241,7 +263,7 @@ def _extract_text_content(resp: object) -> str:
 
 
 class LLMClient:
-    """Thin wrapper around LiteLLM completion()."""
+    """Thin wrapper around LiteLLM responses()."""
 
     def __init__(self, config: LLMConfig) -> None:
         self.config = config
@@ -254,18 +276,18 @@ class LLMClient:
         if env_key and self.config.api_key:
             os.environ[env_key] = self.config.api_key
 
-    def _build_completion_args(
+    def _build_response_args(
         self,
         messages: list[dict],
         temperature: float | None,
         max_tokens: int,
         thinking_level: str | None,
-        completion_kwargs: Mapping[str, object] | None,
+        response_kwargs: Mapping[str, object] | None,
     ) -> dict:
         args: dict = {
             "model": _provider_model(self.provider, self.model),
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_output_tokens": max_tokens,
             "timeout": _TIMEOUT,
             "num_retries": 0,  # ApplyPilot handles retries centrally below.
         }
@@ -277,12 +299,12 @@ class LLMClient:
             args["api_base"] = self.config.base_url
             if self.config.api_key:
                 args["api_key"] = self.config.api_key
-        elif self.provider == "gemini" and thinking_level is not None:
+        if thinking_level is not None:
             level = _normalize_thinking_level(thinking_level)
-            args["reasoning_effort"] = _GEMINI_COMPAT_REASONING_EFFORT[level]
+            args["reasoning_effort"] = level
 
-        if completion_kwargs:
-            args.update(completion_kwargs)
+        if response_kwargs:
+            args.update(response_kwargs)
         return args
 
     def chat(
@@ -291,9 +313,9 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int = 10000,
         thinking_level: str | None = None,
-        completion_kwargs: Mapping[str, object] | None = None,
+        response_kwargs: Mapping[str, object] | None = None,
     ) -> str:
-        """Send a completion request and return plain text content."""
+        """Send a responses request and return plain text content."""
         try:
             import litellm
         except ModuleNotFoundError as exc:
@@ -302,19 +324,19 @@ class LLMClient:
                 "Install dependencies and re-run."
             ) from exc
 
-        # Suppress LiteLLM's verbose multiline info logs (e.g. completion() traces).
+        # Suppress LiteLLM's verbose multiline info logs (e.g. request traces).
         litellm.set_verbose = False
         litellm.suppress_debug_info = True
 
         for attempt in range(_MAX_RETRIES):
             try:
-                response = litellm.completion(
-                    **self._build_completion_args(
+                response = litellm.responses(
+                    **self._build_response_args(
                         messages=messages,
                         temperature=temperature,
                         max_tokens=max_tokens,
                         thinking_level=thinking_level,
-                        completion_kwargs=completion_kwargs,
+                        response_kwargs=response_kwargs,
                     )
                 )
                 return _extract_text_content(response)
@@ -345,7 +367,7 @@ class LLMClient:
         return self.chat([{"role": "user", "content": prompt}], **kwargs)
 
     def close(self) -> None:
-        """No-op. LiteLLM completion() is stateless per call."""
+        """No-op. LiteLLM responses() is stateless per call."""
         return None
 
 
