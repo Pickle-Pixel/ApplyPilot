@@ -17,6 +17,8 @@ import logging
 import os
 import time
 
+import litellm
+
 log = logging.getLogger(__name__)
 
 _OPENAI_BASE = "https://api.openai.com/v1"
@@ -280,14 +282,14 @@ class LLMClient:
         self,
         messages: list[dict],
         temperature: float | None,
-        max_tokens: int,
+        max_output_tokens: int,
         thinking_level: str | None,
         response_kwargs: Mapping[str, object] | None,
     ) -> dict:
         args: dict = {
             "model": _provider_model(self.provider, self.model),
             "messages": messages,
-            "max_output_tokens": max_tokens,
+            "max_output_tokens": max_output_tokens,
             "timeout": _TIMEOUT,
             "num_retries": 0,  # ApplyPilot handles retries centrally below.
         }
@@ -311,22 +313,16 @@ class LLMClient:
         self,
         messages: list[dict],
         temperature: float | None = None,
-        max_tokens: int = 10000,
+        max_output_tokens: int = 10000,
         thinking_level: str | None = None,
         response_kwargs: Mapping[str, object] | None = None,
     ) -> str:
         """Send a responses request and return plain text content."""
-        try:
-            import litellm
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "LiteLLM is required for AI stages but is not installed. "
-                "Install dependencies and re-run."
-            ) from exc
-
         # Suppress LiteLLM's verbose multiline info logs (e.g. request traces).
-        litellm.set_verbose = False
-        litellm.suppress_debug_info = True
+        if hasattr(litellm, 'set_verbose'):
+            litellm.set_verbose(False)
+        if hasattr(litellm, 'suppress_debug_info'):
+            litellm.suppress_debug_info = True
 
         for attempt in range(_MAX_RETRIES):
             try:
@@ -334,7 +330,7 @@ class LLMClient:
                     **self._build_response_args(
                         messages=messages,
                         temperature=temperature,
-                        max_tokens=max_tokens,
+                        max_output_tokens=max_output_tokens,
                         thinking_level=thinking_level,
                         response_kwargs=response_kwargs,
                     )

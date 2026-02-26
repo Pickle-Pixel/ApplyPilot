@@ -323,7 +323,7 @@ def judge_tailored_resume(
     ]
 
     client = get_client()
-    response = client.chat(messages, max_tokens=512)
+    response = client.chat(messages, max_output_tokens=512)
 
     passed = "VERDICT: PASS" in response.upper()
     issues = "none"
@@ -397,7 +397,7 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        raw = client.chat(messages, max_tokens=2048)
+        raw = client.chat(messages, max_output_tokens=2048)
 
         # Parse JSON from response
         try:

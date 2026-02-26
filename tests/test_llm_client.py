@@ -28,7 +28,7 @@ def test_build_response_args_applies_reasoning_effort_for_openai() -> None:
     args = client._build_response_args(
         messages=[{"role": "user", "content": "hello"}],
         temperature=None,
-        max_tokens=128,
+        max_output_tokens=128,
         thinking_level="medium",
         response_kwargs=None,
     )
