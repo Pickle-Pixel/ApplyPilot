@@ -16,7 +16,7 @@ def test_normalize_thinking_level_defaults_invalid_value_to_low() -> None:
     assert _normalize_thinking_level("max") == "low"
 
 
-def test_build_response_args_applies_reasoning_effort_for_openai() -> None:
+def test_build_completion_args_applies_reasoning_effort_for_openai() -> None:
     client = LLMClient(
         LLMConfig(
             provider="openai",
@@ -25,7 +25,7 @@ def test_build_response_args_applies_reasoning_effort_for_openai() -> None:
             api_key="test-key",
         )
     )
-    args = client._build_response_args(
+    args = client._build_completion_args(
         messages=[{"role": "user", "content": "hello"}],
         temperature=None,
         max_output_tokens=128,
@@ -33,3 +33,4 @@ def test_build_response_args_applies_reasoning_effort_for_openai() -> None:
         response_kwargs=None,
     )
     assert args["reasoning_effort"] == "medium"
+    assert args["max_tokens"] == 128

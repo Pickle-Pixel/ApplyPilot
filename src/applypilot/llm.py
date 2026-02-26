@@ -193,68 +193,8 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
     )
 
 
-def _extract_text_content(resp: object) -> str:
-    output_text = getattr(resp, "output_text", None)
-    if output_text is None and isinstance(resp, dict):
-        output_text = resp.get("output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
-
-    output = getattr(resp, "output", None)
-    if output is None and isinstance(resp, dict):
-        output = resp.get("output")
-    if isinstance(output, list):
-        chunks: list[str] = []
-        for item in output:
-            if isinstance(item, dict):
-                content = item.get("content")
-            else:
-                content = getattr(item, "content", None)
-            if not isinstance(content, list):
-                continue
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                else:
-                    text = getattr(part, "text", None)
-                if isinstance(text, str):
-                    chunks.append(text)
-        text = "".join(chunks).strip()
-        if text:
-            return text
-
-    choices = getattr(resp, "choices", None)
-    if choices is None and isinstance(resp, dict):
-        choices = resp.get("choices", [])
-    if not choices:
-        raise RuntimeError("LLM response contained no choices.")
-
-    first = choices[0]
-    if isinstance(first, dict):
-        message = first.get("message", {})
-    else:
-        message = getattr(first, "message", {})
-
-    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, str):
-                chunks.append(part)
-            elif isinstance(part, dict):
-                text = part.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-        text = "".join(chunks).strip()
-        if text:
-            return text
-    raise RuntimeError("LLM response contained no text content.")
-
-
 class LLMClient:
-    """Thin wrapper around LiteLLM responses()."""
+    """Thin wrapper around LiteLLM completion()."""
 
     def __init__(self, config: LLMConfig) -> None:
         self.config = config
@@ -267,7 +207,7 @@ class LLMClient:
         if env_key and self.config.api_key:
             os.environ[env_key] = self.config.api_key
 
-    def _build_response_args(
+    def _build_completion_args(
         self,
         messages: list[dict],
         temperature: float | None,
@@ -278,7 +218,7 @@ class LLMClient:
         args: dict = {
             "model": _provider_model(self.provider, self.model),
             "messages": messages,
-            "max_output_tokens": max_output_tokens,
+            "max_tokens": max_output_tokens,
             "timeout": _TIMEOUT,
             "num_retries": _MAX_RETRIES,  # Delegate retry handling to LiteLLM.
         }
@@ -306,7 +246,7 @@ class LLMClient:
         thinking_level: str | None = None,
         response_kwargs: Mapping[str, object] | None = None,
     ) -> str:
-        """Send a responses request and return plain text content."""
+        """Send a completion request and return plain text content."""
         # Suppress LiteLLM's verbose multiline info logs (e.g. request traces).
         if hasattr(litellm, 'set_verbose'):
             litellm.set_verbose(False)
@@ -314,8 +254,8 @@ class LLMClient:
             litellm.suppress_debug_info = True
 
         try:
-            response = litellm.responses(
-                **self._build_response_args(
+            response = litellm.completion(
+                **self._build_completion_args(
                     messages=messages,
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
@@ -323,7 +263,26 @@ class LLMClient:
                     response_kwargs=response_kwargs,
                 )
             )
-            return _extract_text_content(response)
+
+            choices = getattr(response, "choices", None)
+            if not choices:
+                raise RuntimeError("LLM response contained no choices.")
+            content = choices[0].message.content
+
+            if isinstance(content, str):
+                text = content.strip()
+            elif isinstance(content, list):
+                text = "".join(
+                    part if isinstance(part, str) else part.get("text", "")
+                    for part in content
+                    if isinstance(part, (str, dict))
+                ).strip()
+            else:
+                text = ""
+
+            if not text:
+                raise RuntimeError("LLM response contained no text content.")
+            return text
         except Exception as exc:  # pragma: no cover - provider SDK exception types vary by backend/version.
             raise RuntimeError(f"LLM request failed ({self.provider}/{self.model}): {exc}") from exc
 
@@ -332,7 +291,7 @@ class LLMClient:
         return self.chat([{"role": "user", "content": prompt}], **kwargs)
 
     def close(self) -> None:
-        """No-op. LiteLLM responses() is stateless per call."""
+        """No-op. LiteLLM completion() is stateless per call."""
         return None
 
 
