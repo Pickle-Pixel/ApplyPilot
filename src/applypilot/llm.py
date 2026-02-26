@@ -1,11 +1,12 @@
 """Unified LLM client for ApplyPilot using LiteLLM.
 
 Runtime contract:
-  - LLM_MODEL must be a fully-qualified LiteLLM model string
+  - If set, LLM_MODEL must be a fully-qualified LiteLLM model string
     (for example: openai/gpt-4o-mini, anthropic/claude-3-5-haiku-latest,
     gemini/gemini-3.0-flash).
-  - Credentials come from provider env vars (GEMINI_API_KEY, OPENAI_API_KEY,
-    ANTHROPIC_API_KEY) or generic LLM_API_KEY.
+  - If LLM_MODEL is unset, provider is inferred by first configured source:
+    GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, then LLM_URL.
+  - Credentials come from provider env vars or generic LLM_API_KEY.
   - LLM_URL is optional for custom OpenAI-compatible endpoints.
 """
 
@@ -22,6 +23,18 @@ log = logging.getLogger(__name__)
 
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
+_INFERRED_SOURCE_ORDER: tuple[tuple[str, str], ...] = (
+    ("gemini", "GEMINI_API_KEY"),
+    ("openai", "OPENAI_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("openai", "LLM_URL"),
+)
+_DEFAULT_MODEL_BY_PROVIDER = {
+    "gemini": "gemini/gemini-3.0-flash",
+    "openai": "openai/gpt-5-mini",
+    "anthropic": "anthropic/claude-haiku-4-5",
+}
+_DEFAULT_LOCAL_MODEL = "openai/local-model"
 
 
 @dataclass(frozen=True)
@@ -50,18 +63,42 @@ def _provider_from_model(model: str) -> str:
     return provider
 
 
+def _infer_provider_and_source(env: Mapping[str, str]) -> tuple[str, str] | None:
+    for provider, env_key in _INFERRED_SOURCE_ORDER:
+        if _env_get(env, env_key):
+            return provider, env_key
+    return None
+
+
 def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
     """Resolve LLM configuration from environment."""
     env_map = env if env is not None else os.environ
 
     model = _env_get(env_map, "LLM_MODEL")
-    if not model:
-        raise RuntimeError(
-            "LLM_MODEL is required. Set it to a LiteLLM model string like "
-            "'openai/gpt-4o-mini'."
-        )
-    provider = _provider_from_model(model)
     local_url = _env_get(env_map, "LLM_URL")
+    inferred = _infer_provider_and_source(env_map)
+    if model:
+        if "/" in model:
+            provider = _provider_from_model(model)
+        elif inferred:
+            provider, _ = inferred
+            model = f"{provider}/{model}"
+        else:
+            raise RuntimeError(
+                "LLM_MODEL must include a provider prefix (for example 'openai/gpt-4o-mini')."
+            )
+    else:
+        if not inferred:
+            raise RuntimeError(
+                "No LLM provider configured. Set one of GEMINI_API_KEY, OPENAI_API_KEY, "
+                "ANTHROPIC_API_KEY, LLM_URL, or LLM_MODEL."
+            )
+        provider, source = inferred
+        if source == "LLM_URL":
+            model = _DEFAULT_LOCAL_MODEL
+        else:
+            model = _DEFAULT_MODEL_BY_PROVIDER[provider]
+
     provider_api_key_env = {
         "gemini": "GEMINI_API_KEY",
         "openai": "OPENAI_API_KEY",

@@ -409,7 +409,8 @@ def doctor() -> None:
     except RuntimeError:
         results.append(
             ("LLM API key", fail_mark,
-             "Set LLM_MODEL plus provider key (or LLM_API_KEY), and optionally LLM_URL in ~/.applypilot/.env")
+             "Set one of GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, LLM_URL, "
+             "or set LLM_MODEL with LLM_API_KEY in ~/.applypilot/.env")
         )
 
     # --- Tier 3 checks ---
