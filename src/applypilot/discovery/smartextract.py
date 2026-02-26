@@ -391,7 +391,7 @@ def judge_api_responses(api_responses: list[dict]) -> list[dict]:
         )
 
         try:
-            raw = client.ask(prompt, temperature=0.0, max_tokens=1024)
+            raw = client.ask(prompt, max_tokens=1024)
             verdict = extract_json(raw)
             is_relevant = verdict.get("relevant", False)
             reason = verdict.get("reason", "?")
@@ -640,7 +640,7 @@ def ask_llm(prompt: str) -> tuple[str, float, dict]:
     """Send prompt to LLM. Returns (response_text, seconds_taken, metadata)."""
     client = get_client()
     t0 = time.time()
-    text = client.ask(prompt, temperature=0.0, max_tokens=4096)
+    text = client.ask(prompt, max_tokens=4096)
     elapsed = time.time() - t0
     meta = {
         "finish_reason": "stop",

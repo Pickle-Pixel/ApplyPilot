@@ -257,7 +257,7 @@ class LLMClient:
     def _build_completion_args(
         self,
         messages: list[dict],
-        temperature: float,
+        temperature: float | None,
         max_tokens: int,
         thinking_level: str | None,
         completion_kwargs: Mapping[str, object] | None,
@@ -265,11 +265,12 @@ class LLMClient:
         args: dict = {
             "model": _provider_model(self.provider, self.model),
             "messages": messages,
-            "temperature": temperature,
             "max_tokens": max_tokens,
             "timeout": _TIMEOUT,
             "num_retries": 0,  # ApplyPilot handles retries centrally below.
         }
+        if temperature is not None:
+            args["temperature"] = temperature
 
         if self.provider == "local":
             args["model"] = self.model
@@ -287,7 +288,7 @@ class LLMClient:
     def chat(
         self,
         messages: list[dict],
-        temperature: float = 0.0,
+        temperature: float | None = None,
         max_tokens: int = 10000,
         thinking_level: str | None = None,
         completion_kwargs: Mapping[str, object] | None = None,
