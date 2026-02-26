@@ -351,9 +351,12 @@ def get_client() -> LLMClient:
     """Return (or create) the module-level LLMClient singleton."""
     global _instance
     if _instance is None:
-        from applypilot.config import load_env
+        try:
+            from applypilot.config import load_env
 
-        load_env()
+            load_env()
+        except ModuleNotFoundError:
+            log.debug("python-dotenv not installed; skipping .env auto-load in llm.get_client().")
         config = resolve_llm_config()
         log.info("LLM provider: %s  model: %s", config.provider, config.model)
         _instance = LLMClient(config)
