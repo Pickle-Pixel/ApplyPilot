@@ -7,6 +7,11 @@ Auto-detects provider from environment:
   LLM_URL             -> Local OpenAI-compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
+
+Gemini provider behavior:
+  - Uses LiteLLM's native Gemini provider path (no OpenAI-compat base URL).
+  - Google v1 is considered stable while v1beta can change; endpoint version choice is delegated to LiteLLM.
+  - Provider is inferred from configured credentials; model prefixes are handled internally.
 """
 
 from __future__ import annotations
@@ -22,7 +27,6 @@ log = logging.getLogger(__name__)
 
 _OPENAI_BASE = "https://api.openai.com/v1"
 _ANTHROPIC_BASE = "https://api.anthropic.com/v1"
-_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 _PROVIDER_API_ENV_KEY = {
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -76,6 +80,25 @@ def _provider_model(provider: str, model: str) -> str:
 
 def _default_model(provider: str) -> str:
     return _DEFAULT_MODEL_BY_PROVIDER[provider]
+
+
+def _normalize_model_for_provider(provider: str, model: str) -> str:
+    normalized = model.strip()
+    if provider == "local":
+        return normalized
+    if normalized.startswith("models/"):
+        normalized = normalized.split("/", 1)[1]
+
+    provider_prefix = f"{provider}/"
+    if normalized.startswith(provider_prefix):
+        return normalized[len(provider_prefix):]
+
+    for other in ("gemini", "openai", "anthropic", "vertex_ai"):
+        other_prefix = f"{other}/"
+        if normalized.startswith(other_prefix):
+            return normalized.split("/", 1)[1]
+
+    return normalized
 
 
 def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
@@ -139,6 +162,7 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
                 chosen,
             )
     model = model_override or _default_model(chosen)
+    model = _normalize_model_for_provider(chosen, model)
 
     if chosen == "local":
         return LLMConfig(
@@ -150,7 +174,7 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
     if chosen == "gemini":
         return LLMConfig(
             provider="gemini",
-            base_url=_GEMINI_BASE,
+            base_url="",
             model=model,
             api_key=gemini_key,
         )

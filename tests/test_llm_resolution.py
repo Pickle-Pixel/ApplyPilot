@@ -8,11 +8,29 @@ from applypilot.llm import resolve_llm_config
 def test_only_gemini_api_key_selects_gemini() -> None:
     cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key"})
     assert cfg.provider == "gemini"
+    assert cfg.base_url == ""
+    assert cfg.model == "gemini-2.0-flash"
 
 
 def test_only_openai_api_key_selects_openai() -> None:
     cfg = resolve_llm_config({"OPENAI_API_KEY": "o-key"})
     assert cfg.provider == "openai"
+
+
+def test_gemini_model_override_without_prefix_is_normalized() -> None:
+    cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key", "LLM_MODEL": "gemini-2.5-flash"})
+    assert cfg.model == "gemini-2.5-flash"
+
+
+def test_gemini_model_override_google_models_prefix_is_normalized() -> None:
+    cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key", "LLM_MODEL": "models/gemini-2.5-flash"})
+    assert cfg.model == "gemini-2.5-flash"
+
+
+def test_gemini_model_override_gemini_prefix_is_stripped() -> None:
+    cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key", "LLM_MODEL": "gemini/gemini-2.5-flash"})
+    assert cfg.model == "gemini-2.5-flash"
+
 
 def test_llm_url_with_keys_selects_local() -> None:
     cfg = resolve_llm_config(

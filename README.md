@@ -93,6 +93,7 @@ Each stage is independent. Run them all or pick what you need.
 | Claude Code CLI | Auto-apply | Install from [claude.ai/code](https://claude.ai/code) |
 
 **Gemini API key is free.** Get one at [aistudio.google.com](https://aistudio.google.com). OpenAI, Claude, and local models (Ollama/llama.cpp/vLLM) are also supported.
+ApplyPilot uses Gemini through LiteLLM's native Gemini provider path, and Gemini API version routing is owned by LiteLLM.
 
 ### Optional
 
