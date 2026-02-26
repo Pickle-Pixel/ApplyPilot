@@ -221,11 +221,7 @@ class LLMClient:
         response_kwargs: Mapping[str, object] | None = None,
     ) -> str:
         """Send a completion request and return plain text content."""
-        # Suppress LiteLLM's verbose multiline info logs (e.g. request traces).
-        if hasattr(litellm, 'set_verbose'):
-            litellm.set_verbose(False)
-        if hasattr(litellm, 'suppress_debug_info'):
-            litellm.suppress_debug_info = True
+        litellm.suppress_debug_info = True
 
         try:
             response = litellm.completion(
@@ -240,18 +236,7 @@ class LLMClient:
             choices = getattr(response, "choices", None)
             if not choices:
                 raise RuntimeError("LLM response contained no choices.")
-            content = choices[0].message.content
-
-            if isinstance(content, str):
-                text = content.strip()
-            elif isinstance(content, list):
-                text = "".join(
-                    part if isinstance(part, str) else part.get("text", "")
-                    for part in content
-                    if isinstance(part, (str, dict))
-                ).strip()
-            else:
-                text = ""
+            text = response.choices[0].message.content.strip()
 
             if not text:
                 raise RuntimeError("LLM response contained no text content.")
