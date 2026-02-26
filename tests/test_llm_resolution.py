@@ -8,7 +8,7 @@ from applypilot.llm import resolve_llm_config
 def test_only_gemini_api_key_selects_gemini() -> None:
     cfg = resolve_llm_config({"GEMINI_API_KEY": "g-key"})
     assert cfg.provider == "gemini"
-    assert cfg.base_url == ""
+    assert cfg.api_base is None
     assert cfg.model == "gemini-2.0-flash"
 
 

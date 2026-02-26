@@ -398,7 +398,7 @@ def doctor() -> None:
     try:
         llm_cfg = resolve_llm_config()
         if llm_cfg.provider == "local":
-            results.append(("LLM API key", ok_mark, f"Local: {llm_cfg.base_url} ({llm_cfg.model})"))
+            results.append(("LLM API key", ok_mark, f"Local: {llm_cfg.api_base} ({llm_cfg.model})"))
         else:
             label = {
                 "gemini": "Gemini",

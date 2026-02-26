@@ -25,8 +25,6 @@ import litellm
 
 log = logging.getLogger(__name__)
 
-_OPENAI_BASE = "https://api.openai.com/v1"
-_ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 _DEFAULT_MODEL_BY_PROVIDER = {
     "local": "local-model",
     "gemini": "gemini-2.0-flash",
@@ -43,7 +41,7 @@ class LLMConfig:
     """Normalized LLM configuration consumed by LLMClient."""
 
     provider: str
-    base_url: str
+    api_base: str | None
     model: str
     api_key: str
 
@@ -152,27 +150,27 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
     if chosen == "local":
         return LLMConfig(
             provider="local",
-            base_url=local_url.rstrip("/"),
+            api_base=local_url.rstrip("/"),
             model=model,
             api_key=_env_get(env_map, "LLM_API_KEY"),
         )
     if chosen == "gemini":
         return LLMConfig(
             provider="gemini",
-            base_url="",
+            api_base=None,
             model=model,
             api_key=gemini_key,
         )
     if chosen == "openai":
         return LLMConfig(
             provider="openai",
-            base_url=_OPENAI_BASE,
+            api_base=None,
             model=model,
             api_key=openai_key,
         )
     return LLMConfig(
         provider="anthropic",
-        base_url=_ANTHROPIC_BASE,
+        api_base=None,
         model=model,
         api_key=anthropic_key,
     )
@@ -208,7 +206,8 @@ class LLMClient:
 
         if self.provider == "local":
             args["model"] = self.model
-            args["api_base"] = self.config.base_url
+            if self.config.api_base:
+                args["api_base"] = self.config.api_base
 
         if response_kwargs:
             args.update(response_kwargs)
