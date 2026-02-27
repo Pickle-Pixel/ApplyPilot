@@ -459,14 +459,15 @@ class OpenCodeBackend(AgentBackend):
             cmd.extend(["--agent", agent])
         return cmd
 
-    def _list_mcp_servers(self) -> set[str]:
         binary = self._find_binary()
+        env = self._prepare_environment()
         proc = subprocess.run(
             [binary, "mcp", "list"],
             capture_output=True,
             text=True,
             check=False,
-            env=self._prepare_environment(),
+            env=env,
+            cwd=str(config.APP_DIR),
         )
         output = proc.stdout or ""
         cleaned = ANSI_ESCAPE_RE.sub("", output)
@@ -566,7 +567,7 @@ class OpenCodeBackend(AgentBackend):
                 encoding="utf-8",
                 errors="replace",
                 env=env,
-                cwd=str(worker_dir),
+                cwd=str(config.APP_DIR),
             )
             self._active_procs[worker_id] = proc
             if proc.stdin is None or proc.stdout is None:
