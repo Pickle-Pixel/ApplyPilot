@@ -590,7 +590,7 @@ class OpenCodeBackend(AgentBackend):
             stdin = proc.stdin
             stdout = proc.stdout
 
-            stdin.write(prompt)
+            # Prompt passed as positional arg to opencode, not via stdin
             stdin.close()
 
             text_parts: list[str] = []
