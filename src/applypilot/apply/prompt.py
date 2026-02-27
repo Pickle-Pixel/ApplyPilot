@@ -570,35 +570,39 @@ This helps us identify where issues occur.
 
 == STEP-BY-STEP ==
 1. browser_navigate to the job URL.
-2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
-3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
-4. Find and click the Apply button. Look for buttons with text like: "Apply", "Apply Now", "Apply for this job", "I'm Interested", "Submit Application", "Start Application". 
-   - Workday sites: Look for "Apply" button (often orange/blue, top right or in job details)
-   - Lever sites: Look for "Apply for this job" button  
-   - Greenhouse sites: Look for "Apply Now" button
-   - If you can't find the button, use browser_evaluate to search: () => {{ const btns = document.querySelectorAll('button, a'); return Array.from(btns).filter(b => /apply|submit|interest/i.test(b.textContent)).map(b => b.textContent.trim()) }}
+2. browser_evaluate to get ALL interactive elements: () => {{ 
+     const buttons = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"]'));
+     return buttons.map(b => ({{ text: b.textContent?.trim() || b.value, tag: b.tagName, id: b.id, class: b.className?.split(' ')[0] }})).filter(b => b.text);
+   }}
+   This gives you a list of ALL clickable elements without scrolling. Look for Apply/Submit/Next/Continue buttons.
+3. browser_snapshot ONLY to read text content, NOT to find elements by position. Use the element list from step 2 for clicking.
+4. Run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
+5. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
+6. Find and click the Apply button using browser_click with text matching. Common button texts: "Apply", "Apply Now", "Apply for this job", "I'm Interested", "Submit Application", "Start Application". 
+   - If multiple apply buttons exist, click the main one (usually largest/most prominent)
+   - If you can't find it in your element list, run: browser_evaluate () => {{ return Array.from(document.querySelectorAll('button, a')).filter(b => /apply|submit|interest/i.test(b.textContent)).map(b => ({{ text: b.textContent.trim(), outerHTML: b.outerHTML.substring(0,100) }})) }}
    If email-only (page says "email resume to X"):
    - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
    - Output RESULT:APPLIED. Done.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
-5. Login wall?
-   5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
-   5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
-   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
-   5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
-   5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
-   5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
-   5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
-6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
-7. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> use the cover letter PDF path.
-8. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
+7. Login wall?
+   7a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
+   7b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
+   7c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
+   7d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
+   7e. Sign in failed? Try sign up with same email and password.
+   7f. Need email verification? Use search_emails + read_email to get the code.
+   7g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
+   7h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
+8. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
+9. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> use the cover letter PDF path.
+10. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
    - "Current Job Title" or "Most Recent Title" -> use the title from the TAILORED RESUME summary, NOT whatever the parser guessed.
    - Compare every other field to the APPLICANT PROFILE. Fix mismatches. Fill empty fields.
-9. Answer screening questions using the rules above.
-10. {submit_instruction}
-11. After submit: browser_snapshot. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, solve it (the form will auto-submit once the token clears, or you may need to click Submit again). Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
-12. Output your result.
+11. Answer screening questions using the rules above.
+12. {submit_instruction}
+13. After submit: browser_snapshot. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, solve it (the form will auto-submit once the token clears, or you may need to click Submit again). Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
+14. Output your result.
 
 == RESULT CODES (output EXACTLY one) ==
 RESULT:APPLIED -- submitted successfully
@@ -610,12 +614,14 @@ RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
 RESULT:FAILED:reason -- any other failure (brief reason)
 
 == BROWSER EFFICIENCY ==
-- browser_snapshot ONCE per page to understand it. Then use browser_take_screenshot to check results (10x less memory).
-- Only snapshot again when you need element refs to click/fill.
-- Multi-page forms (Workday, Taleo, iCIMS): snapshot each new page, fill all fields, click Next/Continue. Repeat until final review page.
-- Fill ALL fields in ONE browser_fill_form call. Not one at a time.
+- **NEVER SCROLL manually**. Use browser_evaluate to query the DOM programmatically. Example: () => document.querySelectorAll('button').map(b => b.textContent)
+- **ALWAYS use browser_evaluate first** to find elements by selector or text content. This is 100x faster than visual scanning.
+- browser_snapshot ONCE per page to read text content, NOT to find element positions.
+- Only snapshot again when you need to see the visual layout for verification.
+- Use browser_click with text references (element descriptions), not coordinates.
+- Multi-page forms (Workday, Taleo, iCIMS): Use browser_evaluate to list all inputs, then fill ALL fields in ONE browser_fill_form call. Not one at a time.
 - Keep your thinking SHORT. Don't repeat page structure back.
-- CAPTCHA AWARENESS: After any navigation, Apply/Submit/Login click, or when a page feels stuck -- run CAPTCHA DETECT (see CAPTCHA section). Invisible CAPTCHAs (Turnstile, reCAPTCHA v3) show NO visual widget but block form submissions silently. The detect script finds them even when invisible.
+- CAPTCHA AWARENESS: After any navigation, Apply/Submit/Login click, or when a page feels stuck -- run CAPTCHA DETECT (see CAPTCHA section).
 
 == FORM TRICKS ==
 - Popup/new window opened? browser_tabs action "list" to see all tabs. browser_tabs action "select" with the tab index to switch. ALWAYS check for new tabs after clicking login/apply/sign-in buttons.
