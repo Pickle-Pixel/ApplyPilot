@@ -5,8 +5,6 @@ resume.pdf
 *.env
 .env.*
 !.env.example
-.venv/*
-
 
 # Runtime artifacts
 *.db
@@ -41,4 +39,3 @@ Thumbs.db
 
 # Claude Code
 .claude/
-tm_dev/nb.ipynb

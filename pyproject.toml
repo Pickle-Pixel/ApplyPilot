@@ -53,10 +53,3 @@ artifacts = ["src/applypilot/config/*.yaml"]
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]
-markers = [
-    "smoke: live-provider smoke tests that require external API keys",
-]
