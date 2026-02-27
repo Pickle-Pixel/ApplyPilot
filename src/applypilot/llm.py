@@ -257,7 +257,7 @@ class LLMClient:
     def _build_completion_args(
         self,
         messages: list[dict],
-        temperature: float,
+        temperature: float | None,
         max_tokens: int,
         thinking_level: str | None,
         completion_kwargs: Mapping[str, object] | None,
@@ -265,11 +265,12 @@ class LLMClient:
         args: dict = {
             "model": _provider_model(self.provider, self.model),
             "messages": messages,
-            "temperature": temperature,
             "max_tokens": max_tokens,
             "timeout": _TIMEOUT,
             "num_retries": 0,  # ApplyPilot handles retries centrally below.
         }
+        if temperature is not None:
+            args["temperature"] = temperature
 
         if self.provider == "local":
             args["model"] = self.model
@@ -287,23 +288,27 @@ class LLMClient:
     def chat(
         self,
         messages: list[dict],
-        temperature: float = 0.0,
+        temperature: float | None = None,
         max_tokens: int = 10000,
         thinking_level: str | None = None,
         completion_kwargs: Mapping[str, object] | None = None,
     ) -> str:
         """Send a completion request and return plain text content."""
         try:
-            from litellm import completion as litellm_completion
+            import litellm
         except ModuleNotFoundError as exc:
             raise RuntimeError(
                 "LiteLLM is required for AI stages but is not installed. "
                 "Install dependencies and re-run."
             ) from exc
 
+        # Suppress LiteLLM's verbose multiline info logs (e.g. completion() traces).
+        litellm.set_verbose = False
+        litellm.suppress_debug_info = True
+
         for attempt in range(_MAX_RETRIES):
             try:
-                response = litellm_completion(
+                response = litellm.completion(
                     **self._build_completion_args(
                         messages=messages,
                         temperature=temperature,
