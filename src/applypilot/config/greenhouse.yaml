@@ -16,8 +16,8 @@ employers:
   figma:
     name: "Figma"
     
-  notion:
-    name: "Notion"
+notionhq:
+  name: "Notion"
     
   asana:
     name: "Asana"
