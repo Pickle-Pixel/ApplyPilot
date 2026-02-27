@@ -463,7 +463,7 @@ def extract_with_llm(page, url: str) -> dict:
     try:
         client = get_client()
         t0 = time.time()
-        raw = client.ask(prompt, max_output_tokens=4096)
+        raw = client.chat([{"role": "user", "content": prompt}], max_output_tokens=4096)
         elapsed = time.time() - t0
         log.info("LLM: %d chars in, %.1fs", len(prompt), elapsed)
 

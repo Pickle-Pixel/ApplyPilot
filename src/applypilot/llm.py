@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import logging
 import os
 from typing import Any, Literal, TypedDict, Unpack
+import warnings
 
 import litellm
 
@@ -202,28 +203,6 @@ class LLMClient:
             return text
         except Exception as exc:  # pragma: no cover - provider SDK exception types vary by backend/version.
             raise RuntimeError(f"LLM request failed ({self.provider}/{self.model}): {exc}") from exc
-
-    def ask(
-        self,
-        prompt: str,
-        *,
-        max_output_tokens: int = 10000,
-        temperature: float | None = None,
-        timeout: int = _TIMEOUT,
-        num_retries: int = _MAX_RETRIES,
-        drop_params: bool = True,
-        **extra: Unpack[LiteLLMExtra],
-    ) -> str:
-        """Convenience: single user prompt -> assistant response."""
-        return self.chat(
-            [{"role": "user", "content": prompt}],
-            max_output_tokens=max_output_tokens,
-            temperature=temperature,
-            timeout=timeout,
-            num_retries=num_retries,
-            drop_params=drop_params,
-            **extra,
-        )
 
     def close(self) -> None:
         """No-op. LiteLLM completion() is stateless per call."""
