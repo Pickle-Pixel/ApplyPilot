@@ -144,6 +144,7 @@ def apply(
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for job selection."),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Backend model override."),
     agent: Optional[str] = typer.Option(None, "--agent", help="OpenCode agent override."),
+    backend: Optional[str] = typer.Option(None, "--backend", "-b", help="Backend to use (claude or opencode). Uses APPLY_BACKEND env var or defaults to claude."),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
@@ -236,6 +237,8 @@ def apply(
     console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
     console.print(f"  Workers:  {workers}")
     console.print(f"  Model:    {model or '[backend default]'}")
+    if backend:
+        console.print(f"  Backend:  {backend}")
     if agent:
         console.print(f"  Agent:    {agent}")
     console.print(f"  Headless: {headless}")
@@ -254,6 +257,7 @@ def apply(
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
+        backend_name=backend,
     )
 
 
