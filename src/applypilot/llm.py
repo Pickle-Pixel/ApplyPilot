@@ -184,7 +184,7 @@ class LLMClient:
             choices = getattr(response, "choices", None)
             if not choices:
                 raise RuntimeError("LLM response contained no choices.")
-            text = response.choices[0].message.content.strip()
+            text = choices[0].message.content.strip()
 
             if not text:
                 raise RuntimeError("LLM response contained no text content.")
