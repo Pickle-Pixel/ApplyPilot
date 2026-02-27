@@ -509,6 +509,31 @@ class OpenCodeBackend(AgentBackend):
     def _prepare_environment(self) -> dict[str, str]:
         """Prepare environment for OpenCode process."""
         env = os.environ.copy()
+        
+        # Remove OpenCode Desktop environment variables if they exist
+        # These interfere with CLI mode - they are only for desktop app integration
+        desktop_vars = [
+            "OPENCODE_CLIENT",
+            "OPENCODE_SERVER_PASSWORD", 
+            "OPENCODE_SERVER_USERNAME",
+            "OPENCODE",
+            "OPENCODE_EXPERIMENTAL_FILEWATCHER",
+            "OPENCODE_EXPERIMENTAL_ICON_DISCOVERY",
+            "__CFBundleIdentifier",
+        ]
+        for key in desktop_vars:
+            env.pop(key, None)
+        
+        # Ensure PATH includes opencode binary directory
+        opencode_bin = str(Path.home() / ".opencode" / "bin")
+        current_path = env.get("PATH", "")
+        if opencode_bin not in current_path:
+            env["PATH"] = f"{opencode_bin}:{current_path}"
+        
+        # Set TERM if not set (needed for proper terminal handling)
+        if "TERM" not in env or not env["TERM"]:
+            env["TERM"] = "xterm-256color"
+        
         # Disable interactive prompts and pre-approve permissions
         # This prevents the "question" tool from hanging in batch mode
         # and allows external directory access for file operations
