@@ -277,7 +277,10 @@ def _setup_ai_features() -> None:
         console.print("[dim]No AI provider configured. You can add one later with [bold]applypilot init[/bold].[/dim]")
         return
 
-    model = Prompt.ask("LLM model override (optional, leave blank to use provider defaults)", default="").strip()
+    model = Prompt.ask(
+        "LLM model override (optional, leave blank to use provider defaults)",
+        default="",
+    ).strip()
     if model:
         env_lines.append(f"LLM_MODEL={model}")
 

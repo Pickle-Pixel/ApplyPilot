@@ -7,6 +7,11 @@ Auto-detects provider from environment:
   LLM_URL             -> Local OpenAI-compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
+
+Gemini provider behavior:
+  - Uses LiteLLM's native Gemini provider path (no OpenAI-compat base URL).
+  - Google v1 is considered stable while v1beta can change; endpoint version choice is delegated to LiteLLM.
+  - Provider is inferred from configured credentials; model prefixes are handled internally.
 """
 
 from __future__ import annotations
@@ -15,13 +20,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 import os
-import time
+
+import litellm
 
 log = logging.getLogger(__name__)
 
 _OPENAI_BASE = "https://api.openai.com/v1"
 _ANTHROPIC_BASE = "https://api.anthropic.com/v1"
-_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 _PROVIDER_API_ENV_KEY = {
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -36,16 +41,8 @@ _DEFAULT_MODEL_BY_PROVIDER = {
 
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
-_RATE_LIMIT_BASE_WAIT = 10
 
-_GEMINI_THINKING_LEVELS = {"none", "minimal", "low", "medium", "high"}
-_GEMINI_COMPAT_REASONING_EFFORT = {
-    "none": "none",
-    "minimal": "low",
-    "low": "low",
-    "medium": "high",
-    "high": "high",
-}
+_THINKING_LEVELS = {"none", "low", "medium", "high"}
 
 
 @dataclass(frozen=True)
@@ -67,7 +64,7 @@ def _env_get(env: Mapping[str, str], key: str) -> str:
 
 def _normalize_thinking_level(thinking_level: str) -> str:
     level = (thinking_level or "low").strip().lower()
-    if level not in _GEMINI_THINKING_LEVELS:
+    if level not in _THINKING_LEVELS:
         log.warning("Invalid thinking_level '%s', defaulting to 'low'.", thinking_level)
         return "low"
     return level
@@ -83,6 +80,25 @@ def _provider_model(provider: str, model: str) -> str:
 
 def _default_model(provider: str) -> str:
     return _DEFAULT_MODEL_BY_PROVIDER[provider]
+
+
+def _normalize_model_for_provider(provider: str, model: str) -> str:
+    normalized = model.strip()
+    if provider == "local":
+        return normalized
+    if normalized.startswith("models/"):
+        normalized = normalized.split("/", 1)[1]
+
+    provider_prefix = f"{provider}/"
+    if normalized.startswith(provider_prefix):
+        return normalized[len(provider_prefix):]
+
+    for other in ("gemini", "openai", "anthropic", "vertex_ai"):
+        other_prefix = f"{other}/"
+        if normalized.startswith(other_prefix):
+            return normalized.split("/", 1)[1]
+
+    return normalized
 
 
 def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
@@ -146,6 +162,7 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
                 chosen,
             )
     model = model_override or _default_model(chosen)
+    model = _normalize_model_for_provider(chosen, model)
 
     if chosen == "local":
         return LLMConfig(
@@ -157,7 +174,7 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
     if chosen == "gemini":
         return LLMConfig(
             provider="gemini",
-            base_url=_GEMINI_BASE,
+            base_url="",
             model=model,
             api_key=gemini_key,
         )
@@ -174,70 +191,6 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
         model=model,
         api_key=anthropic_key,
     )
-
-
-def _extract_status_code(exc: Exception) -> int | None:
-    status_code = getattr(exc, "status_code", None)
-    if isinstance(status_code, int):
-        return status_code
-    response = getattr(exc, "response", None)
-    if response is not None:
-        status_code = getattr(response, "status_code", None)
-        if isinstance(status_code, int):
-            return status_code
-    return None
-
-
-def _extract_retry_after(exc: Exception) -> float | None:
-    response = getattr(exc, "response", None)
-    if response is None:
-        return None
-    headers = getattr(response, "headers", {}) or {}
-    retry_after = headers.get("Retry-After") or headers.get("X-RateLimit-Reset-Requests")
-    if not retry_after:
-        return None
-    try:
-        return float(retry_after)
-    except (TypeError, ValueError):
-        return None
-
-
-def _is_timeout_error(exc: Exception) -> bool:
-    if isinstance(exc, TimeoutError):
-        return True
-    text = str(exc).lower()
-    return "timed out" in text or "timeout" in text
-
-
-def _extract_text_content(resp: object) -> str:
-    choices = getattr(resp, "choices", None)
-    if choices is None and isinstance(resp, dict):
-        choices = resp.get("choices", [])
-    if not choices:
-        raise RuntimeError("LLM response contained no choices.")
-
-    first = choices[0]
-    if isinstance(first, dict):
-        message = first.get("message", {})
-    else:
-        message = getattr(first, "message", {})
-
-    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, str):
-                chunks.append(part)
-            elif isinstance(part, dict):
-                text = part.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-        text = "".join(chunks).strip()
-        if text:
-            return text
-    raise RuntimeError("LLM response contained no text content.")
 
 
 class LLMClient:
@@ -258,16 +211,16 @@ class LLMClient:
         self,
         messages: list[dict],
         temperature: float | None,
-        max_tokens: int,
+        max_output_tokens: int,
         thinking_level: str | None,
-        completion_kwargs: Mapping[str, object] | None,
+        response_kwargs: Mapping[str, object] | None,
     ) -> dict:
         args: dict = {
             "model": _provider_model(self.provider, self.model),
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": max_output_tokens,
             "timeout": _TIMEOUT,
-            "num_retries": 0,  # ApplyPilot handles retries centrally below.
+            "num_retries": _MAX_RETRIES,  # Delegate retry handling to LiteLLM.
         }
         if temperature is not None:
             args["temperature"] = temperature
@@ -277,68 +230,61 @@ class LLMClient:
             args["api_base"] = self.config.base_url
             if self.config.api_key:
                 args["api_key"] = self.config.api_key
-        elif self.provider == "gemini" and thinking_level is not None:
+        if thinking_level is not None:
             level = _normalize_thinking_level(thinking_level)
-            args["reasoning_effort"] = _GEMINI_COMPAT_REASONING_EFFORT[level]
+            args["reasoning_effort"] = level
 
-        if completion_kwargs:
-            args.update(completion_kwargs)
+        if response_kwargs:
+            args.update(response_kwargs)
         return args
 
     def chat(
         self,
         messages: list[dict],
         temperature: float | None = None,
-        max_tokens: int = 10000,
+        max_output_tokens: int = 10000,
         thinking_level: str | None = None,
-        completion_kwargs: Mapping[str, object] | None = None,
+        response_kwargs: Mapping[str, object] | None = None,
     ) -> str:
         """Send a completion request and return plain text content."""
+        # Suppress LiteLLM's verbose multiline info logs (e.g. request traces).
+        if hasattr(litellm, 'set_verbose'):
+            litellm.set_verbose(False)
+        if hasattr(litellm, 'suppress_debug_info'):
+            litellm.suppress_debug_info = True
+
         try:
-            import litellm
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "LiteLLM is required for AI stages but is not installed. "
-                "Install dependencies and re-run."
-            ) from exc
-
-        # Suppress LiteLLM's verbose multiline info logs (e.g. completion() traces).
-        litellm.set_verbose = False
-        litellm.suppress_debug_info = True
-
-        for attempt in range(_MAX_RETRIES):
-            try:
-                response = litellm.completion(
-                    **self._build_completion_args(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        thinking_level=thinking_level,
-                        completion_kwargs=completion_kwargs,
-                    )
+            response = litellm.completion(
+                **self._build_completion_args(
+                    messages=messages,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    thinking_level=thinking_level,
+                    response_kwargs=response_kwargs,
                 )
-                return _extract_text_content(response)
-            except Exception as exc:  # pragma: no cover - provider SDK exception types vary by backend/version.
-                status_code = _extract_status_code(exc)
-                if status_code in (429, 503, 529) and attempt < _MAX_RETRIES - 1:
-                    wait = _extract_retry_after(exc) or min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
-                    log.warning(
-                        "LLM rate limited (HTTP %s). Waiting %ds before retry %d/%d.",
-                        status_code, wait, attempt + 1, _MAX_RETRIES,
-                    )
-                    time.sleep(wait)
-                    continue
-                if _is_timeout_error(exc) and attempt < _MAX_RETRIES - 1:
-                    wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
-                    log.warning(
-                        "LLM request timed out, retrying in %ds (attempt %d/%d)",
-                        wait, attempt + 1, _MAX_RETRIES,
-                    )
-                    time.sleep(wait)
-                    continue
-                raise RuntimeError(f"LLM request failed ({self.provider}/{self.model}): {exc}") from exc
+            )
 
-        raise RuntimeError("LLM request failed after all retries")
+            choices = getattr(response, "choices", None)
+            if not choices:
+                raise RuntimeError("LLM response contained no choices.")
+            content = choices[0].message.content
+
+            if isinstance(content, str):
+                text = content.strip()
+            elif isinstance(content, list):
+                text = "".join(
+                    part if isinstance(part, str) else part.get("text", "")
+                    for part in content
+                    if isinstance(part, (str, dict))
+                ).strip()
+            else:
+                text = ""
+
+            if not text:
+                raise RuntimeError("LLM response contained no text content.")
+            return text
+        except Exception as exc:  # pragma: no cover - provider SDK exception types vary by backend/version.
+            raise RuntimeError(f"LLM request failed ({self.provider}/{self.model}): {exc}") from exc
 
     def ask(self, prompt: str, **kwargs) -> str:
         """Convenience: single user prompt -> assistant response."""
