@@ -397,12 +397,14 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        raw = client.chat(messages, max_output_tokens=2048)
+        raw = client.chat(messages, max_output_tokens=16000)
 
         # Parse JSON from response
         try:
             data = extract_json(raw)
-        except ValueError:
+        except ValueError as exc:
+            log.warning("Attempt %d JSON parse failed (%s). Raw response (first 500 chars):\n%s",
+                        attempt + 1, exc, raw[:1000])
             avoid_notes.append("Output was not valid JSON. Return ONLY a JSON object, nothing else.")
             continue
 
@@ -412,6 +414,7 @@ def tailor_resume(
 
         if not validation["passed"]:
             # Only retry if there are hard errors (warnings never block)
+            log.warning("Attempt %d validation failed: %s", attempt + 1, validation["errors"])
             avoid_notes.extend(validation["errors"])
             if attempt < max_retries:
                 continue

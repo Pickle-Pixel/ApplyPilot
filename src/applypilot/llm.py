@@ -21,6 +21,10 @@ import warnings
 
 import litellm
 
+# Suppress pydantic serialization warnings from litellm internals when provider
+# responses have fewer fields than the full ModelResponse schema.
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic.*")
+
 log = logging.getLogger(__name__)
 
 _MAX_RETRIES = 5
