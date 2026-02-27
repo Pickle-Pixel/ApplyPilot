@@ -27,21 +27,32 @@ from applypilot import config
 from applypilot.database import get_connection
 from applypilot.apply import prompt as prompt_mod
 from applypilot.apply.chrome import (
-    launch_chrome, cleanup_worker, kill_all_chrome,
-    reset_worker_dir, cleanup_on_exit, _kill_process_tree,
+    launch_chrome,
+    cleanup_worker,
+    kill_all_chrome,
+    reset_worker_dir,
+    cleanup_on_exit,
+    _kill_process_tree,
     BASE_CDP_PORT,
 )
 from applypilot.apply.dashboard import (
-    init_worker, update_state, add_event, get_state,
-    render_full, get_totals,
+    init_worker,
+    update_state,
+    add_event,
+    get_state,
+    render_full,
+    get_totals,
 )
 
 logger = logging.getLogger(__name__)
 
+
 # Blocked sites loaded from config/sites.yaml
 def _load_blocked():
     from applypilot.config import load_blocked_sites
+
     return load_blocked_sites()
+
 
 # How often to poll the DB when the queue is empty (seconds)
 POLL_INTERVAL = config.DEFAULTS["poll_interval"]
@@ -62,6 +73,7 @@ if platform.system() != "Windows":
 # ---------------------------------------------------------------------------
 # MCP config
 # ---------------------------------------------------------------------------
+
 
 def _make_mcp_config(cdp_port: int) -> dict:
     """Build MCP config dict for a specific CDP port."""
@@ -87,8 +99,8 @@ def _make_mcp_config(cdp_port: int) -> dict:
 # Database operations
 # ---------------------------------------------------------------------------
 
-def acquire_job(target_url: str | None = None, min_score: int = 7,
-                worker_id: int = 0) -> dict | None:
+
+def acquire_job(target_url: str | None = None, min_score: int = 7, worker_id: int = 0) -> dict | None:
     """Atomically acquire the next job to apply to.
 
     Args:
@@ -105,7 +117,8 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
 
         if target_url:
             like = f"%{target_url.split('?')[0].rstrip('/')}%"
-            row = conn.execute("""
+            row = conn.execute(
+                """
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
@@ -113,7 +126,9 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                   AND tailored_resume_path IS NOT NULL
                   AND apply_status != 'in_progress'
                 LIMIT 1
-            """, (target_url, target_url, like, like)).fetchone()
+            """,
+                (target_url, target_url, like, like),
+            ).fetchone()
         else:
             blocked_sites, blocked_patterns = _load_blocked()
             # Build parameterized filters to avoid SQL injection
@@ -127,7 +142,8 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             if blocked_patterns:
                 url_clauses = " ".join("AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
-            row = conn.execute(f"""
+            row = conn.execute(
+                f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
@@ -139,7 +155,9 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                   {url_clauses}
                 ORDER BY fit_score DESC, url
                 LIMIT 1
-            """, [config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
+            """,
+                [config.DEFAULTS["max_apply_attempts"]] + params,
+            ).fetchone()
 
         if not row:
             conn.rollback()
@@ -147,6 +165,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
 
         # Skip manual ATS sites (unsolvable CAPTCHAs)
         from applypilot.config import is_manual_ats
+
         apply_url = row["application_url"] or row["url"]
         if is_manual_ats(apply_url):
             conn.execute(
@@ -158,12 +177,15 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             return None
 
         now = datetime.now(timezone.utc).isoformat()
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE jobs SET apply_status = 'in_progress',
                            agent_id = ?,
                            last_attempted_at = ?
             WHERE url = ?
-        """, (f"worker-{worker_id}", now, row["url"]))
+        """,
+            (f"worker-{worker_id}", now, row["url"]),
+        )
         conn.commit()
 
         return dict(row)
@@ -172,27 +194,38 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
         raise
 
 
-def mark_result(url: str, status: str, error: str | None = None,
-                permanent: bool = False, duration_ms: int | None = None,
-                task_id: str | None = None) -> None:
+def mark_result(
+    url: str,
+    status: str,
+    error: str | None = None,
+    permanent: bool = False,
+    duration_ms: int | None = None,
+    task_id: str | None = None,
+) -> None:
     """Update a job's apply status in the database."""
     conn = get_connection()
     now = datetime.now(timezone.utc).isoformat()
     if status == "applied":
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE jobs SET apply_status = 'applied', applied_at = ?,
                            apply_error = NULL, agent_id = NULL,
                            apply_duration_ms = ?, apply_task_id = ?
             WHERE url = ?
-        """, (now, duration_ms, task_id, url))
+        """,
+            (now, duration_ms, task_id, url),
+        )
     else:
         attempts = 99 if permanent else "COALESCE(apply_attempts, 0) + 1"
-        conn.execute(f"""
+        conn.execute(
+            f"""
             UPDATE jobs SET apply_status = ?, apply_error = ?,
                            apply_attempts = {attempts}, agent_id = NULL,
                            apply_duration_ms = ?, apply_task_id = ?
             WHERE url = ?
-        """, (status, error or "unknown", duration_ms, task_id, url))
+        """,
+            (status, error or "unknown", duration_ms, task_id, url),
+        )
     conn.commit()
 
 
@@ -210,8 +243,8 @@ def release_lock(url: str) -> None:
 # Utility modes (--gen, --mark-applied, --mark-failed, --reset-failed)
 # ---------------------------------------------------------------------------
 
-def gen_prompt(target_url: str, min_score: int = 7,
-               model: str = "sonnet", worker_id: int = 0) -> Path | None:
+
+def gen_prompt(target_url: str, min_score: int = 7, model: str = "sonnet", worker_id: int = 0) -> Path | None:
     """Generate a prompt file and print the Claude CLI command for manual debugging.
 
     Returns:
@@ -258,17 +291,23 @@ def mark_job(url: str, status: str, reason: str | None = None) -> None:
     conn = get_connection()
     now = datetime.now(timezone.utc).isoformat()
     if status == "applied":
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE jobs SET apply_status = 'applied', applied_at = ?,
                            apply_error = NULL, agent_id = NULL
             WHERE url = ?
-        """, (now, url))
+        """,
+            (now, url),
+        )
     else:
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE jobs SET apply_status = 'failed', apply_error = ?,
                            apply_attempts = 99, agent_id = NULL
             WHERE url = ?
-        """, (reason or "manual", url))
+        """,
+            (reason or "manual", url),
+        )
     conn.commit()
 
 
@@ -294,8 +333,8 @@ def reset_failed() -> int:
 # Per-job execution
 # ---------------------------------------------------------------------------
 
-def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
+
+def run_job(job: dict, port: int, worker_id: int = 0, model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
     """Spawn a Claude Code session for one job application.
 
     Returns:
@@ -324,12 +363,16 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     # Build claude command
     cmd = [
         "claude",
-        "--model", model,
+        "--model",
+        model,
         "-p",
-        "--mcp-config", str(mcp_config_path),
-        "--permission-mode", "bypassPermissions",
+        "--mcp-config",
+        str(mcp_config_path),
+        "--permission-mode",
+        "bypassPermissions",
         "--no-session-persistence",
-        "--disallowedTools", (
+        "--disallowedTools",
+        (
             "mcp__gmail__draft_email,mcp__gmail__modify_email,"
             "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
             "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
@@ -339,8 +382,10 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             "mcp__gmail__list_filters,mcp__gmail__get_filter,"
             "mcp__gmail__delete_filter"
         ),
-        "--output-format", "stream-json",
-        "--verbose", "-",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "-",
     ]
 
     env = os.environ.copy()
@@ -349,9 +394,16 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
     worker_dir = reset_worker_dir(worker_id)
 
-    update_state(worker_id, status="applying", job_title=job["title"],
-                 company=job.get("site", ""), score=job.get("fit_score", 0),
-                 start_time=time.time(), actions=0, last_action="starting")
+    update_state(
+        worker_id,
+        status="applying",
+        job_title=job["title"],
+        company=job.get("site", ""),
+        score=job.get("fit_score", 0),
+        start_time=time.time(),
+        actions=0,
+        last_action="starting",
+    )
     add_event(f"[W{worker_id}] Starting: {job['title'][:40]} @ {job.get('site', '')}")
 
     worker_log = config.LOG_DIR / f"worker-{worker_id}.log"
@@ -424,9 +476,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                                 lf.write(f"  >> {desc}\n")
                                 ws = get_state(worker_id)
                                 cur_actions = ws.actions if ws else 0
-                                update_state(worker_id,
-                                             actions=cur_actions + 1,
-                                             last_action=desc[:35])
+                                update_state(worker_id, actions=cur_actions + 1, last_action=desc[:35])
                     elif msg_type == "result":
                         stats = {
                             "input_tokens": msg.get("usage", {}).get("input_tokens", 0),
@@ -463,13 +513,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             update_state(worker_id, total_cost=prev_cost + cost)
 
         def _clean_reason(s: str) -> str:
-            return re.sub(r'[*`"]+$', '', s).strip()
+            return re.sub(r'[*`"]+$', "", s).strip()
 
         for result_status in ["APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
             if f"RESULT:{result_status}" in output:
                 add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
-                update_state(worker_id, status=result_status.lower(),
-                             last_action=f"{result_status} ({elapsed}s)")
+                update_state(worker_id, status=result_status.lower(), last_action=f"{result_status} ({elapsed}s)")
                 return result_status.lower(), duration_ms
 
         if "RESULT:FAILED" in output:
@@ -477,19 +526,17 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 if "RESULT:FAILED" in out_line:
                     reason = (
                         out_line.split("RESULT:FAILED:")[-1].strip()
-                        if ":" in out_line[out_line.index("FAILED") + 6:]
+                        if ":" in out_line[out_line.index("FAILED") + 6 :]
                         else "unknown"
                     )
                     reason = _clean_reason(reason)
                     PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
                     if reason in PROMOTE_TO_STATUS:
                         add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
-                        update_state(worker_id, status=reason,
-                                     last_action=f"{reason.upper()} ({elapsed}s)")
+                        update_state(worker_id, status=reason, last_action=f"{reason.upper()} ({elapsed}s)")
                         return reason, duration_ms
                     add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
-                    update_state(worker_id, status="failed",
-                                 last_action=f"FAILED: {reason[:25]}")
+                    update_state(worker_id, status="failed", last_action=f"FAILED: {reason[:25]}")
                     return f"failed:{reason}", duration_ms
             return "failed:unknown", duration_ms
 
@@ -520,12 +567,20 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 # ---------------------------------------------------------------------------
 
 PERMANENT_FAILURES: set[str] = {
-    "expired", "captcha", "login_issue",
-    "not_eligible_location", "not_eligible_salary",
-    "already_applied", "account_required",
-    "not_a_job_application", "unsafe_permissions",
-    "unsafe_verification", "sso_required",
-    "site_blocked", "cloudflare_blocked", "blocked_by_cloudflare",
+    "expired",
+    "captcha",
+    "login_issue",
+    "not_eligible_location",
+    "not_eligible_salary",
+    "already_applied",
+    "account_required",
+    "not_a_job_application",
+    "unsafe_permissions",
+    "unsafe_verification",
+    "sso_required",
+    "site_blocked",
+    "cloudflare_blocked",
+    "blocked_by_cloudflare",
 }
 
 PERMANENT_PREFIXES: tuple[str, ...] = ("site_blocked", "cloudflare", "blocked_by")
@@ -545,10 +600,16 @@ def _is_permanent_failure(result: str) -> bool:
 # Worker loop
 # ---------------------------------------------------------------------------
 
-def worker_loop(worker_id: int = 0, limit: int = 1,
-                target_url: str | None = None,
-                min_score: int = 7, headless: bool = False,
-                model: str = "sonnet", dry_run: bool = False) -> tuple[int, int]:
+
+def worker_loop(
+    worker_id: int = 0,
+    limit: int = 1,
+    target_url: str | None = None,
+    min_score: int = 7,
+    headless: bool = False,
+    model: str = "sonnet",
+    dry_run: bool = False,
+) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -574,19 +635,16 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         if not continuous and jobs_done >= limit:
             break
 
-        update_state(worker_id, status="idle", job_title="", company="",
-                     last_action="waiting for job", actions=0)
+        update_state(worker_id, status="idle", job_title="", company="", last_action="waiting for job", actions=0)
 
-        job = acquire_job(target_url=target_url, min_score=min_score,
-                          worker_id=worker_id)
+        job = acquire_job(target_url=target_url, min_score=min_score, worker_id=worker_id)
         if not job:
             if not continuous:
                 add_event(f"[W{worker_id}] Queue empty")
                 update_state(worker_id, status="done", last_action="queue empty")
                 break
             empty_polls += 1
-            update_state(worker_id, status="idle",
-                         last_action=f"polling ({empty_polls})")
+            update_state(worker_id, status="idle", last_action=f"polling ({empty_polls})")
             if empty_polls == 1:
                 add_event(f"[W{worker_id}] Queue empty, polling every {POLL_INTERVAL}s...")
             # Use Event.wait for interruptible sleep
@@ -601,8 +659,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             add_event(f"[W{worker_id}] Launching Chrome...")
             chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
 
-            result, duration_ms = run_job(job, port=port, worker_id=worker_id,
-                                            model=model, dry_run=dry_run)
+            result, duration_ms = run_job(job, port=port, worker_id=worker_id, model=model, dry_run=dry_run)
 
             if result == "skipped":
                 release_lock(job["url"])
@@ -611,16 +668,14 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             elif result == "applied":
                 mark_result(job["url"], "applied", duration_ms=duration_ms)
                 applied += 1
-                update_state(worker_id, jobs_applied=applied,
-                             jobs_done=applied + failed)
+                update_state(worker_id, jobs_applied=applied, jobs_done=applied + failed)
             else:
                 reason = result.split(":", 1)[-1] if ":" in result else result
-                mark_result(job["url"], "failed", reason,
-                            permanent=_is_permanent_failure(result),
-                            duration_ms=duration_ms)
+                mark_result(
+                    job["url"], "failed", reason, permanent=_is_permanent_failure(result), duration_ms=duration_ms
+                )
                 failed += 1
-                update_state(worker_id, jobs_failed=failed,
-                             jobs_done=applied + failed)
+                update_state(worker_id, jobs_failed=failed, jobs_done=applied + failed)
 
         except KeyboardInterrupt:
             release_lock(job["url"])
@@ -650,10 +705,18 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 # Main entry point (called from cli.py)
 # ---------------------------------------------------------------------------
 
-def main(limit: int = 1, target_url: str | None = None,
-         min_score: int = 7, headless: bool = False, model: str = "sonnet",
-         dry_run: bool = False, continuous: bool = False,
-         poll_interval: int = 60, workers: int = 1) -> None:
+
+def main(
+    limit: int = 1,
+    target_url: str | None = None,
+    min_score: int = 7,
+    headless: bool = False,
+    model: str = "sonnet",
+    dry_run: bool = False,
+    continuous: bool = False,
+    poll_interval: int = 60,
+    workers: int = 1,
+) -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -743,13 +806,11 @@ def main(limit: int = 1, target_url: str | None = None,
                 if effective_limit:
                     base = effective_limit // workers
                     extra = effective_limit % workers
-                    limits = [base + (1 if i < extra else 0)
-                              for i in range(workers)]
+                    limits = [base + (1 if i < extra else 0) for i in range(workers)]
                 else:
                     limits = [0] * workers  # continuous mode
 
-                with ThreadPoolExecutor(max_workers=workers,
-                                        thread_name_prefix="apply-worker") as executor:
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="apply-worker") as executor:
                     futures = {
                         executor.submit(
                             worker_loop,
@@ -781,10 +842,7 @@ def main(limit: int = 1, target_url: str | None = None,
             live.update(render_full())
 
         totals = get_totals()
-        console.print(
-            f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
-            f"(${totals['cost']:.3f})[/bold]"
-        )
+        console.print(f"\n[bold]Done: {total_applied} applied, {total_failed} failed (${totals['cost']:.3f})[/bold]")
         console.print(f"Logs: {config.LOG_DIR}")
 
     except KeyboardInterrupt:

@@ -20,58 +20,141 @@ log = logging.getLogger(__name__)
 # ── Universal Constants (not personal data) ───────────────────────────────
 
 BANNED_WORDS: list[str] = [
-    "passionate", "dedicated", "committed to",
-    "utilizing", "utilize", "harnessing",
-    "spearheaded", "spearhead", "orchestrated", "championed", "pioneered",
-    "robust", "scalable solutions", "cutting-edge", "state-of-the-art", "best-in-class",
-    "proven track record", "track record of success", "demonstrated ability",
-    "strong communicator", "team player", "fast learner", "self-starter", "go-getter",
-    "synergy", "cross-functional collaboration", "holistic",
-    "transformative", "innovative solutions", "paradigm", "ecosystem",
-    "proactive", "detail-oriented", "highly motivated",
-    "seamless", "full lifecycle",
-    "deep understanding", "extensive experience", "comprehensive knowledge",
-    "thrives in", "excels at", "adept at", "well-versed in",
-    "i am confident", "i believe", "i am excited",
-    "plays a critical role", "instrumental in", "integral part of",
-    "strong track record", "eager to", "eager",
+    "passionate",
+    "dedicated",
+    "committed to",
+    "utilizing",
+    "utilize",
+    "harnessing",
+    "spearheaded",
+    "spearhead",
+    "orchestrated",
+    "championed",
+    "pioneered",
+    "robust",
+    "scalable solutions",
+    "cutting-edge",
+    "state-of-the-art",
+    "best-in-class",
+    "proven track record",
+    "track record of success",
+    "demonstrated ability",
+    "strong communicator",
+    "team player",
+    "fast learner",
+    "self-starter",
+    "go-getter",
+    "synergy",
+    "cross-functional collaboration",
+    "holistic",
+    "transformative",
+    "innovative solutions",
+    "paradigm",
+    "ecosystem",
+    "proactive",
+    "detail-oriented",
+    "highly motivated",
+    "seamless",
+    "full lifecycle",
+    "deep understanding",
+    "extensive experience",
+    "comprehensive knowledge",
+    "thrives in",
+    "excels at",
+    "adept at",
+    "well-versed in",
+    "i am confident",
+    "i believe",
+    "i am excited",
+    "plays a critical role",
+    "instrumental in",
+    "integral part of",
+    "strong track record",
+    "eager to",
+    "eager",
     # Cover-letter-specific additions
-    "this demonstrates", "this reflects", "i have experience with",
-    "furthermore", "additionally", "moreover",
+    "this demonstrates",
+    "this reflects",
+    "i have experience with",
+    "furthermore",
+    "additionally",
+    "moreover",
 ]
 
 LLM_LEAK_PHRASES: list[str] = [
-    "i am sorry", "i apologize", "i will try", "let me try",
-    "i am at a loss", "i am truly sorry", "apologies for",
-    "i keep fabricating", "i will have to admit", "one final attempt",
-    "one last time", "if it fails again", "persistent errors",
-    "i am having difficulty", "i made an error", "my mistake",
-    "here is the corrected", "here is the revised", "here is the updated",
-    "here is my", "below is the", "as requested",
-    "note:", "disclaimer:", "important:",
-    "i have rewritten", "i have removed", "i have fixed",
-    "i have replaced", "i have updated", "i have corrected",
-    "per your feedback", "based on your feedback", "as per the instructions",
-    "the following resume", "the resume below",
-    "the following cover letter", "the letter below",
+    "i am sorry",
+    "i apologize",
+    "i will try",
+    "let me try",
+    "i am at a loss",
+    "i am truly sorry",
+    "apologies for",
+    "i keep fabricating",
+    "i will have to admit",
+    "one final attempt",
+    "one last time",
+    "if it fails again",
+    "persistent errors",
+    "i am having difficulty",
+    "i made an error",
+    "my mistake",
+    "here is the corrected",
+    "here is the revised",
+    "here is the updated",
+    "here is my",
+    "below is the",
+    "as requested",
+    "note:",
+    "disclaimer:",
+    "important:",
+    "i have rewritten",
+    "i have removed",
+    "i have fixed",
+    "i have replaced",
+    "i have updated",
+    "i have corrected",
+    "per your feedback",
+    "based on your feedback",
+    "as per the instructions",
+    "the following resume",
+    "the resume below",
+    "the following cover letter",
+    "the letter below",
 ]
 
 # Known fabrication markers: completely unrelated tools/languages.
 # Reasonable stretches (K8s, Terraform, Redis, Kafka etc.) are ALLOWED.
 FABRICATION_WATCHLIST: set[str] = {
     # Languages with zero relation to the candidate's stack
-    "c#", "c++", "golang", "rust", "ruby",
-    "kotlin", "swift", "scala", "matlab",
+    "c#",
+    "c++",
+    "golang",
+    "rust",
+    "ruby",
+    "kotlin",
+    "swift",
+    "scala",
+    "matlab",
     # Frameworks for wrong languages
-    "spring", "django", "rails", "angular", "vue", "svelte",
+    "spring",
+    "django",
+    "rails",
+    "angular",
+    "vue",
+    "svelte",
     # Hard lies: certifications can't be stretched
-    "certif", "certified", "pmp", "scrum master", "aws certified",
+    "certif",
+    "certified",
+    "pmp",
+    "scrum master",
+    "aws certified",
 }
 
 REQUIRED_SECTIONS: set[str] = {"SUMMARY", "TECHNICAL SKILLS", "EXPERIENCE", "PROJECTS", "EDUCATION"}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
+
 
 def _build_skills_set(profile: dict) -> set[str]:
     """Build the set of allowed skills from the profile's skills_boundary."""
@@ -87,14 +170,15 @@ def _build_skills_set(profile: dict) -> set[str]:
 
 def sanitize_text(text: str) -> str:
     """Auto-fix common LLM output issues instead of rejecting."""
-    text = text.replace(" \u2014 ", ", ").replace("\u2014", ", ")   # em dash -> comma
-    text = text.replace("\u2013", "-")    # en dash -> hyphen
-    text = text.replace("\u201c", '"').replace("\u201d", '"')   # smart double quotes
-    text = text.replace("\u2018", "'").replace("\u2019", "'")   # smart single quotes
+    text = text.replace(" \u2014 ", ", ").replace("\u2014", ", ")  # em dash -> comma
+    text = text.replace("\u2013", "-")  # en dash -> hyphen
+    text = text.replace("\u201c", '"').replace("\u201d", '"')  # smart double quotes
+    text = text.replace("\u2018", "'").replace("\u2019", "'")  # smart single quotes
     return text.strip()
 
 
 # ── JSON Field Validation ─────────────────────────────────────────────────
+
 
 def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dict:
     """Validate individual JSON fields from an LLM-generated tailored resume.
@@ -138,10 +222,7 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
 
     if isinstance(data["experience"], list):
         for company in preserved_companies:
-            has_company = any(
-                company.lower() in str(e.get("header", "")).lower()
-                for e in data["experience"]
-            )
+            has_company = any(company.lower() in str(e.get("header", "")).lower() for e in data["experience"])
             if not has_company:
                 errors.append(f"Company '{company}' missing from experience")
         for entry in data["experience"]:
@@ -183,6 +264,7 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
 
 
 # ── Full Resume Text Validation ───────────────────────────────────────────
+
 
 def validate_tailored_resume(text: str, profile: dict, original_text: str = "") -> dict:
     """Programmatic validation of a tailored resume against the user's profile.
@@ -292,6 +374,7 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
 
 
 # ── Cover Letter Validation ──────────────────────────────────────────────
+
 
 def validate_cover_letter(text: str, mode: str = "normal") -> dict:
     """Programmatic validation of a cover letter.

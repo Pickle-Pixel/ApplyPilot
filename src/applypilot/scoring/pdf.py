@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 # ── Resume Parser ────────────────────────────────────────────────────────
 
+
 def parse_resume(text: str) -> dict:
     """Parse a structured text resume into sections.
 
@@ -126,9 +127,7 @@ def parse_entries(text: str) -> list[dict]:
             if current:
                 current["bullets"].append(stripped[2:].strip())
         elif current is None or (
-            not stripped.startswith("-")
-            and not stripped.startswith("\u2022")
-            and len(current.get("bullets", [])) > 0
+            not stripped.startswith("-") and not stripped.startswith("\u2022") and len(current.get("bullets", [])) > 0
         ):
             # New entry
             if current:
@@ -147,6 +146,7 @@ def parse_entries(text: str) -> list[dict]:
 
 
 # ── HTML Template ────────────────────────────────────────────────────────
+
 
 def build_html(resume: dict) -> str:
     """Build professional resume HTML from parsed data.
@@ -194,7 +194,9 @@ def build_html(resume: dict) -> str:
     edu_html = ""
     if "EDUCATION" in sections:
         edu_text = sections["EDUCATION"].strip()
-        edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
+        edu_html = (
+            f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
+        )
 
     # Summary
     summary_html = ""
@@ -317,8 +319,8 @@ li {{
 </head>
 <body>
 <div class="header">
-    <div class="name">{resume['name']}</div>
-    <div class="title">{resume['title']}</div>
+    <div class="name">{resume["name"]}</div>
+    <div class="title">{resume["title"]}</div>
     {location_html}
     <div class="contact">{contact_html}</div>
 </div>
@@ -332,6 +334,7 @@ li {{
 
 
 # ── PDF Renderer ─────────────────────────────────────────────────────────
+
 
 def render_pdf(html: str, output_path: str) -> None:
     """Render HTML to PDF using Playwright's headless Chromium.
@@ -357,9 +360,8 @@ def render_pdf(html: str, output_path: str) -> None:
 
 # ── Public API ───────────────────────────────────────────────────────────
 
-def convert_to_pdf(
-    text_path: Path, output_path: Path | None = None, html_only: bool = False
-) -> Path:
+
+def convert_to_pdf(text_path: Path, output_path: Path | None = None, html_only: bool = False) -> Path:
     """Convert a text resume/cover letter to PDF.
 
     Args:
@@ -409,10 +411,7 @@ def batch_convert(limit: int = 50) -> int:
     txt_files = sorted(TAILORED_DIR.glob("*.txt"))
     # Exclude _JOB.txt and _CL.txt files from resume conversion
     # (they get their own conversion calls)
-    candidates = [
-        f for f in txt_files
-        if not f.name.endswith("_JOB.txt")
-    ]
+    candidates = [f for f in txt_files if not f.name.endswith("_JOB.txt")]
 
     # Filter to those without a corresponding PDF
     to_convert: list[Path] = []

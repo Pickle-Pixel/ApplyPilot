@@ -38,15 +38,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
     # Stats
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     ready = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE full_description IS NOT NULL AND application_url IS NOT NULL"
+        "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL AND application_url IS NOT NULL"
     ).fetchone()[0]
-    scored = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL"
-    ).fetchone()[0]
-    high_fit = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score >= 7"
-    ).fetchone()[0]
+    scored = conn.execute("SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL").fetchone()[0]
+    high_fit = conn.execute("SELECT COUNT(*) FROM jobs WHERE fit_score >= 7").fetchone()[0]
 
     # Score distribution
     score_dist: dict[int, int] = {}
@@ -83,12 +78,19 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
     # Color map per site
     colors = {
-        "RemoteOK": "#10b981", "WelcomeToTheJungle": "#f59e0b",
-        "Job Bank Canada": "#3b82f6", "CareerJet Canada": "#8b5cf6",
-        "Hacker News Jobs": "#ff6600", "BuiltIn Remote": "#ec4899",
-        "TD Bank": "#00a651", "CIBC": "#c41f3e", "RBC": "#003168",
-        "indeed": "#2164f3", "linkedin": "#0a66c2",
-        "Dice": "#eb1c26", "Glassdoor": "#0caa41",
+        "RemoteOK": "#10b981",
+        "WelcomeToTheJungle": "#f59e0b",
+        "Job Bank Canada": "#3b82f6",
+        "CareerJet Canada": "#8b5cf6",
+        "Hacker News Jobs": "#ff6600",
+        "BuiltIn Remote": "#ec4899",
+        "TD Bank": "#00a651",
+        "CIBC": "#c41f3e",
+        "RBC": "#003168",
+        "indeed": "#2164f3",
+        "linkedin": "#0a66c2",
+        "Dice": "#eb1c26",
+        "Glassdoor": "#0caa41",
     }
 
     # Score distribution bar chart
@@ -116,10 +118,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
         site_rows += f"""
         <div class="site-row">
           <div class="site-name" style="color:{color}">{escape(site)}</div>
-          <div class="site-nums">{s['total']} jobs &middot; {s['high_fit']} strong fit &middot; avg score {avg}</div>
+          <div class="site-nums">{s["total"]} jobs &middot; {s["high_fit"]} strong fit &middot; avg score {avg}</div>
           <div class="bar-track">
-            <div class="bar-fill" style="width:{s['high_fit']/max(s['total'],1)*100}%;background:{color}"></div>
-            <div class="bar-fill" style="width:{s['mid_fit']/max(s['total'],1)*100}%;background:{color}66"></div>
+            <div class="bar-fill" style="width:{s["high_fit"] / max(s["total"], 1) * 100}%;background:{color}"></div>
+            <div class="bar-fill" style="width:{s["mid_fit"] / max(s["total"], 1) * 100}%;background:{color}66"></div>
           </div>
         </div>"""
 
@@ -133,8 +135,12 @@ def generate_dashboard(output_path: str | None = None) -> str:
                 job_sections += "</div>"
             score_color = "#10b981" if score >= 7 else "#f59e0b"
             score_label = {
-                10: "Perfect Match", 9: "Excellent Fit", 8: "Strong Fit",
-                7: "Good Fit", 6: "Moderate+", 5: "Moderate",
+                10: "Perfect Match",
+                9: "Excellent Fit",
+                8: "Strong Fit",
+                7: "Good Fit",
+                6: "Moderate+",
+                5: "Moderate",
             }.get(score, f"Score {score}")
             count_at_score = score_dist.get(score, 0)
             job_sections += f"""
@@ -178,16 +184,16 @@ def generate_dashboard(output_path: str | None = None) -> str:
             apply_html = f'<a href="{apply_url}" class="apply-link" target="_blank">Apply</a>'
 
         job_sections += f"""
-        <div class="job-card" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}">
+        <div class="job-card" data-score="{score}" data-site="{escape(j["site"] or "")}" data-location="{location.lower()}">
           <div class="card-header">
-            <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
+            <span class="score-pill" style="background:{"#10b981" if score >= 7 else "#f59e0b"}">{score}</span>
             <a href="{url}" class="job-title" target="_blank">{title}</a>
           </div>
           <div class="meta-row">{meta_html}</div>
-          {f'<div class="keywords-row">{escape(keywords)}</div>' if keywords else ''}
-          {f'<div class="reasoning-row">{escape(reasoning)}</div>' if reasoning else ''}
+          {f'<div class="keywords-row">{escape(keywords)}</div>' if keywords else ""}
+          {f'<div class="reasoning-row">{escape(reasoning)}</div>' if reasoning else ""}
           <p class="desc-preview">{desc_preview}...</p>
-          {"<details class='full-desc-details'><summary class='expand-btn'>Full Description (" + f'{desc_len:,}' + " chars)</summary><div class='full-desc'>" + full_desc_html + "</div></details>" if j["full_description"] else ""}
+          {"<details class='full-desc-details'><summary class='expand-btn'>Full Description (" + f"{desc_len:,}" + " chars)</summary><div class='full-desc'>" + full_desc_html + "</div></details>" if j["full_description"] else ""}
           <div class="card-footer">{apply_html}</div>
         </div>"""
 

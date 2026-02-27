@@ -29,6 +29,7 @@ _chrome_lock = threading.Lock()
 # Cross-platform process helpers
 # ---------------------------------------------------------------------------
 
+
 def _kill_process_tree(pid: int) -> None:
     """Kill a process and all its children.
 
@@ -49,6 +50,7 @@ def _kill_process_tree(pid: int) -> None:
         else:
             # Unix: kill entire process group
             import os
+
             try:
                 os.killpg(os.getpgid(pid), _signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
@@ -70,7 +72,9 @@ def _kill_on_port(port: int) -> None:
         if platform.system() == "Windows":
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             for line in result.stdout.splitlines():
                 if f":{port}" in line and "LISTENING" in line:
@@ -81,7 +85,9 @@ def _kill_on_port(port: int) -> None:
             # macOS / Linux
             result = subprocess.run(
                 ["lsof", "-ti", f":{port}"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             for pid_str in result.stdout.strip().splitlines():
                 pid_str = pid_str.strip()
@@ -96,6 +102,7 @@ def _kill_on_port(port: int) -> None:
 # ---------------------------------------------------------------------------
 # Worker profile management
 # ---------------------------------------------------------------------------
+
 
 def setup_worker_profile(worker_id: int) -> Path:
     """Create an isolated Chrome profile for a worker.
@@ -126,17 +133,29 @@ def setup_worker_profile(worker_id: int) -> Path:
     if source is None:
         source = config.get_chrome_user_data()
 
-    logger.info("[worker-%d] Copying Chrome profile from %s (first time setup)...",
-                worker_id, source.name)
+    logger.info("[worker-%d] Copying Chrome profile from %s (first time setup)...", worker_id, source.name)
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy essential profile dirs -- skip caches and heavy transient data
     skip = {
-        "ShaderCache", "GrShaderCache", "Service Worker", "Cache",
-        "Code Cache", "GPUCache", "CacheStorage", "Crashpad",
-        "BrowserMetrics", "SafeBrowsing", "Crowd Deny",
-        "MEIPreload", "SSLErrorAssistant", "recovery", "Temp",
-        "SingletonLock", "SingletonSocket", "SingletonCookie",
+        "ShaderCache",
+        "GrShaderCache",
+        "Service Worker",
+        "Cache",
+        "Code Cache",
+        "GPUCache",
+        "CacheStorage",
+        "Crashpad",
+        "BrowserMetrics",
+        "SafeBrowsing",
+        "Crowd Deny",
+        "MEIPreload",
+        "SSLErrorAssistant",
+        "recovery",
+        "Temp",
+        "SingletonLock",
+        "SingletonSocket",
+        "SingletonCookie",
     }
 
     for item in source.iterdir():
@@ -146,9 +165,14 @@ def setup_worker_profile(worker_id: int) -> Path:
         try:
             if item.is_dir():
                 shutil.copytree(
-                    str(item), str(dst), dirs_exist_ok=True,
+                    str(item),
+                    str(dst),
+                    dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns(
-                        "Cache", "Code Cache", "GPUCache", "Service Worker",
+                        "Cache",
+                        "Code Cache",
+                        "GPUCache",
+                        "Service Worker",
                     ),
                 )
             else:
@@ -186,8 +210,8 @@ def _suppress_restore_nag(profile_dir: Path) -> None:
 # Chrome launch / kill
 # ---------------------------------------------------------------------------
 
-def launch_chrome(worker_id: int, port: int | None = None,
-                  headless: bool = False) -> subprocess.Popen:
+
+def launch_chrome(worker_id: int, port: int | None = None, headless: bool = False) -> subprocess.Popen:
     """Launch a Chrome instance with remote debugging for a worker.
 
     Args:
@@ -239,6 +263,7 @@ def launch_chrome(worker_id: int, port: int | None = None,
     kwargs: dict = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if platform.system() != "Windows":
         import os
+
         kwargs["preexec_fn"] = os.setsid
 
     proc = subprocess.Popen(cmd, **kwargs)
@@ -247,8 +272,7 @@ def launch_chrome(worker_id: int, port: int | None = None,
 
     # Give Chrome time to start and open the debug port
     time.sleep(3)
-    logger.info("[worker-%d] Chrome started on port %d (pid %d)",
-                worker_id, port, proc.pid)
+    logger.info("[worker-%d] Chrome started on port %d (pid %d)", worker_id, port, proc.pid)
     return proc
 
 

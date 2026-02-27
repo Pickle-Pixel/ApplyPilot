@@ -46,6 +46,7 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 # -- Location filtering -------------------------------------------------------
 
+
 def _load_location_filter(search_cfg: dict | None = None):
     """Load location accept/reject lists from search config."""
     if search_cfg is None:
@@ -72,6 +73,7 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 
 
 # -- Site configuration from YAML --------------------------------------------
+
 
 def load_sites() -> list[dict]:
     """Load scraping target sites from config/sites.yaml."""
@@ -108,8 +110,16 @@ def _store_jobs_filtered(
             conn.execute(
                 "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (url, job.get("title"), job.get("salary"), job.get("description"),
-                 job.get("location"), site, strategy, now),
+                (
+                    url,
+                    job.get("title"),
+                    job.get("salary"),
+                    job.get("description"),
+                    job.get("location"),
+                    site,
+                    strategy,
+                    now,
+                ),
             )
             new += 1
         except sqlite3.IntegrityError:
@@ -122,6 +132,7 @@ def _store_jobs_filtered(
 
 
 # -- Page intelligence collector ---------------------------------------------
+
 
 def collect_page_intelligence(url: str, headless: bool = True) -> dict:
     """Load a page with Playwright and collect every signal a scraping engineer
@@ -150,12 +161,14 @@ def collect_page_intelligence(url: str, headless: bool = True) -> dict:
                     data = json.loads(body)
                 except Exception:
                     data = None
-                captured_responses.append({
-                    "url": rurl,
-                    "status": response.status,
-                    "size": len(body),
-                    "data": data,
-                })
+                captured_responses.append(
+                    {
+                        "url": rurl,
+                        "status": response.status,
+                        "size": len(body),
+                        "data": data,
+                    }
+                )
             except Exception:
                 pass
 
@@ -330,6 +343,7 @@ def collect_page_intelligence(url: str, headless: bool = True) -> dict:
                             summary[f"nested_{path}"] = info
                         elif isinstance(val, dict) and depth < 3:
                             _explore_nested(val, path, depth + 1)
+
                 _explore_nested(data, "")
         intel["api_responses"].append(summary)
 
@@ -395,8 +409,7 @@ def judge_api_responses(api_responses: list[dict]) -> list[dict]:
             verdict = extract_json(raw)
             is_relevant = verdict.get("relevant", False)
             reason = verdict.get("reason", "?")
-            log.info("Judge: %s -> %s (%s)", resp.get("url", "?")[:80],
-                     "KEEP" if is_relevant else "DROP", reason)
+            log.info("Judge: %s -> %s (%s)", resp.get("url", "?")[:80], "KEEP" if is_relevant else "DROP", reason)
             if is_relevant:
                 relevant.append(resp)
         except Exception as e:
@@ -407,6 +420,7 @@ def judge_api_responses(api_responses: list[dict]) -> list[dict]:
 
 
 # -- Phase 1: strategy selection ---------------------------------------------
+
 
 def format_strategy_briefing(intel: dict) -> str:
     """Lightweight briefing for strategy selection. No raw DOM."""
@@ -434,7 +448,9 @@ def format_strategy_briefing(intel: dict) -> str:
         sections.append(f"\nAPI RESPONSES INTERCEPTED: {len(intel['api_responses'])} calls")
         for resp in intel["api_responses"]:
             sections.append(f"\n  URL: {resp['url']}")
-            sections.append(f"  Status: {resp['status']} | Size: {resp['size']:,} chars | Type: {resp.get('type', '?')}")
+            sections.append(
+                f"  Status: {resp['status']} | Size: {resp['size']:,} chars | Type: {resp.get('type', '?')}"
+            )
             if "first_item_keys" in resp:
                 sections.append(f"  Item keys: {resp['first_item_keys']}")
                 sections.append(f"  Sample: {json.dumps(resp.get('first_item_sample', {}), indent=2)[:1000]}")
@@ -452,7 +468,9 @@ def format_strategy_briefing(intel: dict) -> str:
                             if "count" in sv:
                                 sections.append(f"    .{arr_name}[0].{sub_name}: array of {sv['count']} items")
                                 sections.append(f"      Item keys: {sv['first_item_keys']}")
-                                sections.append(f"      Sample: {json.dumps(sv.get('first_item_sample', {}), indent=2)[:1500]}")
+                                sections.append(
+                                    f"      Sample: {json.dumps(sv.get('first_item_sample', {}), indent=2)[:1500]}"
+                                )
                             elif "keys" in sv:
                                 sections.append(f"    .{arr_name}[0].{sub_name}: object with keys {sv['keys']}")
                                 sections.append(f"      Sample: {json.dumps(sv.get('sample', {}), indent=2)[:1500]}")
@@ -463,24 +481,28 @@ def format_strategy_briefing(intel: dict) -> str:
     if intel["data_testids"]:
         sections.append(f"\nDATA-TESTID ATTRIBUTES: {len(intel['data_testids'])} elements")
         for dt in intel["data_testids"][:15]:
-            text_preview = dt['text'].replace('\n', ' ')[:60]
-            sections.append(f"  <{dt['tag']} data-testid=\"{dt['testid']}\"> {text_preview}")
+            text_preview = dt["text"].replace("\n", " ")[:60]
+            sections.append(f'  <{dt["tag"]} data-testid="{dt["testid"]}"> {text_preview}')
     else:
         sections.append("\nDATA-TESTID: none found")
 
     # DOM stats
     stats = intel.get("dom_stats", {})
-    sections.append(f"\nDOM STATS: {stats.get('total_elements', '?')} elements, "
-                    f"{stats.get('links', '?')} links, {stats.get('headings', '?')} headings, "
-                    f"{stats.get('tables', '?')} tables, {stats.get('articles', '?')} articles, "
-                    f"{stats.get('has_data_ids', '?')} data-id elements")
+    sections.append(
+        f"\nDOM STATS: {stats.get('total_elements', '?')} elements, "
+        f"{stats.get('links', '?')} links, {stats.get('headings', '?')} headings, "
+        f"{stats.get('tables', '?')} tables, {stats.get('articles', '?')} articles, "
+        f"{stats.get('has_data_ids', '?')} data-id elements"
+    )
 
     # Card candidates
     if intel["card_candidates"]:
         sections.append(f"\nREPEATING ELEMENTS DETECTED: {len(intel['card_candidates'])} candidate groups")
         for i, cand in enumerate(intel["card_candidates"]):
-            sections.append(f"  [{i}] parent={cand['parent_selector']} child={cand['child_selector']} "
-                          f"count={cand['total_children']} with_text={cand['with_text']} with_links={cand['with_links']}")
+            sections.append(
+                f"  [{i}] parent={cand['parent_selector']} child={cand['child_selector']} "
+                f"count={cand['total_children']} with_text={cand['with_text']} with_links={cand['with_links']}"
+            )
     else:
         sections.append("\nREPEATING ELEMENTS: none detected")
 
@@ -523,8 +545,20 @@ INTELLIGENCE BRIEFING:
 
 # -- Card HTML cleaning (allowlist approach) ----------------------------------
 
-_ALLOWED_ATTRS = {"id", "href", "data-testid", "data-id", "data-type", "data-slug",
-                  "role", "aria-label", "aria-labelledby", "type", "name", "for"}
+_ALLOWED_ATTRS = {
+    "id",
+    "href",
+    "data-testid",
+    "data-id",
+    "data-type",
+    "data-slug",
+    "role",
+    "aria-label",
+    "aria-labelledby",
+    "type",
+    "name",
+    "for",
+}
 _ALLOWED_PREFIXES = ("data-", "aria-")
 _UTILITY_CLASS_RE = re.compile(
     r"^("
@@ -576,8 +610,7 @@ def clean_page_html(html: str, max_chars: int = 150_000) -> str:
     if main and len(str(main)) > 1000:
         soup = BeautifulSoup(str(main), "html.parser")
 
-    for tag in soup.find_all(["script", "style", "svg", "noscript", "iframe",
-                              "link", "meta", "head", "footer", "nav"]):
+    for tag in soup.find_all(["script", "style", "svg", "noscript", "iframe", "link", "meta", "head", "footer", "nav"]):
         tag.decompose()
 
     for tag in soup.find_all(True):
@@ -636,6 +669,7 @@ PAGE HTML:
 
 # -- LLM helpers -------------------------------------------------------------
 
+
 def ask_llm(prompt: str) -> tuple[str, float, dict]:
     """Send prompt to LLM. Returns (response_text, seconds_taken, metadata)."""
     client = get_client()
@@ -661,7 +695,7 @@ def extract_json(text: str) -> dict:
     elif "```" in text:
         text = text.split("```")[1].split("```")[0]
     text = text.strip()
-    text = re.sub(r'\\([^"\\\/bfnrtu])', r'\1', text)
+    text = re.sub(r'\\([^"\\\/bfnrtu])', r"\1", text)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -675,6 +709,7 @@ def extract_json(text: str) -> dict:
 
 
 # -- JSON path resolution ---------------------------------------------------
+
 
 def resolve_json_path_raw(data, path: str):
     """Navigate a JSON path and return whatever is there (including lists/dicts)."""
@@ -723,6 +758,7 @@ def resolve_json_path(data, path: str):
 
 
 # -- Extraction executors ----------------------------------------------------
+
 
 def execute_json_ld(intel: dict, plan: dict) -> list[dict]:
     """Extract jobs from JSON-LD JobPosting entries."""
@@ -797,7 +833,7 @@ def execute_css_selectors(intel: dict) -> tuple[dict, list[dict]]:
         log.error("LLM_ERROR in Phase 2: %s", e)
         return {}, []
 
-    log.info("Phase 2 LLM: %d chars, %.1fs", meta['response_chars'], elapsed)
+    log.info("Phase 2 LLM: %d chars, %.1fs", meta["response_chars"], elapsed)
 
     try:
         selectors = extract_json(raw)
@@ -845,6 +881,7 @@ def execute_css_selectors(intel: dict) -> tuple[dict, list[dict]]:
 
 # -- Main per-site extraction ------------------------------------------------
 
+
 def _run_one_site(name: str, url: str) -> dict:
     """Run full smart extraction pipeline on one site URL."""
     log.info("=" * 60)
@@ -855,22 +892,38 @@ def _run_one_site(name: str, url: str) -> dict:
     t0 = time.time()
     intel = collect_page_intelligence(url)
     collect_time = time.time() - t0
-    log.info("Done in %.1fs | JSON-LD: %d | API: %d | testids: %d | cards: %d",
-             collect_time, len(intel["json_ld"]), len(intel["api_responses"]),
-             len(intel["data_testids"]), len(intel["card_candidates"]))
+    log.info(
+        "Done in %.1fs | JSON-LD: %d | API: %d | testids: %d | cards: %d",
+        collect_time,
+        len(intel["json_ld"]),
+        len(intel["api_responses"]),
+        len(intel["data_testids"]),
+        len(intel["card_candidates"]),
+    )
 
     # Headful retry if page content is tiny
     full_html = intel.get("full_html", "")
     cleaned_check = clean_page_html(full_html) if full_html else ""
-    _captcha_signals = ["captcha", "are you a human", "verify you", "unusual requests",
-                        "access denied", "please verify", "bot detection"]
+    _captcha_signals = [
+        "captcha",
+        "are you a human",
+        "verify you",
+        "unusual requests",
+        "access denied",
+        "please verify",
+        "bot detection",
+    ]
     _is_captcha = any(s in full_html.lower() for s in _captcha_signals) if full_html else False
     if len(cleaned_check) < 5000 and full_html and not _is_captcha:
         log.info("Cleaned HTML only %s chars -- retrying headful...", f"{len(cleaned_check):,}")
         intel = collect_page_intelligence(url, headless=False)
         collect_time = time.time() - t0
-        log.info("Headful done in %.1fs | JSON-LD: %d | API: %d",
-                 collect_time, len(intel["json_ld"]), len(intel["api_responses"]))
+        log.info(
+            "Headful done in %.1fs | JSON-LD: %d | API: %d",
+            collect_time,
+            len(intel["json_ld"]),
+            len(intel["api_responses"]),
+        )
     elif _is_captcha:
         log.warning("CAPTCHA/rate-limit detected -- skipping headful retry")
 
@@ -931,14 +984,23 @@ def _run_one_site(name: str, url: str) -> dict:
     urls = sum(1 for j in jobs if j.get("url"))
     salaries = sum(1 for j in jobs if j.get("salary"))
     descs = sum(1 for j in jobs if j.get("description"))
-    log.info("RESULT: %s -- %d jobs, %d titles, %d urls, %d salaries, %d descriptions",
-             status, total, titles, urls, salaries, descs)
+    log.info(
+        "RESULT: %s -- %d jobs, %d titles, %d urls, %d salaries, %d descriptions",
+        status,
+        total,
+        titles,
+        urls,
+        salaries,
+        descs,
+    )
 
     for j in jobs[:3]:
-        log.info("  - %s | loc: %s | salary: %s",
-                 str(j.get("title") or "?")[:55],
-                 str(j.get("location") or "?")[:25],
-                 str(j.get("salary") or "-")[:20])
+        log.info(
+            "  - %s | loc: %s | salary: %s",
+            str(j.get("title") or "?")[:55],
+            str(j.get("location") or "?")[:25],
+            str(j.get("salary") or "-")[:20],
+        )
 
     return {
         "name": name,
@@ -953,6 +1015,7 @@ def _run_one_site(name: str, url: str) -> dict:
 
 
 # -- Target building --------------------------------------------------------
+
 
 def build_scrape_targets(
     sites: list[dict] | None = None,
@@ -991,24 +1054,29 @@ def build_scrape_targets(
                 expanded_url = expanded_url.replace("{query_encoded}", quote_plus(query))
                 expanded_url = expanded_url.replace("{query}", quote_plus(query))
                 expanded_url = expanded_url.replace("{location_encoded}", quote_plus(default_location))
-                targets.append({
-                    "name": site_name,
-                    "url": expanded_url,
-                    "query": query,
-                })
+                targets.append(
+                    {
+                        "name": site_name,
+                        "url": expanded_url,
+                        "query": query,
+                    }
+                )
         else:
             expanded_url = site_url
             expanded_url = expanded_url.replace("{location_encoded}", quote_plus(default_location))
-            targets.append({
-                "name": site_name,
-                "url": expanded_url,
-                "query": None,
-            })
+            targets.append(
+                {
+                    "name": site_name,
+                    "url": expanded_url,
+                    "query": None,
+                }
+            )
 
     return targets
 
 
 # -- Run all sites -----------------------------------------------------------
+
 
 def _run_all(
     targets: list[dict],
@@ -1023,8 +1091,9 @@ def _run_all(
     """
     conn = init_db()
     pre_stats = get_stats(conn)
-    log.info("Database: %d jobs already stored, %d pending detail scrape",
-             pre_stats["total"], pre_stats["pending_detail"])
+    log.info(
+        "Database: %d jobs already stored, %d pending detail scrape", pre_stats["total"], pre_stats["pending_detail"]
+    )
 
     results: list[dict] = []
     total_new = 0
@@ -1034,9 +1103,9 @@ def _run_all(
         nonlocal total_new, total_existing
         jobs = r.get("jobs", [])
         if jobs:
-            new, existing = _store_jobs_filtered(conn, jobs, target["name"],
-                                                  r.get("strategy", "?"),
-                                                  accept_locs, reject_locs)
+            new, existing = _store_jobs_filtered(
+                conn, jobs, target["name"], r.get("strategy", "?"), accept_locs, reject_locs
+            )
             total_new += new
             total_existing += existing
             log.info("DB: +%d new, %d already existed", new, existing)
@@ -1044,10 +1113,7 @@ def _run_all(
     if workers > 1 and len(targets) > 1:
         # Parallel mode
         with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as pool:
-            future_to_target = {
-                pool.submit(_run_one_site, target["name"], target["url"]): target
-                for target in targets
-            }
+            future_to_target = {pool.submit(_run_one_site, target["name"], target["url"]): target for target in targets}
             for future in as_completed(future_to_target):
                 target = future_to_target[future]
                 r = future.result()
@@ -1077,11 +1143,11 @@ def _run_all(
     passed = sum(1 for r in results if r["status"] == "PASS")
     log.info("%d/%d PASS", passed, len(results))
 
-    return {"total_new": total_new, "total_existing": total_existing,
-            "passed": passed, "total": len(results)}
+    return {"total_new": total_new, "total_existing": total_existing, "passed": passed, "total": len(results)}
 
 
 # -- Public entry point ------------------------------------------------------
+
 
 def run_smart_extract(
     sites: list[dict] | None = None,
@@ -1110,7 +1176,12 @@ def run_smart_extract(
 
     search_sites = sum(1 for s in (sites or load_sites()) if s.get("type") == "search")
     static_sites = sum(1 for s in (sites or load_sites()) if s.get("type") != "search")
-    log.info("Sites: %d searchable, %d static | Total targets: %d (workers=%d)",
-             search_sites, static_sites, len(targets), workers)
+    log.info(
+        "Sites: %d searchable, %d static | Total targets: %d (workers=%d)",
+        search_sites,
+        static_sites,
+        len(targets),
+        workers,
+    )
 
     return _run_all(targets, accept_locs, reject_locs, workers=workers)

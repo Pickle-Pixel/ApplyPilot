@@ -31,6 +31,7 @@ MAX_ATTEMPTS = 5  # max cross-run retries before giving up
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
 
+
 def _build_tailor_prompt(profile: dict) -> str:
     """Build the resume tailoring system prompt from the user's profile.
 
@@ -172,6 +173,7 @@ Be strict about major lies. Be lenient about minor stretches and learnable skill
 
 # ── JSON Extraction ───────────────────────────────────────────────────────
 
+
 def extract_json(raw: str) -> dict:
     """Robustly extract JSON from LLM response (handles fences, preamble).
 
@@ -208,7 +210,7 @@ def extract_json(raw: str) -> dict:
     end = raw.rfind("}")
     if start != -1 and end > start:
         try:
-            return json.loads(raw[start:end + 1])
+            return json.loads(raw[start : end + 1])
         except json.JSONDecodeError:
             pass
 
@@ -216,6 +218,7 @@ def extract_json(raw: str) -> dict:
 
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
+
 
 def assemble_resume_text(data: dict, profile: dict) -> str:
     """Convert JSON resume data to formatted plain text.
@@ -296,9 +299,8 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
 
 # ── LLM Judge ────────────────────────────────────────────────────────────
 
-def judge_tailored_resume(
-    original_text: str, tailored_text: str, job_title: str, profile: dict
-) -> dict:
+
+def judge_tailored_resume(original_text: str, tailored_text: str, job_title: str, profile: dict) -> dict:
     """LLM judge layer: catches subtle fabrication that programmatic checks miss.
 
     Args:
@@ -314,12 +316,15 @@ def judge_tailored_resume(
 
     messages = [
         {"role": "system", "content": judge_prompt},
-        {"role": "user", "content": (
-            f"JOB TITLE: {job_title}\n\n"
-            f"ORIGINAL RESUME:\n{original_text}\n\n---\n\n"
-            f"TAILORED RESUME:\n{tailored_text}\n\n"
-            "Judge this tailored resume:"
-        )},
+        {
+            "role": "user",
+            "content": (
+                f"JOB TITLE: {job_title}\n\n"
+                f"ORIGINAL RESUME:\n{original_text}\n\n---\n\n"
+                f"TAILORED RESUME:\n{tailored_text}\n\n"
+                "Judge this tailored resume:"
+            ),
+        },
     ]
 
     client = get_client()
@@ -329,7 +334,7 @@ def judge_tailored_resume(
     issues = "none"
     if "ISSUES:" in response.upper():
         issues_idx = response.upper().index("ISSUES:")
-        issues = response[issues_idx + 7:].strip()
+        issues = response[issues_idx + 7 :].strip()
 
     return {
         "passed": passed,
@@ -341,9 +346,13 @@ def judge_tailored_resume(
 
 # ── Core Tailoring ───────────────────────────────────────────────────────
 
+
 def tailor_resume(
-    resume_text: str, job: dict, profile: dict,
-    max_retries: int = 3, validation_mode: str = "normal",
+    resume_text: str,
+    job: dict,
+    profile: dict,
+    max_retries: int = 3,
+    validation_mode: str = "normal",
 ) -> tuple[str, dict]:
     """Generate a tailored resume via JSON output + fresh context on each retry.
 
@@ -374,8 +383,11 @@ def tailor_resume(
     )
 
     report: dict = {
-        "attempts": 0, "validator": None, "judge": None,
-        "status": "pending", "validation_mode": validation_mode,
+        "attempts": 0,
+        "validator": None,
+        "judge": None,
+        "status": "pending",
+        "validation_mode": validation_mode,
     }
     avoid_notes: list[str] = []
     tailored = ""
@@ -394,7 +406,10 @@ def tailor_resume(
 
         messages = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
+            {
+                "role": "user",
+                "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:",
+            },
         ]
 
         raw = client.chat(messages, max_output_tokens=2048)
@@ -452,8 +467,8 @@ def tailor_resume(
 
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
-def run_tailoring(min_score: int = 7, limit: int = 20,
-                  validation_mode: str = "normal") -> dict:
+
+def run_tailoring(min_score: int = 7, limit: int = 20, validation_mode: str = "normal") -> dict:
     """Generate tailored resumes for high-scoring jobs.
 
     Args:
@@ -484,8 +499,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     for job in jobs:
         completed += 1
         try:
-            tailored, report = tailor_resume(resume_text, job, profile,
-                                             validation_mode=validation_mode)
+            tailored, report = tailor_resume(resume_text, job, profile, validation_mode=validation_mode)
 
             # Build safe filename prefix
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
@@ -518,6 +532,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             if report["status"] in ("approved", "approved_with_judge_warning"):
                 try:
                     from applypilot.scoring.pdf import convert_to_pdf
+
                     pdf_path = str(convert_to_pdf(txt_path))
                 except Exception:
                     log.debug("PDF generation failed for %s", txt_path, exc_info=True)
@@ -533,8 +548,13 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             }
         except Exception as e:
             result = {
-                "url": job["url"], "title": job["title"], "site": job["site"],
-                "status": "error", "attempts": 0, "path": None, "pdf_path": None,
+                "url": job["url"],
+                "title": job["title"],
+                "site": job["site"],
+                "status": "error",
+                "attempts": 0,
+                "path": None,
+                "pdf_path": None,
             }
             log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
 
@@ -545,7 +565,8 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
         rate = completed / elapsed if elapsed > 0 else 0
         log.info(
             "%d/%d [%s] attempts=%s | %.1f jobs/min | %s",
-            completed, len(jobs),
+            completed,
+            len(jobs),
             result["status"].upper(),
             result.get("attempts", "?"),
             rate * 60,

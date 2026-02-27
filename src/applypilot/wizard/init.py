@@ -22,6 +22,7 @@ from rich.table import Table
 
 try:
     from pypdf import PdfReader
+
     HAS_PYPDF = True
 except ImportError:
     HAS_PYPDF = False
@@ -42,6 +43,7 @@ console = Console()
 # ---------------------------------------------------------------------------
 # Step 1: Resume
 # ---------------------------------------------------------------------------
+
 
 def _setup_resume() -> str | None:
     """Prompt for resume file, copy into APP_DIR, return extracted text."""
@@ -106,13 +108,16 @@ def _setup_resume() -> str | None:
 # Step 2: LLM Setup (Required)
 # ---------------------------------------------------------------------------
 
+
 def _setup_llm() -> bool:
     """Configure LLM provider - REQUIRED for ApplyPilot."""
-    console.print(Panel(
-        "[bold]Step 2: LLM Setup (Required)[/bold]\n"
-        "ApplyPilot needs an LLM for scoring, tailoring, and profile extraction.\n"
-        "Gemini offers a free tier (15 requests/min)."
-    ))
+    console.print(
+        Panel(
+            "[bold]Step 2: LLM Setup (Required)[/bold]\n"
+            "ApplyPilot needs an LLM for scoring, tailoring, and profile extraction.\n"
+            "Gemini offers a free tier (15 requests/min)."
+        )
+    )
 
     console.print("Supported providers: [bold]Gemini[/bold] (recommended, free), OpenAI, local (Ollama/llama.cpp)")
     provider = Prompt.ask(
@@ -151,6 +156,7 @@ def _setup_llm() -> bool:
         # Validate the API key
         console.print("[dim]Validating API key...[/dim]")
         from applypilot.llm import validate_api_key
+
         is_valid, error = validate_api_key(provider, api_key, model, endpoint)
 
         if is_valid:
@@ -185,12 +191,10 @@ def _setup_llm() -> bool:
 # Step 3: Profile Extraction + Review
 # ---------------------------------------------------------------------------
 
+
 def _extract_and_review_profile(resume_text: str) -> dict:
     """Extract profile from resume using LLM, then let user review and fill gaps."""
-    console.print(Panel(
-        "[bold]Step 3: Profile Setup[/bold]\n"
-        "Extracting your profile from your resume..."
-    ))
+    console.print(Panel("[bold]Step 3: Profile Setup[/bold]\nExtracting your profile from your resume..."))
 
     # Extract from resume
     from applypilot.wizard.resume_parser import extract_resume_data, extracted_to_profile
@@ -257,7 +261,9 @@ def _display_extracted_profile(profile: dict) -> None:
     if personal.get("phone"):
         table.add_row("Phone", personal["phone"])
     if personal.get("city") or personal.get("country"):
-        location = ", ".join(filter(None, [personal.get("city"), personal.get("province_state"), personal.get("country")]))
+        location = ", ".join(
+            filter(None, [personal.get("city"), personal.get("province_state"), personal.get("country")])
+        )
         table.add_row("Location", location)
     if personal.get("linkedin_url"):
         table.add_row("LinkedIn", personal["linkedin_url"])
@@ -300,9 +306,13 @@ def _edit_profile(profile: dict) -> dict:
     personal["email"] = Prompt.ask("Email", default=personal.get("email", ""))
     personal["phone"] = Prompt.ask("Phone", default=personal.get("phone", ""))
     experience["current_title"] = Prompt.ask("Current title", default=experience.get("current_title", ""))
-    experience["years_of_experience_total"] = Prompt.ask("Years of experience", default=experience.get("years_of_experience_total", ""))
+    experience["years_of_experience_total"] = Prompt.ask(
+        "Years of experience", default=experience.get("years_of_experience_total", "")
+    )
 
-    langs = Prompt.ask("Programming languages (comma-separated)", default=", ".join(skills.get("programming_languages", [])))
+    langs = Prompt.ask(
+        "Programming languages (comma-separated)", default=", ".join(skills.get("programming_languages", []))
+    )
     skills["programming_languages"] = [s.strip() for s in langs.split(",") if s.strip()]
 
     frameworks = Prompt.ask("Frameworks (comma-separated)", default=", ".join(skills.get("frameworks", [])))
@@ -384,10 +394,7 @@ def _fill_non_resume_fields(profile: dict) -> dict:
 
     # Target role
     current_title = experience.get("current_title", "")
-    experience["target_role"] = Prompt.ask(
-        "Target role (what you're applying for)",
-        default=current_title
-    )
+    experience["target_role"] = Prompt.ask("Target role (what you're applying for)", default=current_title)
 
     # Work authorization
     console.print("\n[bold cyan]Work Authorization[/bold cyan]")
@@ -407,7 +414,11 @@ def _fill_non_resume_fields(profile: dict) -> dict:
         "salary_expectation": salary,
         "salary_currency": salary_currency,
         "salary_range_min": range_parts[0].strip() if range_parts else "",
-        "salary_range_max": range_parts[1].strip() if len(range_parts) > 1 else range_parts[0].strip() if range_parts else "",
+        "salary_range_max": range_parts[1].strip()
+        if len(range_parts) > 1
+        else range_parts[0].strip()
+        if range_parts
+        else "",
     }
 
     # Availability
@@ -416,11 +427,7 @@ def _fill_non_resume_fields(profile: dict) -> dict:
     }
 
     # Password for job sites
-    personal["password"] = Prompt.ask(
-        "Job site password (for auto-apply login walls)",
-        password=True,
-        default=""
-    )
+    personal["password"] = Prompt.ask("Job site password (for auto-apply login walls)", password=True, default="")
 
     # EEO defaults
     profile["eeo_voluntary"] = {
@@ -440,6 +447,7 @@ def _fill_non_resume_fields(profile: dict) -> dict:
 # Step 4: Search Config
 # ---------------------------------------------------------------------------
 
+
 def _setup_searches(profile: dict) -> None:
     """Generate a searches.yaml from user input."""
     console.print(Panel("[bold]Step 4: Job Search Config[/bold]\nDefine what you're looking for."))
@@ -453,10 +461,7 @@ def _setup_searches(profile: dict) -> None:
     except ValueError:
         distance = 0
 
-    roles_raw = Prompt.ask(
-        "Target job titles (comma-separated)",
-        default=target_role
-    )
+    roles_raw = Prompt.ask("Target job titles (comma-separated)", default=target_role)
     roles = [r.strip() for r in roles_raw.split(",") if r.strip()]
 
     if not roles:
@@ -491,21 +496,23 @@ def _setup_searches(profile: dict) -> None:
 # AI Features
 # ---------------------------------------------------------------------------
 
+
 def _setup_ai_features() -> None:
     """Ask about AI scoring/tailoring — optional LLM configuration."""
-    console.print(Panel(
-        "[bold]Step 4: AI Features (optional)[/bold]\n"
-        "An LLM powers job scoring, resume tailoring, and cover letters.\n"
-        "Without this, you can still discover and enrich jobs."
-    ))
+    console.print(
+        Panel(
+            "[bold]Step 4: AI Features (optional)[/bold]\n"
+            "An LLM powers job scoring, resume tailoring, and cover letters.\n"
+            "Without this, you can still discover and enrich jobs."
+        )
+    )
 
     if not Confirm.ask("Enable AI scoring and resume tailoring?", default=True):
         console.print("[dim]Discovery-only mode. You can configure AI later with [bold]applypilot init[/bold].[/dim]")
         return
 
     console.print(
-        "Supported providers: [bold]Gemini[/bold] (recommended, free tier), "
-        "OpenAI, Claude, local (Ollama/llama.cpp)."
+        "Supported providers: [bold]Gemini[/bold] (recommended, free tier), OpenAI, Claude, local (Ollama/llama.cpp)."
     )
     console.print("[dim]Enter any credentials you want to save now. Leave blank to skip each field.[/dim]")
 
@@ -564,13 +571,16 @@ def _setup_ai_features() -> None:
 # Auto-Apply
 # ---------------------------------------------------------------------------
 
+
 def _setup_auto_apply() -> None:
     """Configure autonomous job application (requires Claude Code CLI)."""
-    console.print(Panel(
-        "[bold]Step 5: Auto-Apply (optional)[/bold]\n"
-        "ApplyPilot can autonomously fill and submit job applications\n"
-        "using Claude Code as the browser agent."
-    ))
+    console.print(
+        Panel(
+            "[bold]Step 5: Auto-Apply (optional)[/bold]\n"
+            "ApplyPilot can autonomously fill and submit job applications\n"
+            "using Claude Code as the browser agent."
+        )
+    )
 
     if not Confirm.ask("Enable autonomous job applications?", default=True):
         console.print("[dim]You can apply manually using the tailored resumes ApplyPilot generates.[/dim]")
@@ -607,6 +617,7 @@ def _setup_auto_apply() -> None:
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
+
 
 def run_wizard() -> None:
     """Run the full interactive setup wizard."""
@@ -674,9 +685,7 @@ def run_wizard() -> None:
     console.print(
         Panel.fit(
             "[bold green]Setup complete![/bold green]\n\n"
-            f"[bold]Your tier: Tier {tier} - {TIER_LABELS[tier]}[/bold]\n\n"
-            + "\n".join(tier_lines)
-            + unlock_hint,
+            f"[bold]Your tier: Tier {tier} - {TIER_LABELS[tier]}[/bold]\n\n" + "\n".join(tier_lines) + unlock_hint,
             border_style="green",
         )
     )

@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 # Schema
 # ---------------------------------------------------------------------------
 
+
 class PersonalInfo(BaseModel):
     full_name: Optional[str] = None
     email: Optional[str] = None
@@ -58,7 +59,7 @@ class ExtractedResume(BaseModel):
 # Extraction prompt
 # ---------------------------------------------------------------------------
 
-EXTRACTION_PROMPT = '''Extract structured data from this resume. Return ONLY valid JSON, no explanation.
+EXTRACTION_PROMPT = """Extract structured data from this resume. Return ONLY valid JSON, no explanation.
 
 {
   "personal": {
@@ -96,12 +97,13 @@ Rules:
 5. Return valid JSON only - no markdown, no explanation
 
 Resume:
-'''
+"""
 
 
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
+
 
 def extract_json_from_response(response: str) -> dict:
     """Extract JSON from LLM response, handling markdown code blocks."""
@@ -112,7 +114,7 @@ def extract_json_from_response(response: str) -> dict:
         pass
 
     # Try extracting from markdown code block
-    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
+    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response, re.DOTALL)
     if json_match:
         try:
             return json.loads(json_match.group(1))
@@ -120,7 +122,7 @@ def extract_json_from_response(response: str) -> dict:
             pass
 
     # Try finding raw JSON object
-    json_match = re.search(r'\{.*\}', response, re.DOTALL)
+    json_match = re.search(r"\{.*\}", response, re.DOTALL)
     if json_match:
         try:
             return json.loads(json_match.group())
@@ -195,9 +197,7 @@ def _validate_extraction(extracted: ExtractedResume) -> list[str]:
         warnings.append("Could not extract email")
 
     skill_count = (
-        len(extracted.skills.programming_languages) +
-        len(extracted.skills.frameworks) +
-        len(extracted.skills.tools)
+        len(extracted.skills.programming_languages) + len(extracted.skills.frameworks) + len(extracted.skills.tools)
     )
     if skill_count == 0:
         warnings.append("No skills extracted")
