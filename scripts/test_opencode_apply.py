@@ -5,11 +5,14 @@ This script tests the end-to-end application flow using OpenCode backend
 without actually submitting the application (--dry-run mode).
 
 Prerequisites:
-1. OpenCode installed: curl -fsSL https://opencode.ai/install | bash
-2. MCP servers registered:
+1. Resume and profile configured:
+   - Run: applypilot init
+   - Or manually create ~/.applypilot/profile.json and ~/.applypilot/resume.txt
+2. OpenCode installed: curl -fsSL https://opencode.ai/install | bash
+3. MCP servers registered:
    - opencode mcp add playwright --provider=openai --url="$LLM_URL" --api-key="$LLM_API_KEY"
    - opencode mcp add gmail --provider=openai --url="$LLM_URL" --api-key="$LLM_API_KEY"
-3. Environment configured in ~/.applypilot/.env:
+4. Environment configured in ~/.applypilot/.env:
    - APPLY_BACKEND=opencode
    - GEMINI_API_KEY (for scoring/tailoring)
    - LLM_URL, LLM_API_KEY, LLM_MODEL (for MCP servers)
@@ -61,20 +64,34 @@ def check_prerequisites() -> list[str]:
             else:
                 issues.append(f"❌ MCP server '{server}' not found. Register: opencode mcp add {server} --provider=...")
 
+    # Check profile and resume exist
+    app_dir = Path.home() / ".applypilot"
+    profile_path = app_dir / "profile.json"
+    resume_txt = app_dir / "resume.txt"
+    resume_pdf = app_dir / "resume.pdf"
+    
+    if not profile_path.exists():
+        issues.append(f"❌ Profile not found at {profile_path}. Run: applypilot init")
+    else:
+        print(f"✓ Profile found: {profile_path}")
+    
+    if not (resume_txt.exists() or resume_pdf.exists()):
+        issues.append(f"❌ Resume not found at {app_dir}/resume.txt or resume.pdf. Run: applypilot init")
+    else:
+        resume = resume_txt if resume_txt.exists() else resume_pdf
+        print(f"✓ Resume found: {resume}")
     # Check environment
     backend = os.environ.get("APPLY_BACKEND", "claude")
     if backend != "opencode":
         issues.append(f"⚠️ APPLY_BACKEND={backend} (not opencode). Set: export APPLY_BACKEND=opencode")
     else:
         print("✓ APPLY_BACKEND=opencode")
-
     if not os.environ.get("GEMINI_API_KEY"):
         issues.append("⚠️ GEMINI_API_KEY not set (needed for scoring/tailoring)")
     else:
         print("✓ GEMINI_API_KEY set")
 
     return issues
-
 
 def test_apply(url: str, verbose: bool = False) -> int:
     """Test applying to a job with dry-run mode."""
