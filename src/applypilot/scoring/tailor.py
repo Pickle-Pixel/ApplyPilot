@@ -14,17 +14,14 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
     BANNED_WORDS,
-    FABRICATION_WATCHLIST,
     sanitize_text,
     validate_json_fields,
-    validate_tailored_resume,
 )
 
 log = logging.getLogger(__name__)
@@ -326,7 +323,7 @@ def judge_tailored_resume(
     ]
 
     client = get_client()
-    response = client.chat(messages, max_tokens=512, temperature=0.1)
+    response = client.chat(messages, max_output_tokens=512)
 
     passed = "VERDICT: PASS" in response.upper()
     issues = "none"
@@ -400,12 +397,14 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        raw = client.chat(messages, max_tokens=2048, temperature=0.4)
+        raw = client.chat(messages, max_output_tokens=16000)
 
         # Parse JSON from response
         try:
             data = extract_json(raw)
-        except ValueError:
+        except ValueError as exc:
+            log.warning("Attempt %d JSON parse failed (%s). Raw response (first 500 chars):\n%s",
+                        attempt + 1, exc, raw[:1000])
             avoid_notes.append("Output was not valid JSON. Return ONLY a JSON object, nothing else.")
             continue
 
@@ -415,6 +414,7 @@ def tailor_resume(
 
         if not validation["passed"]:
             # Only retry if there are hard errors (warnings never block)
+            log.warning("Attempt %d validation failed: %s", attempt + 1, validation["errors"])
             avoid_notes.extend(validation["errors"])
             if attempt < max_retries:
                 continue
