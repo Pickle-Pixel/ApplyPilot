@@ -22,6 +22,9 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      - name: Verify required runtime dependency
+        run: python -c "import litellm; print('litellm import OK')"
+
       - name: Lint
         run: ruff check src/
 
