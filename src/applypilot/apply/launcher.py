@@ -134,7 +134,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7, worker_id: in
                 FROM jobs
                 WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
                   AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND (apply_status IS NULL OR apply_status != 'in_progress')
                 LIMIT 1
             """,
                 (target_url, target_url, like, like),
