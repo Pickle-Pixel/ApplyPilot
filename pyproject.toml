@@ -27,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "pandas>=2.0",
+    "pypdf>=4.0",
     ]
 
 [project.optional-dependencies]
