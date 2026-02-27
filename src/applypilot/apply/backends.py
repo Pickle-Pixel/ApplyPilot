@@ -444,6 +444,7 @@ class OpenCodeBackend(AgentBackend):
         model: str,
         worker_dir: Path,
         agent: str | None,
+        prompt: str,
     ) -> list[str]:
         """Build the OpenCode CLI command arguments.
 
@@ -464,6 +465,8 @@ class OpenCodeBackend(AgentBackend):
             cmd.extend(["--model", model])
         if agent:
             cmd.extend(["--agent", agent])
+        # OpenCode expects the prompt as positional argument(s)
+        cmd.append(prompt)
         return cmd
 
     def _list_mcp_servers(self) -> set[str]:
@@ -506,6 +509,10 @@ class OpenCodeBackend(AgentBackend):
     def _prepare_environment(self) -> dict[str, str]:
         """Prepare environment for OpenCode process."""
         env = os.environ.copy()
+        # Disable interactive prompts and pre-approve permissions
+        # This prevents the "question" tool from hanging in batch mode
+        # and allows external directory access for file operations
+        env["OPENCODE_CONFIG_CONTENT"] = ('{"permission":{"*":"allow","external_directory":"allow","question":"deny"},"tools":{"question":false}}')
         return env
 
     def run_job(
@@ -536,7 +543,7 @@ class OpenCodeBackend(AgentBackend):
         from applypilot.apply.dashboard import add_event, get_state, update_state
 
         self._ensure_required_mcp_servers(required_mcp_servers)
-        cmd = self._build_command(model, worker_dir, agent)
+        cmd = self._build_command(model, worker_dir, agent, prompt)
         env = self._prepare_environment()
 
         update_state(
