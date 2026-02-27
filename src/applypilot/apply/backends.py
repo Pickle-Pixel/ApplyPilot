@@ -422,16 +422,49 @@ class OpenCodeBackend(AgentBackend):
         """Locate the opencode binary, raising clear errors if missing."""
         import shutil
 
+        # Check PATH first
         binary = shutil.which("opencode")
-        if binary is None:
-            raise BackendError(
-                "OpenCode CLI not found on PATH. "
-                "Install it from https://opencode.ai or run: "
-                "curl -fsSL https://opencode.ai/install | bash\n"
-                "Then configure MCP servers: opencode mcp add playwright"
-            )
-        return binary
+        if binary:
+            return binary
 
+        # Check default installation location
+        default_path = Path.home() / ".opencode" / "bin" / "opencode"
+        if default_path.exists():
+            return str(default_path)
+
+        raise BackendError(
+            "OpenCode CLI not found on PATH. "
+            "Install it from https://opencode.ai or run: "
+            "curl -fsSL https://opencode.ai/install | bash\n"
+            "Then configure MCP servers: opencode mcp add playwright"
+        )
+
+    def _build_command(
+        self,
+        model: str,
+        worker_dir: Path,
+        agent: str | None,
+    ) -> list[str]:
+        """Build the OpenCode CLI command arguments.
+
+        Note: OpenCode manages MCP servers via its own config system,
+        not per-invocation config files like Claude CLI. Playwright MCP
+        must be pre-configured via `opencode mcp add`.
+        """
+        binary = self._find_binary()
+        cmd = [
+            binary,
+            "run",
+            "--format",
+            "json",
+            "--dir",
+            str(worker_dir),
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        if agent:
+            cmd.extend(["--agent", agent])
+        return cmd
     def _build_command(
         self,
         model: str,
