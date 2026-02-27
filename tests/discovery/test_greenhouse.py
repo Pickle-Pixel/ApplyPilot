@@ -1,19 +1,27 @@
 """Unit tests for Greenhouse ATS discovery module."""
 
+import os
+import sys
 import sqlite3
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import pytest
 
+# Ensure src is on sys.path for tests when running from repo root
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+SRC = os.path.join(ROOT, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
 from applypilot.discovery.greenhouse import (
-    GREENHOUSE_BASE_URL,
+    GREENHOUSE_API_BASE,
     _location_ok,
     _store_jobs,
     _title_matches_query,
-    fetch_greenhouse_board,
+    fetch_jobs_api,
     load_employers,
-    parse_greenhouse_jobs,
+    parse_api_response,
     search_employer,
 )
 
@@ -110,183 +118,142 @@ class TestTitleMatching:
 
 
 class TestParseGreenhouseJobs:
-    """Tests for HTML parsing functions."""
+    """Tests for API parsing functions (legacy HTML tests remain where relevant)."""
 
-    def test_parse_simple_job_posting(self):
-        """Test parsing a simple job posting HTML."""
-        html = """
-        <html>
-        <body>
-            <div class="job-posts--table--department">
-                <h3 class="section-header">Engineering</h3>
-                <table>
-                    <tr class="job-post">
-                        <td>
-                            <a href="/jobs/12345">
-                                <p class="body--medium">Software Engineer</p>
-                                <p class="body--metadata">San Francisco, CA</p>
-                            </a>
-                        </td>
-                    </tr>
-                </table>
-            </div>
-        </body>
-        </html>
-        """
+    def test_parse_simple_api_job(self):
+        """Test parsing a simple job posting from API JSON."""
+        api_response = {
+            "jobs": [
+                {
+                    "id": 12345,
+                    "title": "Software Engineer",
+                    "location": {"name": "San Francisco, CA"},
+                    "absolute_url": "https://boards.greenhouse.io/test/jobs/12345",
+                    "content": "<p>Great role</p>",
+                    "departments": [{"name": "Engineering"}],
+                    "updated_at": "2026-02-27T00:00:00Z",
+                }
+            ]
+        }
 
-        jobs = parse_greenhouse_jobs(html, "Test Company", "")
+        jobs = parse_api_response(api_response, "Test Company", "")
 
         assert len(jobs) == 1
-        assert jobs[0]["title"] == "Software Engineer"
-        assert jobs[0]["company"] == "Test Company"
-        assert jobs[0]["location"] == "San Francisco, CA"
-        assert jobs[0]["department"] == "Engineering"
-        assert jobs[0]["strategy"] == "greenhouse"
-        assert jobs[0]["url"].endswith("/jobs/12345")
+        job = jobs[0]
+        assert job["title"] == "Software Engineer"
+        assert job["company"] == "Test Company"
+        assert job["location"] == "San Francisco, CA"
+        assert job["department"] == "Engineering"
+        assert job["strategy"] == "greenhouse"
+        assert job["url"] == "https://boards.greenhouse.io/test/jobs/12345"
+        assert job["job_id"] == 12345
+        assert job["description"] == "Great role"
+        assert job["updated_at"] == "2026-02-27T00:00:00Z"
 
-    def test_parse_multiple_jobs(self):
-        """Test parsing multiple job postings."""
-        html = """
-        <html>
-        <body>
-            <div class="job-posts--table--department">
-                <h3 class="section-header">Engineering</h3>
-                <table>
-                    <tr class="job-post">
-                        <td>
-                            <a href="/jobs/1">
-                                <p class="body--medium">Frontend Engineer</p>
-                                <p class="body--metadata">Remote</p>
-                            </a>
-                        </td>
-                    </tr>
-                    <tr class="job-post">
-                        <td>
-                            <a href="/jobs/2">
-                                <p class="body--medium">Backend Engineer</p>
-                                <p class="body--metadata">New York, NY</p>
-                            </a>
-                        </td>
-                    </tr>
-                </table>
-            </div>
-        </body>
-        </html>
-        """
+    def test_parse_multiple_api_jobs(self):
+        """Test parsing multiple jobs from API JSON."""
+        api_response = {
+            "jobs": [
+                {
+                    "id": 1,
+                    "title": "Frontend Engineer",
+                    "location": {"name": "Remote"},
+                    "absolute_url": "https://.../1",
+                    "content": "<p>a</p>",
+                    "departments": [{"name": "Eng"}],
+                    "updated_at": "2026-02-27T00:00:00Z",
+                },
+                {
+                    "id": 2,
+                    "title": "Backend Engineer",
+                    "location": {"name": "New York, NY"},
+                    "absolute_url": "https://.../2",
+                    "content": "<p>b</p>",
+                    "departments": [{"name": "Eng"}],
+                    "updated_at": "2026-02-27T00:00:00Z",
+                },
+            ]
+        }
 
-        jobs = parse_greenhouse_jobs(html, "Test Company", "")
+        jobs = parse_api_response(api_response, "Test Company", "")
 
         assert len(jobs) == 2
         assert jobs[0]["title"] == "Frontend Engineer"
         assert jobs[1]["title"] == "Backend Engineer"
 
-    def test_filter_by_query(self):
-        """Test filtering jobs by query string."""
-        html = """
-        <html>
-        <body>
-            <div class="job-posts--table--department">
-                <table>
-                    <tr class="job-post">
-                        <td>
-                            <a href="/jobs/1">
-                                <p class="body--medium">Machine Learning Engineer</p>
-                                <p class="body--metadata">Remote</p>
-                            </a>
-                        </td>
-                    </tr>
-                    <tr class="job-post">
-                        <td>
-                            <a href="/jobs/2">
-                                <p class="body--medium">Sales Representative</p>
-                                <p class="body--metadata">Remote</p>
-                            </a>
-                        </td>
-                    </tr>
-                </table>
-            </div>
-        </body>
-        </html>
-        """
+    def test_filter_by_query_api(self):
+        """Test filtering API jobs by query string."""
+        api_response = {
+            "jobs": [
+                {
+                    "id": 1,
+                    "title": "Machine Learning Engineer",
+                    "location": {"name": "Remote"},
+                    "absolute_url": "https://.../1",
+                    "content": "<p>a</p>",
+                    "departments": [],
+                    "updated_at": "2026-02-27T00:00:00Z",
+                },
+                {
+                    "id": 2,
+                    "title": "Sales Representative",
+                    "location": {"name": "Remote"},
+                    "absolute_url": "https://.../2",
+                    "content": "<p>b</p>",
+                    "departments": [],
+                    "updated_at": "2026-02-27T00:00:00Z",
+                },
+            ]
+        }
 
-        jobs = parse_greenhouse_jobs(html, "Test Company", "machine learning")
+        jobs = parse_api_response(api_response, "Test Company", "machine learning")
 
         assert len(jobs) == 1
         assert jobs[0]["title"] == "Machine Learning Engineer"
 
-    def test_handles_absolute_urls(self):
-        """Test that absolute URLs are preserved."""
-        html = """
-        <html>
-        <body>
-            <div class="job-posts--table--department">
-                <table>
-                    <tr class="job-post">
-                        <td>
-                            <a href="https://boards.greenhouse.io/test/jobs/123">
-                                <p class="body--medium">Test Job</p>
-                                <p class="body--metadata">Remote</p>
-                            </a>
-                        </td>
-                    </tr>
-                </table>
-            </div>
-        </body>
-        </html>
-        """
+    def test_offices_and_absolute_url_api(self):
+        """Test that offices field is parsed and absolute URLs are preserved in API response."""
+        api_response = {
+            "jobs": [
+                {
+                    "id": 123,
+                    "title": "Test Job",
+                    "location": {"name": "Remote"},
+                    "absolute_url": "https://boards.greenhouse.io/test/jobs/123",
+                    "content": "<p>x</p>",
+                    "departments": [],
+                    "offices": [{"name": "SF Office"}],
+                    "updated_at": "2026-02-27T00:00:00Z",
+                }
+            ]
+        }
 
-        jobs = parse_greenhouse_jobs(html, "Test Company", "")
+        jobs = parse_api_response(api_response, "Test Company", "")
 
         assert len(jobs) == 1
         assert jobs[0]["url"] == "https://boards.greenhouse.io/test/jobs/123"
-
-    def test_handles_relative_urls(self):
-        """Test that relative URLs are converted to absolute."""
-        html = """
-        <html>
-        <body>
-            <div class="job-posts--table--department">
-                <table>
-                    <tr class="job-post">
-                        <td>
-                            <a href="/jobs/123">
-                                <p class="body--medium">Test Job</p>
-                                <p class="body--metadata">Remote</p>
-                            </a>
-                        </td>
-                    </tr>
-                </table>
-            </div>
-        </body>
-        </html>
-        """
-
-        jobs = parse_greenhouse_jobs(html, "Test Company", "")
-
-        assert len(jobs) == 1
-        assert jobs[0]["url"].startswith("https://")
-        assert "/jobs/123" in jobs[0]["url"]
+        assert jobs[0]["offices"] == ["SF Office"]
 
     def test_handles_empty_html(self):
-        """Test handling of empty HTML."""
-        jobs = parse_greenhouse_jobs("", "Test Company", "")
+        """Legacy: test handling of empty input via API parser (empty dict)."""
+        jobs = parse_api_response({}, "Test Company", "")
         assert jobs == []
 
     def test_handles_no_job_posts(self):
-        """Test handling of HTML without job posts."""
-        html = "<html><body><h1>No jobs here</h1></body></html>"
-        jobs = parse_greenhouse_jobs(html, "Test Company", "")
+        """Test handling of API response without jobs key or empty list."""
+        jobs = parse_api_response({"jobs": []}, "Test Company", "")
         assert jobs == []
 
 
-class TestFetchGreenhouseBoard:
-    """Tests for HTTP fetching functions."""
+class TestFetchJobsAPI:
+    """Tests for HTTP fetching functions using the API client."""
 
     @patch("applypilot.discovery.greenhouse.httpx.Client")
     def test_successful_fetch(self, mock_client_class):
-        """Test successful HTML fetch."""
+        """Test successful API fetch returning JSON."""
         mock_response = Mock()
-        mock_response.text = "<html>Test</html>"
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"jobs": []}
         mock_response.raise_for_status = Mock()
 
         mock_client = Mock()
@@ -296,9 +263,9 @@ class TestFetchGreenhouseBoard:
 
         mock_client_class.return_value = mock_client
 
-        result = fetch_greenhouse_board("testcompany")
+        result = fetch_jobs_api("testcompany")
 
-        assert result == "<html>Test</html>"
+        assert result == {"jobs": []}
         mock_client.get.assert_called_once()
 
     @patch("applypilot.discovery.greenhouse.httpx.Client")
@@ -311,24 +278,25 @@ class TestFetchGreenhouseBoard:
 
         mock_client_class.return_value = mock_client
 
-        result = fetch_greenhouse_board("testcompany")
+        result = fetch_jobs_api("testcompany")
 
         assert result is None
 
     def test_url_format(self):
-        """Test that URL is formatted correctly."""
-        assert GREENHOUSE_BASE_URL.format(company="scaleai") == "https://job-boards.greenhouse.io/scaleai"
-        assert GREENHOUSE_BASE_URL.format(company="stripe") == "https://job-boards.greenhouse.io/stripe"
+        """Test that API base URL composes correctly."""
+        assert f"{GREENHOUSE_API_BASE}/scaleai/jobs" == "https://boards-api.greenhouse.io/v1/boards/scaleai/jobs"
+        assert f"{GREENHOUSE_API_BASE}/stripe/jobs" == "https://boards-api.greenhouse.io/v1/boards/stripe/jobs"
 
 
 class TestSearchEmployer:
     """Tests for employer search function."""
 
-    @patch("applypilot.discovery.greenhouse.fetch_greenhouse_board")
-    @patch("applypilot.discovery.greenhouse.parse_greenhouse_jobs")
+    @patch("applypilot.discovery.greenhouse.fetch_jobs_api")
+    @patch("applypilot.discovery.greenhouse.parse_api_response")
     def test_search_with_location_filter(self, mock_parse, mock_fetch):
         """Test searching with location filter enabled."""
-        mock_fetch.return_value = "<html>Test</html>"
+        # fetch_jobs_api returns API dict, parse_api_response returns normalized job list
+        mock_fetch.return_value = {"jobs": []}
         mock_parse.return_value = [
             {
                 "title": "Engineer",
@@ -351,12 +319,12 @@ class TestSearchEmployer:
         )
 
         assert len(jobs) == 1
-        mock_fetch.assert_called_once_with("test")
-        mock_parse.assert_called_once_with("<html>Test</html>", "Test Company", "engineer")
+        mock_fetch.assert_called_once_with("test", content=True)
+        mock_parse.assert_called_once_with({"jobs": []}, "Test Company", "engineer")
 
-    @patch("applypilot.discovery.greenhouse.fetch_greenhouse_board")
-    def test_search_no_html_returns_empty(self, mock_fetch):
-        """Test that empty result is returned if fetch fails."""
+    @patch("applypilot.discovery.greenhouse.fetch_jobs_api")
+    def test_search_no_api_returns_empty(self, mock_fetch):
+        """Test that empty result is returned if API fetch fails."""
         mock_fetch.return_value = None
 
         employer = {"name": "Test Company"}
@@ -512,31 +480,25 @@ class TestStoreJobs:
 class TestIntegration:
     """Integration-style tests."""
 
-    @patch("applypilot.discovery.greenhouse.fetch_greenhouse_board")
+    @patch("applypilot.discovery.greenhouse.fetch_jobs_api")
     @patch("applypilot.discovery.greenhouse.get_connection")
     def test_end_to_end_search_and_store(self, mock_get_conn, mock_fetch, tmp_path):
-        """Test full flow from fetch to parse to store."""
-        # Setup mock HTML
-        html = """
-        <html>
-        <body>
-            <div class="job-posts--table--department">
-                <h3 class="section-header">Engineering</h3>
-                <table>
-                    <tr class="job-post">
-                        <td>
-                            <a href="/jobs/123">
-                                <p class="body--medium">ML Engineer</p>
-                                <p class="body--metadata">Remote</p>
-                            </a>
-                        </td>
-                    </tr>
-                </table>
-            </div>
-        </body>
-        </html>
-        """
-        mock_fetch.return_value = html
+        """Test full flow from fetch to parse to store using the API client."""
+        # Setup mock API response
+        api_response = {
+            "jobs": [
+                {
+                    "id": 123,
+                    "title": "ML Engineer",
+                    "location": {"name": "Remote"},
+                    "absolute_url": "https://boards.greenhouse.io/test/jobs/123",
+                    "content": "<p>ML role</p>",
+                    "departments": [{"name": "Engineering"}],
+                    "updated_at": "2026-02-27T00:00:00Z",
+                }
+            ]
+        }
+        mock_fetch.return_value = api_response
 
         # Setup mock DB
         db_path = tmp_path / "test.db"
@@ -569,6 +531,7 @@ class TestIntegration:
 
         # Manually store jobs to test _store_jobs integration
         from applypilot.discovery.greenhouse import _store_jobs
+
         new, existing = _store_jobs(jobs)
 
         # Verify stored in DB
