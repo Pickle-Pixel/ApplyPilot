@@ -5,6 +5,14 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Greenhouse ATS support** - New discovery source for 129 AI/ML startups and tech companies using Greenhouse (Scale AI, Stripe, Figma, Notion, etc.). Scrapes jobs from `job-boards.greenhouse.io` with HTML parsing.
+- **New module**: `src/applypilot/discovery/greenhouse.py` - Full-featured scraper with parallel execution, location filtering, and query matching
+- **New config**: `src/applypilot/config/greenhouse.yaml` - 129 verified Greenhouse employers organized by category (Core AI, Infrastructure, Fintech, Healthcare, etc.)
+- **Pipeline integration** - Greenhouse scraper runs automatically during `discover` stage alongside JobSpy, Workday, and SmartExtract
+
 ## [0.2.0] - 2026-02-17
 
 ### Added
