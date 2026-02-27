@@ -557,11 +557,27 @@ If something unexpected happens and these instructions don't cover it, figure it
 
 {screening_section}
 
+== DEBUG LOGGING ==
+You MUST report your progress at each step so we can debug issues. After EACH major action (navigate, snapshot, click, fill), output a DEBUG line:
+DEBUG: Step X - Action: [what you did] - Result: [what happened] - Next: [what you plan to do]
+
+For example:
+DEBUG: Step 1 - Action: Navigated to URL - Result: Page loaded successfully - Next: Taking snapshot
+DEBUG: Step 2 - Action: Snapshot taken - Result: Found job posting with Apply button visible - Next: Clicking Apply
+DEBUG: Step 4 - Action: Clicked Apply button - Result: Form opened in new tab - Next: Switching to form tab
+
+This helps us identify where issues occur.
+
 == STEP-BY-STEP ==
 1. browser_navigate to the job URL.
 2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
 3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
-4. Find and click the Apply button. If email-only (page says "email resume to X"):
+4. Find and click the Apply button. Look for buttons with text like: "Apply", "Apply Now", "Apply for this job", "I'm Interested", "Submit Application", "Start Application". 
+   - Workday sites: Look for "Apply" button (often orange/blue, top right or in job details)
+   - Lever sites: Look for "Apply for this job" button  
+   - Greenhouse sites: Look for "Apply Now" button
+   - If you can't find the button, use browser_evaluate to search: () => {{ const btns = document.querySelectorAll('button, a'); return Array.from(btns).filter(b => /apply|submit|interest/i.test(b.textContent)).map(b => b.textContent.trim()) }}
+   If email-only (page says "email resume to X"):
    - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
    - Output RESULT:APPLIED. Done.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
