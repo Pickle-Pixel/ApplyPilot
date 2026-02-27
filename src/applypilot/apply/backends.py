@@ -465,41 +465,16 @@ class OpenCodeBackend(AgentBackend):
         if agent:
             cmd.extend(["--agent", agent])
         return cmd
-    def _build_command(
-        self,
-        model: str,
-        worker_dir: Path,
-        agent: str | None,
-    ) -> list[str]:
-        """Build the OpenCode CLI command arguments.
 
-        Note: OpenCode manages MCP servers via its own config system,
-        not per-invocation config files like Claude CLI. Playwright MCP
-        must be pre-configured via `opencode mcp add`.
-        """
+    def _list_mcp_servers(self) -> set[str]:
+        from applypilot import config
         binary = self._find_binary()
-        cmd = [
-            binary,
-            "run",
-            "--format",
-            "json",
-            "--dir",
-            str(worker_dir),
-        ]
-        if model:
-            cmd.extend(["--model", model])
-        if agent:
-            cmd.extend(["--agent", agent])
-        return cmd
-
-        binary = self._find_binary()
-        env = self._prepare_environment()
         proc = subprocess.run(
             [binary, "mcp", "list"],
             capture_output=True,
             text=True,
             check=False,
-            env=env,
+            env=self._prepare_environment(),
             cwd=str(config.APP_DIR),
         )
         output = proc.stdout or ""
