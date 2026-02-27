@@ -1,26 +1,26 @@
-from applypilot.llm import LLMClient, LLMConfig, _normalize_thinking_level
+import os
+
+from applypilot.llm import LLMClient, LLMConfig
 
 
-def test_normalize_thinking_level_accepts_supported_levels() -> None:
-    assert _normalize_thinking_level("none") == "none"
-    assert _normalize_thinking_level("low") == "low"
-    assert _normalize_thinking_level("medium") == "medium"
-    assert _normalize_thinking_level("high") == "high"
+def test_client_init_does_not_mutate_provider_env(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    LLMClient(
+        LLMConfig(
+            provider="openai",
+            api_base=None,
+            model="gpt-4o-mini",
+            api_key="test-key",
+        )
+    )
+    assert "OPENAI_API_KEY" not in os.environ
 
 
-def test_normalize_thinking_level_defaults_minimal_to_low() -> None:
-    assert _normalize_thinking_level("minimal") == "low"
-
-
-def test_normalize_thinking_level_defaults_invalid_value_to_low() -> None:
-    assert _normalize_thinking_level("max") == "low"
-
-
-def test_build_completion_args_applies_reasoning_effort_for_openai() -> None:
+def test_build_completion_args_does_not_include_reasoning_effort_by_default() -> None:
     client = LLMClient(
         LLMConfig(
             provider="openai",
-            base_url="https://api.openai.com/v1",
+            api_base=None,
             model="gpt-4o-mini",
             api_key="test-key",
         )
@@ -29,8 +29,62 @@ def test_build_completion_args_applies_reasoning_effort_for_openai() -> None:
         messages=[{"role": "user", "content": "hello"}],
         temperature=None,
         max_output_tokens=128,
-        thinking_level="medium",
         response_kwargs=None,
     )
-    assert args["reasoning_effort"] == "medium"
+    assert "reasoning_effort" not in args
     assert args["max_tokens"] == 128
+
+
+def test_build_completion_args_uses_litellm_native_gemini_model_prefix() -> None:
+    client = LLMClient(
+        LLMConfig(
+            provider="gemini",
+            api_base=None,
+            model="gemini-2.0-flash",
+            api_key="g-key",
+        )
+    )
+    args = client._build_completion_args(
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=None,
+        max_output_tokens=64,
+        response_kwargs=None,
+    )
+    assert args["model"] == "gemini/gemini-2.0-flash"
+
+
+def test_build_completion_args_includes_api_key_for_remote_provider() -> None:
+    client = LLMClient(
+        LLMConfig(
+            provider="gemini",
+            api_base=None,
+            model="gemini-2.0-flash",
+            api_key="g-key",
+        )
+    )
+    args = client._build_completion_args(
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=None,
+        max_output_tokens=64,
+        response_kwargs=None,
+    )
+    assert args["api_key"] == "g-key"
+
+
+def test_build_completion_args_sets_local_api_base_and_api_key() -> None:
+    client = LLMClient(
+        LLMConfig(
+            provider="local",
+            api_base="http://127.0.0.1:8080/v1",
+            model="local-model",
+            api_key="local-key",
+        )
+    )
+    args = client._build_completion_args(
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=None,
+        max_output_tokens=64,
+        response_kwargs=None,
+    )
+    assert args["api_base"] == "http://127.0.0.1:8080/v1"
+    assert args["api_key"] == "local-key"

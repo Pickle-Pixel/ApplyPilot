@@ -25,13 +25,6 @@ import litellm
 
 log = logging.getLogger(__name__)
 
-_OPENAI_BASE = "https://api.openai.com/v1"
-_ANTHROPIC_BASE = "https://api.anthropic.com/v1"
-_PROVIDER_API_ENV_KEY = {
-    "gemini": "GEMINI_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-}
 _DEFAULT_MODEL_BY_PROVIDER = {
     "local": "local-model",
     "gemini": "gemini-2.0-flash",
@@ -42,15 +35,13 @@ _DEFAULT_MODEL_BY_PROVIDER = {
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
 
-_THINKING_LEVELS = {"none", "low", "medium", "high"}
-
 
 @dataclass(frozen=True)
 class LLMConfig:
     """Normalized LLM configuration consumed by LLMClient."""
 
     provider: str
-    base_url: str
+    api_base: str | None
     model: str
     api_key: str
 
@@ -60,14 +51,6 @@ def _env_get(env: Mapping[str, str], key: str) -> str:
     if value is None:
         return ""
     return str(value).strip()
-
-
-def _normalize_thinking_level(thinking_level: str) -> str:
-    level = (thinking_level or "low").strip().lower()
-    if level not in _THINKING_LEVELS:
-        log.warning("Invalid thinking_level '%s', defaulting to 'low'.", thinking_level)
-        return "low"
-    return level
 
 
 def _provider_model(provider: str, model: str) -> str:
@@ -167,27 +150,27 @@ def resolve_llm_config(env: Mapping[str, str] | None = None) -> LLMConfig:
     if chosen == "local":
         return LLMConfig(
             provider="local",
-            base_url=local_url.rstrip("/"),
+            api_base=local_url.rstrip("/"),
             model=model,
             api_key=_env_get(env_map, "LLM_API_KEY"),
         )
     if chosen == "gemini":
         return LLMConfig(
             provider="gemini",
-            base_url="",
+            api_base=None,
             model=model,
             api_key=gemini_key,
         )
     if chosen == "openai":
         return LLMConfig(
             provider="openai",
-            base_url=_OPENAI_BASE,
+            api_base=None,
             model=model,
             api_key=openai_key,
         )
     return LLMConfig(
         provider="anthropic",
-        base_url=_ANTHROPIC_BASE,
+        api_base=None,
         model=model,
         api_key=anthropic_key,
     )
@@ -200,19 +183,12 @@ class LLMClient:
         self.config = config
         self.provider = config.provider
         self.model = config.model
-        self._apply_provider_env()
-
-    def _apply_provider_env(self) -> None:
-        env_key = _PROVIDER_API_ENV_KEY.get(self.provider)
-        if env_key and self.config.api_key:
-            os.environ[env_key] = self.config.api_key
 
     def _build_completion_args(
         self,
         messages: list[dict],
         temperature: float | None,
         max_output_tokens: int,
-        thinking_level: str | None,
         response_kwargs: Mapping[str, object] | None,
     ) -> dict:
         args: dict = {
@@ -225,14 +201,13 @@ class LLMClient:
         if temperature is not None:
             args["temperature"] = temperature
 
+        if self.config.api_key:
+            args["api_key"] = self.config.api_key
+
         if self.provider == "local":
             args["model"] = self.model
-            args["api_base"] = self.config.base_url
-            if self.config.api_key:
-                args["api_key"] = self.config.api_key
-        if thinking_level is not None:
-            level = _normalize_thinking_level(thinking_level)
-            args["reasoning_effort"] = level
+            if self.config.api_base:
+                args["api_base"] = self.config.api_base
 
         if response_kwargs:
             args.update(response_kwargs)
@@ -243,15 +218,10 @@ class LLMClient:
         messages: list[dict],
         temperature: float | None = None,
         max_output_tokens: int = 10000,
-        thinking_level: str | None = None,
         response_kwargs: Mapping[str, object] | None = None,
     ) -> str:
         """Send a completion request and return plain text content."""
-        # Suppress LiteLLM's verbose multiline info logs (e.g. request traces).
-        if hasattr(litellm, 'set_verbose'):
-            litellm.set_verbose(False)
-        if hasattr(litellm, 'suppress_debug_info'):
-            litellm.suppress_debug_info = True
+        litellm.suppress_debug_info = True
 
         try:
             response = litellm.completion(
@@ -259,7 +229,6 @@ class LLMClient:
                     messages=messages,
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
-                    thinking_level=thinking_level,
                     response_kwargs=response_kwargs,
                 )
             )
@@ -267,18 +236,7 @@ class LLMClient:
             choices = getattr(response, "choices", None)
             if not choices:
                 raise RuntimeError("LLM response contained no choices.")
-            content = choices[0].message.content
-
-            if isinstance(content, str):
-                text = content.strip()
-            elif isinstance(content, list):
-                text = "".join(
-                    part if isinstance(part, str) else part.get("text", "")
-                    for part in content
-                    if isinstance(part, (str, dict))
-                ).strip()
-            else:
-                text = ""
+            text = response.choices[0].message.content.strip()
 
             if not text:
                 raise RuntimeError("LLM response contained no text content.")
