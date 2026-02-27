@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 import os
+from typing import Any, Literal, TypedDict, Unpack
 
 import litellm
 
@@ -45,6 +46,22 @@ class LLMConfig:
     api_base: str | None
     model: str
     api_key: str
+
+
+class ChatMessage(TypedDict):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str
+
+
+class LiteLLMExtra(TypedDict, total=False):
+    stop: str | list[str]
+    top_p: float
+    seed: int
+    stream: bool
+    response_format: dict[str, Any]
+    tools: list[dict[str, Any]]
+    tool_choice: str | dict[str, Any]
+    fallbacks: list[str]
 
 
 def _env_get(env: Mapping[str, str], key: str) -> str:
@@ -133,58 +150,52 @@ class LLMClient:
         self.config = config
         self.provider = config.provider
         self.model = config.model
-
-    def _build_completion_args(
-        self,
-        messages: list[dict],
-        temperature: float | None,
-        max_output_tokens: int,
-        response_kwargs: Mapping[str, object] | None,
-    ) -> dict:
-        args: dict = {
-            "model": self.model,
-            "messages": messages,
-            "max_tokens": max_output_tokens,
-            "timeout": _TIMEOUT,
-            "num_retries": _MAX_RETRIES,  # Delegate retry handling to LiteLLM.
-        }
-        if temperature is not None:
-            args["temperature"] = temperature
-
-        if self.config.api_key:
-            args["api_key"] = self.config.api_key
-
-        if self.config.api_base:
-            args["api_base"] = self.config.api_base
-
-        if response_kwargs:
-            args.update(response_kwargs)
-        return args
+        litellm.suppress_debug_info = True
 
     def chat(
         self,
-        messages: list[dict],
-        temperature: float | None = None,
+        messages: list[ChatMessage],
+        *,
         max_output_tokens: int = 10000,
-        response_kwargs: Mapping[str, object] | None = None,
+        temperature: float | None = None,
+        timeout: int = _TIMEOUT,
+        num_retries: int = _MAX_RETRIES,
+        drop_params: bool = True,
+        **extra: Unpack[LiteLLMExtra],
     ) -> str:
         """Send a completion request and return plain text content."""
-        litellm.suppress_debug_info = True
-
         try:
-            response = litellm.completion(
-                **self._build_completion_args(
+            if temperature is None:
+                response = litellm.completion(
+                    model=self.model,
                     messages=messages,
-                    temperature=temperature,
-                    max_output_tokens=max_output_tokens,
-                    response_kwargs=response_kwargs,
+                    max_tokens=max_output_tokens,
+                    timeout=timeout,
+                    num_retries=num_retries,
+                    drop_params=drop_params,
+                    api_key=self.config.api_key or None,
+                    api_base=self.config.api_base or None,
+                    **extra,
                 )
-            )
+            else:
+                response = litellm.completion(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=max_output_tokens,
+                    temperature=temperature,
+                    timeout=timeout,
+                    num_retries=num_retries,
+                    drop_params=drop_params,
+                    api_key=self.config.api_key or None,
+                    api_base=self.config.api_base or None,
+                    **extra,
+                )
 
             choices = getattr(response, "choices", None)
             if not choices:
                 raise RuntimeError("LLM response contained no choices.")
-            text = choices[0].message.content.strip()
+            content = response.choices[0].message.content
+            text = content.strip() if isinstance(content, str) else str(content).strip()
 
             if not text:
                 raise RuntimeError("LLM response contained no text content.")
@@ -192,9 +203,27 @@ class LLMClient:
         except Exception as exc:  # pragma: no cover - provider SDK exception types vary by backend/version.
             raise RuntimeError(f"LLM request failed ({self.provider}/{self.model}): {exc}") from exc
 
-    def ask(self, prompt: str, **kwargs) -> str:
+    def ask(
+        self,
+        prompt: str,
+        *,
+        max_output_tokens: int = 10000,
+        temperature: float | None = None,
+        timeout: int = _TIMEOUT,
+        num_retries: int = _MAX_RETRIES,
+        drop_params: bool = True,
+        **extra: Unpack[LiteLLMExtra],
+    ) -> str:
         """Convenience: single user prompt -> assistant response."""
-        return self.chat([{"role": "user", "content": prompt}], **kwargs)
+        return self.chat(
+            [{"role": "user", "content": prompt}],
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            timeout=timeout,
+            num_retries=num_retries,
+            drop_params=drop_params,
+            **extra,
+        )
 
     def close(self) -> None:
         """No-op. LiteLLM completion() is stateless per call."""
