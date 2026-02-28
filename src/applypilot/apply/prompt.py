@@ -525,6 +525,55 @@ Fit Score: {job.get('fit_score', 'N/A')}/10
 Resume PDF (upload this): {pdf_path}
 Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
 
+== MCP TOOL EXAMPLES ==
+Here are exact examples of how to call the browser tools via MCP:
+
+**Upload Resume (MUST use this 2-step workflow):**
+```
+1. browser_click element: "button containing 'Resume' or 'Upload'" 
+   (or find with browser_evaluate: () => document.querySelectorAll('input[type=file], button, a').filter(el => /resume|upload|attach/i.test(el.textContent)))
+
+2. browser_file_upload: {{"paths": ["{pdf_path}"]}}
+   Example: {{"paths": ["/Users/nroth/.applypilot/apply-workers/current/John_Doe_Resume.pdf"]}}
+   IMPORTANT: The paths parameter must be an ARRAY of strings, even for single file!
+
+3. If upload button doesn't work, try:
+   browser_evaluate: () => {{
+     const input = document.querySelector('input[type="file"]');
+     if (input) {{ input.click(); return 'clicked'; }}
+     return 'not found';
+   }}
+   Then browser_file_upload with the path.
+```
+
+**Fill form fields:**
+```
+browser_fill_form: [
+  {"field": "textbox with placeholder 'First Name'", "value": "John"},
+  {"field": "textbox with placeholder 'Email'", "value": "john@example.com"},
+  {"field": "textbox with placeholder 'Phone'", "value": "5551234567"}
+]
+```
+
+**Click a button:**
+```
+browser_click: "button containing 'Next' or 'Continue'"
+```
+
+**Navigate:**
+```
+browser_navigate: "https://example.com"
+```
+
+**Get all buttons on page (no scrolling needed):**
+```
+browser_evaluate: () => {{
+  return Array.from(document.querySelectorAll('button, a, [role="button"]'))
+    .map(el => el.textContent.trim())
+    .filter(t => t.length > 0 && t.length < 50);
+}}
+```
+
 == RESUME TEXT (use when filling text fields) ==
 {tailored_resume}
 
