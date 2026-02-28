@@ -594,8 +594,12 @@ This helps us identify where issues occur.
    7f. Need email verification? Use search_emails + read_email to get the code.
    7g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
    7h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
-8. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
-9. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> use the cover letter PDF path.
+8. Upload resume. 
+   a) FIRST: Click the upload button/file input to trigger the file chooser modal. Look for buttons like "Upload Resume", "Select File", "Attach Resume", or an input with accept=".pdf".
+   b) THEN: Call browser_file_upload with {{"paths": ["{pdf_path}"]}} (use EXACT path from FILES section above).
+   c) Wait for upload to complete (look for progress indicator or filename in the field).
+   This is the tailored resume for THIS job. Non-negotiable.
+9. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> click upload button first, then browser_file_upload with the cover letter PDF path.
 10. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
    - "Current Job Title" or "Most Recent Title" -> use the title from the TAILORED RESUME summary, NOT whatever the parser guessed.
    - Compare every other field to the APPLICANT PROFILE. Fix mismatches. Fill empty fields.
@@ -626,7 +630,12 @@ RESULT:FAILED:reason -- any other failure (brief reason)
 == FORM TRICKS ==
 - Popup/new window opened? browser_tabs action "list" to see all tabs. browser_tabs action "select" with the tab index to switch. ALWAYS check for new tabs after clicking login/apply/sign-in buttons.
 - "Upload your resume" pre-fill page (Workday, Lever, etc.): This is NOT the application form yet. Click "Select file" or the upload area, then browser_file_upload with the resume PDF path. Wait for parsing to finish. Then click Next/Continue to reach the actual form.
-- File upload not working? Try: (1) browser_click the upload button/area, (2) browser_file_upload with the path. If still failing, look for a hidden file input or a "Select file" link and click that first.
+- File upload workflow (MUST follow this order):
+  1. browser_click the upload button/dropzone FIRST - this triggers the file chooser modal
+  2. THEN call browser_file_upload with {{"paths": ["/absolute/path/to/file.pdf"]}}
+  3. NEVER call browser_file_upload without clicking the upload button first - it will fail
+  If upload button is hidden: use browser_evaluate to find and click the hidden input, or look for "Select file" link.
+  - Workday specific: Look for "Resume" section, click "Upload" or file icon, then browser_file_upload.
 - Dropdown won't fill? browser_click to open it, then browser_click the option.
 - Checkbox won't check via fill_form? Use browser_click on it instead. Snapshot to verify.
 - Phone field with country prefix: just type digits {phone_digits}
