@@ -525,54 +525,17 @@ Fit Score: {job.get('fit_score', 'N/A')}/10
 Resume PDF (upload this): {pdf_path}
 Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
 
-== MCP TOOL EXAMPLES ==
-Here are exact examples of how to call the browser tools via MCP:
+== TOOL USAGE ==
+Key browser tools to use:
+- browser_navigate: Navigate to a URL
+- browser_click: Click an element by description
+- browser_fill_form: Fill form fields by placeholder/name
+- browser_file_upload: Upload file (must click upload button FIRST)
+- browser_snapshot: Read page text content
+- browser_evaluate: Run JavaScript to query DOM
 
-**Upload Resume (MUST use this 2-step workflow):**
-```
-1. browser_click element: "button containing 'Resume' or 'Upload'" 
-   (or find with browser_evaluate: () => document.querySelectorAll('input[type=file], button, a').filter(el => /resume|upload|attach/i.test(el.textContent)))
-
-2. browser_file_upload: {{"paths": ["{pdf_path}"]}}
-   Example: {{"paths": ["/Users/nroth/.applypilot/apply-workers/current/John_Doe_Resume.pdf"]}}
-   IMPORTANT: The paths parameter must be an ARRAY of strings, even for single file!
-
-3. If upload button doesn't work, try:
-   browser_evaluate: () => {{
-     const input = document.querySelector('input[type="file"]');
-     if (input) {{ input.click(); return 'clicked'; }}
-     return 'not found';
-   }}
-   Then browser_file_upload with the path.
-```
-
-**Fill form fields:**
-```
-browser_fill_form: [
-  {"field": "textbox with placeholder 'First Name'", "value": "John"},
-  {"field": "textbox with placeholder 'Email'", "value": "john@example.com"},
-  {"field": "textbox with placeholder 'Phone'", "value": "5551234567"}
-]
-```
-
-**Click a button:**
-```
-browser_click: "button containing 'Next' or 'Continue'"
-```
-
-**Navigate:**
-```
-browser_navigate: "https://example.com"
-```
-
-**Get all buttons on page (no scrolling needed):**
-```
-browser_evaluate: () => {{
-  return Array.from(document.querySelectorAll('button, a, [role="button"]'))
-    .map(el => el.textContent.trim())
-    .filter(t => t.length > 0 && t.length < 50);
-}}
-```
+For file upload: 1) Click upload button 2) Then call browser_file_upload with path.
+For form fields: Use browser_evaluate to discover all inputs on page first.
 
 == RESUME TEXT (use when filling text fields) ==
 {tailored_resume}
@@ -619,11 +582,10 @@ This helps us identify where issues occur.
 
 == STEP-BY-STEP ==
 1. browser_navigate to the job URL.
-2. browser_evaluate to get ALL interactive elements: () => {{ 
-     const buttons = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"]'));
-     return buttons.map(b => ({{ text: b.textContent?.trim() || b.value, tag: b.tagName, id: b.id, class: b.className?.split(' ')[0] }})).filter(b => b.text);
-   }}
-   This gives you a list of ALL clickable elements without scrolling. Look for Apply/Submit/Next/Continue buttons.
+2. browser_evaluate to get ALL interactive elements AND form fields:
+   - Get all clickable elements: () => document.querySelectorAll('button, a, [role="button"], input[type="submit"]')
+   - Get all form fields: () => document.querySelectorAll('input, textarea, select')
+   This gives you a list of ALL elements without scrolling. Look for Apply/Submit/Next/Continue buttons and form inputs.
 3. browser_snapshot ONLY to read text content, NOT to find elements by position. Use the element list from step 2 for clicking.
 4. Run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
 5. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
@@ -667,7 +629,7 @@ RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
 RESULT:FAILED:reason -- any other failure (brief reason)
 
 == BROWSER EFFICIENCY ==
-- **NEVER SCROLL manually**. Use browser_evaluate to query the DOM programmatically. Example: () => document.querySelectorAll('button').map(b => b.textContent)
+- **SCROLL ONLY WHEN NECESSARY**. Use browser_evaluate to query the DOM programmatically instead of scrolling. Example: () => document.querySelectorAll('button').map(b => b.textContent)
 - **ALWAYS use browser_evaluate first** to find elements by selector or text content. This is 100x faster than visual scanning.
 - browser_snapshot ONCE per page to read text content, NOT to find element positions.
 - Only snapshot again when you need to see the visual layout for verification.
