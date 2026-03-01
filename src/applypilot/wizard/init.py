@@ -306,7 +306,7 @@ def _setup_auto_apply() -> None:
         console.print("[dim]You can apply manually using the tailored resumes ApplyPilot generates.[/dim]")
         return
 
-    # Choose backend (OpenCode preferred, Claude supported as fallback)
+    # Choose backend
     console.print("\nSupported backends: [bold]opencode[/bold] (recommended), [bold]claude[/bold] (fallback)")
     backend = Prompt.ask("Which backend to use for auto-apply?", choices=["opencode", "claude"], default="opencode")
 

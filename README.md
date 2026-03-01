@@ -43,7 +43,7 @@ applypilot apply --dry-run  # fill forms without submitting
 ## Two Paths
 
 ### Full Pipeline (recommended)
-**Requires:** Python 3.11+, Node.js (for npx), Gemini API key (free), OpenCode CLI (recommended) or Claude Code CLI (fallback), Chrome
+**Requires:** Python 3.11+, Node.js (for npx), Gemini API key (free), Claude Code CLI or OpenCode CLI, Chrome
 
 Runs all 6 stages, from job discovery to autonomous application submission. This is the full power of ApplyPilot.
 
@@ -63,7 +63,7 @@ Runs stages 1-5: discovers jobs, scores them, tailors your resume, generates cov
 | **3. Score** | AI rates every job 1-10 based on your resume and preferences. Only high-fit jobs proceed |
 | **4. Tailor** | AI rewrites your resume per job: reorganizes, emphasizes relevant experience, adds keywords. Never fabricates |
 | **5. Cover Letter** | AI generates a targeted cover letter per job |
-| **6. Auto-Apply** | Orchestrates browser-driven submission using an external backend (OpenCode recommended, or Claude). The backend launches a browser, detects the form type, fills personal information and work history, uploads the tailored resume and cover letter, answers screening questions with AI, and submits. |
+| **6. Auto-Apply** | Orchestrates browser-driven submission using an external backend (Claude or OpenCode). The backend launches a browser, detects the form type, fills personal information and work history, uploads the tailored resume and cover letter, answers screening questions with AI, and submits. |
 
 Each stage is independent. Run them all or pick what you need.
 
@@ -90,7 +90,7 @@ Each stage is independent. Run them all or pick what you need.
 | Node.js 18+ | Auto-apply | Needed for `npx` to run Playwright MCP server |
 | Gemini API key | Scoring, tailoring, cover letters | Free tier (15 RPM / 1M tokens/day) is enough |
 | Chrome/Chromium | Auto-apply | Auto-detected on most systems |
-| OpenCode CLI (recommended) or Claude Code CLI | Auto-apply | OpenCode: install from https://opencode.ai and register MCPs; Claude: install from https://claude.ai/code |
+| Claude Code CLI or OpenCode CLI | Auto-apply | Claude: install from https://claude.ai/code; OpenCode: install from https://opencode.ai and register MCPs |
 
 **Gemini API key is free.** Get one at [aistudio.google.com](https://aistudio.google.com). OpenAI and local models (Ollama/llama.cpp) are also supported.
 
@@ -208,15 +208,14 @@ Generates a custom resume per job: reorders experience, emphasizes relevant skil
 Writes a targeted cover letter per job referencing the specific company, role, and how your experience maps to their requirements.
 
 ### Auto-Apply
-Auto-apply is implemented via a pluggable backend. Two supported backends are available:
+Auto-apply is implemented via a pluggable backend with two supported options:
 
-- OpenCode (recommended): runs via the OpenCode CLI and uses pre-configured MCP servers for Playwright and other tools. OpenCode is recommended for production deployments and orchestration. You must register MCP servers (opencode mcp add ...) before use.
-
-- Claude (fallback / code default): uses the Claude Code CLI to spawn a browser and run the agent. The runtime code default is `claude` when APPLY_BACKEND is not set.
+- **Claude**: uses the Claude Code CLI (default when APPLY_BACKEND is unset)
+- **OpenCode**: uses the OpenCode CLI with pre-configured MCP servers
 
 Both backends perform the same high-level tasks: launch a browser, detect form types, fill personal details, upload tailored documents, answer screening questions, and submit applications. A live dashboard shows progress in real-time.
 
-Note: OpenCode manages MCP servers via its own config; when using opencode you must register MCPs ahead of time. When using the claude backend ensure the Claude Code CLI is installed and available on PATH.
+Choose your backend by setting APPLY_BACKEND=claude or APPLY_BACKEND=opencode. Each requires the respective CLI to be installed and configured.
 
 ```bash
 # Utility modes (no Chrome/Claude needed)

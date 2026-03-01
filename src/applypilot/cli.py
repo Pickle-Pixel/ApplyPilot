@@ -594,7 +594,7 @@ def doctor() -> None:
 
     # --- Tier 3 checks ---
     # Claude Code CLI
-    # Backend CLIs: prefer OpenCode, fallback Claude
+    # Backend CLIs: check which are installed
     opencode_bin = shutil.which("opencode")
     claude_bin = shutil.which("claude")
     if opencode_bin:
@@ -605,7 +605,7 @@ def doctor() -> None:
         results.append(("Claude Code CLI", ok_mark, claude_bin))
     else:
         results.append(("OpenCode CLI", fail_mark, "Install OpenCode CLI and run 'opencode mcp add' to configure MCP"))
-        results.append(("Claude Code CLI", fail_mark, "Install from https://claude.ai/code (fallback for auto-apply)"))
+        results.append(("Claude Code CLI", fail_mark, "Install from https://claude.ai/code "))
 
     # Chrome
     try:

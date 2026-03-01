@@ -245,14 +245,14 @@ def check_tier(required: int, feature: str) -> None:
     if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
         missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
     if required >= 3:
-        # Check backends: OpenCode preferred, Claude as fallback.
+        # Check which backends are installed
         opencode_bin = shutil.which("opencode")
         claude_bin = shutil.which("claude")
 
         # Neither backend present -> actionable guidance for both
         if not opencode_bin and not claude_bin:
             missing.append("OpenCode CLI — install and run 'opencode mcp add' to configure MCP (preferred)")
-            missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold] (fallback)")
+            missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
         # OpenCode missing but Claude present -> suggest OpenCode as recommended
         elif not opencode_bin and claude_bin:
             missing.append("OpenCode CLI (recommended) — install and run 'opencode mcp add' to configure MCP")
