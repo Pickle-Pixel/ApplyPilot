@@ -8,6 +8,8 @@ from typing import Optional
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich import box
 
 from applypilot import __version__
 
@@ -336,6 +338,185 @@ def dashboard() -> None:
 
     open_dashboard()
 
+
+
+@app.command()
+def analyze(
+    worker: int = typer.Option(0, "--worker", "-w", help="Worker ID to analyze (default: 0)"),
+    last: bool = typer.Option(False, "--last", "-l", help="Analyze the most recent run"),
+    summary: bool = typer.Option(False, "--summary", "-s", help="Show summary only"),
+) -> None:
+    """Analyze a recent apply run: timing, steps, and failures."""
+    from pathlib import Path
+    from datetime import datetime
+    import json
+    from applypilot import config
+    
+    log_dir = Path(config.LOG_DIR)
+    
+    # Find the worker log file
+    worker_log = log_dir / f"worker-{worker}.log"
+    audit_log = log_dir / f"worker-{worker}.events.jsonl"
+    
+    if not worker_log.exists():
+        console.print(f"[red]No worker log found:[/red] {worker_log}")
+        raise typer.Exit(code=1)
+    
+    # Parse the audit log
+    actions = []
+    if audit_log.exists():
+        with open(audit_log) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        actions.append(json.loads(line))
+                    except:
+                        pass
+    
+    # Parse the worker log for context
+    with open(worker_log) as f:
+        log_content = f.read()
+    
+    # Extract job info from log header
+    job_title = "Unknown"
+    job_url = "Unknown"
+    job_site = "Unknown"
+    for line in log_content.split('\n')[:10]:
+        if '@' in line and 'http' not in line:
+            job_title = line.split('@')[0].strip().split(']')[-1].strip()[:50]
+            job_site = line.split('@')[-1].strip().split('\n')[0][:20]
+        if 'URL:' in line:
+            job_url = line.split('URL:')[-1].strip()[:60]
+    
+    # Analyze timing
+    if actions:
+        start_time = datetime.fromisoformat(actions[0]['timestamp'])
+        end_time = datetime.fromisoformat(actions[-1]['timestamp'])
+        duration = (end_time - start_time).total_seconds()
+    else:
+        duration = 0
+    
+    # Calculate delays between actions
+    delays = []
+    for i in range(1, len(actions)):
+        t1 = datetime.fromisoformat(actions[i-1]['timestamp'])
+        t2 = datetime.fromisoformat(actions[i]['timestamp'])
+        delays.append((t2 - t1).total_seconds())
+    
+    avg_delay = sum(delays) / len(delays) if delays else 0
+    max_delay = max(delays) if delays else 0
+    
+    # Check for failure
+    status = "unknown"
+    failure_reason = None
+    if "RESULT:APPLIED" in log_content:
+        status = "success"
+    elif "RESULT:CAPTCHA" in log_content or "captcha" in log_content.lower():
+        status = "captcha"
+        failure_reason = "CAPTCHA detected - automatic solving not configured"
+    elif "RESULT:FAILED" in log_content:
+        status = "failed"
+        # Extract failure reason
+        for line in log_content.split('\n'):
+            if "RESULT:FAILED" in line:
+                failure_reason = line.split("RESULT:FAILED")[-1].strip(": ")
+                break
+    elif "RESULT:LOGIN_ISSUE" in log_content:
+        status = "login"
+        failure_reason = "Login/authentication issue"
+    elif "RESULT:EXPIRED" in log_content:
+        status = "expired"
+        failure_reason = "Job expired or no longer accepting applications"
+    
+    # Display results
+    console.print()
+    console.print(Panel(
+        f"[bold blue]{job_title}[/bold blue] @ [cyan]{job_site}[/cyan]\n"
+        f"[dim]{job_url}[/dim]",
+        title="Job Application Analysis",
+        border_style="blue"
+    ))
+    
+    # Status panel
+    status_colors = {
+        "success": "green",
+        "failed": "red",
+        "captcha": "yellow",
+        "login": "yellow",
+        "expired": "dim",
+        "unknown": "dim"
+    }
+    status_text = status.upper()
+    if status == "success":
+        status_text = "✓ SUCCESS"
+    
+    console.print(Panel(
+        f"[bold {status_colors.get(status, 'white')}]{status_text}[/bold {status_colors.get(status, 'white')}]\n"
+        f"Duration: [bold]{duration:.0f}s[/bold] ({len(actions)} actions)\n"
+        f"Avg delay: [bold]{avg_delay:.1f}s[/bold] | Max delay: [bold]{max_delay:.1f}s[/bold]",
+        title="Summary",
+        border_style=status_colors.get(status, "white")
+    ))
+    
+    if failure_reason:
+        console.print(Panel(
+            f"[yellow]{failure_reason}[/yellow]",
+            title="Failure Reason",
+            border_style="yellow"
+        ))
+    
+    if not summary and actions:
+        # Show action timeline
+        console.print()
+        table = Table(title="Action Timeline", box=box.SIMPLE)
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Tool", style="cyan", width=35)
+        table.add_column("Delay", style="yellow", width=10)
+        table.add_column("Details", style="white")
+        
+        prev_time = None
+        for i, action in enumerate(actions[:50]):  # Limit to 50 actions
+            ts = datetime.fromisoformat(action['timestamp'])
+            tool = action.get('tool', 'unknown')[:32]
+            
+            if prev_time:
+                delay = (ts - prev_time).total_seconds()
+                delay_str = f"{delay:.1f}s"
+                
+                # Color code delays
+                if delay > 10:
+                    delay_str = f"[red]{delay_str}[/red]"
+                elif delay > 5:
+                    delay_str = f"[yellow]{delay_str}[/yellow]"
+            else:
+                delay_str = "-"
+            
+            # Extract relevant details
+            details = ""
+            inp = action.get('input', {})
+            if inp:
+                if 'url' in inp:
+                    details = f"url: {inp['url'][:40]}..."
+                elif 'element' in inp:
+                    details = f"element: {str(inp['element'])[:40]}"
+                elif 'fields' in inp:
+                    details = f"fields: {len(inp['fields'])}"
+                elif 'text' in inp:
+                    details = f"text: {str(inp['text'])[:40]}"
+            
+            table.add_row(str(i+1), tool, delay_str, details)
+            prev_time = ts
+        
+        console.print(table)
+        
+        if len(actions) > 50:
+            console.print(f"[dim]... and {len(actions) - 50} more actions[/dim]")
+    
+    console.print()
+    console.print(f"[dim]Full logs: {worker_log}[/dim]")
+    console.print(f"[dim]Audit log: {audit_log}[/dim]")
+    console.print()
 
 @app.command()
 def doctor() -> None:

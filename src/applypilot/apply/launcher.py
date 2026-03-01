@@ -43,6 +43,7 @@ from applypilot.apply.dashboard import (
     render_full,
     get_totals,
 )
+import requests
 from applypilot.apply.backends import (
     get_backend,
     AgentBackend,
@@ -61,6 +62,72 @@ def _load_blocked():
     from applypilot.config import load_blocked_sites
 
     return load_blocked_sites()
+
+
+def pre_navigate_to_job(job: dict, port: int, worker_id: int) -> bool:
+    """Pre-navigate to job URL using Chrome CDP HTTP endpoint.
+
+    Uses Chrome's CDP HTTP endpoint to create a persistent tab that any
+    CDP client can attach to. Closes existing tabs first to avoid buildup.
+
+    Args:
+        job: Job dictionary with url/application_url
+        port: CDP port for browser connection
+        worker_id: Worker identifier for logging
+
+    Returns:
+        True if navigation succeeded, False otherwise
+    """
+    try:
+        import urllib.parse
+        import requests
+        import time
+
+        job_url = job.get("application_url") or job["url"]
+        add_event(f"[W{worker_id}] Pre-navigating to {job_url[:50]}...")
+
+        base_url = f"http://localhost:{port}"
+
+        # 1. Close existing tabs to avoid buildup
+        try:
+            list_resp = requests.get(f"{base_url}/json/list", timeout=5)
+            if list_resp.status_code == 200:
+                targets = list_resp.json()
+                for target in targets:
+                    target_id = target.get("id")
+                    if target_id and target.get("type") == "page":
+                        try:
+                            requests.get(f"{base_url}/json/close/{target_id}", timeout=5)
+                        except Exception:
+                            pass
+        except Exception as e:
+            add_event(f"[W{worker_id}] Warning: Could not close existing tabs: {str(e)[:30]}")
+
+        # 2. Create new persistent tab via CDP HTTP endpoint
+        encoded_url = urllib.parse.quote(job_url, safe="")
+        response = requests.get(f"{base_url}/json/new?{encoded_url}", timeout=10)
+
+        if response.status_code != 200:
+            add_event(f"[W{worker_id}] Pre-navigation failed: HTTP {response.status_code}")
+            return False
+
+        target_info = response.json()
+        target_id = target_info.get("id")
+
+        # 3. Wait for page to load
+        time.sleep(3)
+
+        add_event(f"[W{worker_id}] Pre-navigation complete (target: {target_id})")
+        return True
+
+    except ImportError as e:
+        add_event(f"[W{worker_id}] Pre-navigation skipped: missing dependency {e}")
+        logger.debug(f"Pre-navigation dependency missing for worker {worker_id}: {e}")
+        return False
+    except Exception as e:
+        add_event(f"[W{worker_id}] Pre-navigation failed: {str(e)[:30]}")
+        logger.warning(f"Pre-navigation failed for worker {worker_id}: {e}")
+        return False
 
 
 # How often to poll the DB when the queue is empty (seconds)
@@ -396,6 +463,17 @@ def run_job(
 
     worker_dir = reset_worker_dir(worker_id)
 
+    # Copy resume PDF to worker directory so agent can access it
+    import shutil
+
+    current_pdf = config.APPLY_WORKER_DIR / "current" / "Nicholas_Roth_Resume.pdf"
+    try:
+        if current_pdf.exists():
+            worker_pdf = worker_dir / "Nicholas_Roth_Resume.pdf"
+            shutil.copy(str(current_pdf), str(worker_pdf))
+    except Exception:
+        logger.debug("Could not copy resume to worker dir", exc_info=True)
+
     # Delegate to backend implementation
     return backend.run_job(
         job=job,
@@ -516,6 +594,20 @@ def worker_loop(
         try:
             add_event(f"[W{worker_id}] Launching Chrome...")
             chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
+
+            # Preload the job URL in the launched Chrome instance so the agent
+            # session starts with the page already loaded. This reduces agent
+            # startup latency and avoids duplicate navigation attempts by the
+            # agent itself. If pre-navigation fails we continue anyway; the
+            # agent will navigate itself as a fallback.
+            try:
+                pre_ok = pre_navigate_to_job(job, port=port, worker_id=worker_id)
+                if pre_ok:
+                    add_event(f"[W{worker_id}] Pre-navigation succeeded")
+                else:
+                    add_event(f"[W{worker_id}] Pre-navigation skipped/failed")
+            except Exception as e:
+                logger.debug("Pre-navigation error for worker %d: %s", worker_id, e)
 
             result, duration_ms = run_job(
                 job, port=port, worker_id=worker_id, model=model, agent=agent, dry_run=dry_run, backend=backend

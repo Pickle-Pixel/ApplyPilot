@@ -189,7 +189,7 @@ class ClaudeBackend(AgentBackend):
         """
         import re
         import time
-        from datetime import datetime
+        from datetime import datetime, timedelta
 
         from applypilot import config
         from applypilot.apply.dashboard import add_event, get_state, update_state
@@ -210,6 +210,20 @@ class ClaudeBackend(AgentBackend):
         add_event(f"[W{worker_id}] Starting: {job['title'][:40]} @ {job.get('site', '')}")
 
         worker_log = config.LOG_DIR / f"worker-{worker_id}.log"
+
+        # Set up JSONL audit file
+        audit_path = config.LOG_DIR / f"worker-{worker_id}.events.jsonl"
+        audit_file = open(audit_path, "a", encoding="utf-8")
+
+        # Clean up old audit files (30-day retention)
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        for old_file in config.LOG_DIR.glob("worker-*.events.jsonl"):
+            try:
+                if datetime.utcfromtimestamp(old_file.stat().st_mtime) < cutoff:
+                    old_file.unlink()
+            except Exception:
+                pass
+
         ts_header = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_header = (
             f"\n{'=' * 60}\n"
@@ -248,13 +262,68 @@ class ClaudeBackend(AgentBackend):
             with open(worker_log, "a", encoding="utf-8") as lf:
                 lf.write(log_header)
 
+                # Instrumentation for timing analysis
+                last_msg_time = None
+                tool_start_time = None
+                current_tool = None
+                turn_count = 0
+                perf_log_path = config.LOG_DIR / f"worker-{worker_id}.perf.jsonl"
+                perf_file = open(perf_log_path, "a", encoding="utf-8")
+                
                 for line in stdout:
                     line = line.strip()
                     if not line:
                         continue
+                    
+                    msg_received_time = time.time()
+                    
+                    # Calculate gap from last message
+                    if last_msg_time:
+                        gap_ms = (msg_received_time - last_msg_time) * 1000
+                    else:
+                        gap_ms = 0
+                    
                     try:
                         msg = json.loads(line)
                         msg_type = msg.get("type")
+                        
+                        # Log message timing
+                        if gap_ms > 100:  # Only log significant gaps (>100ms)
+                            perf_entry = {
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "event": "message_received",
+                                "msg_type": msg_type,
+                                "gap_ms": round(gap_ms, 2),
+                                "turn": turn_count,
+                            }
+                            perf_file.write(json.dumps(perf_entry) + "\n")
+                            perf_file.flush()
+                        
+                        # Track step start
+                        if msg_type == "step_start":
+                            turn_count += 1
+                            step_start_time = time.time()
+                            if turn_count == 1:
+                                add_event(f"[W{worker_id}] ✓ Agent active - starting application...")
+                            perf_entry = {
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "event": "llm_turn_start",
+                                "turn": turn_count,
+                            }
+                            perf_file.write(json.dumps(perf_entry) + "\n")
+                            perf_file.flush()
+                            
+                            # Log if this was a long wait
+                            if gap_ms > 5000:  # >5 seconds
+                                lf.write(f"\n[PERF] Long gap before turn {turn_count}: {gap_ms/1000:.1f}s (likely API latency + LLM thinking)\n")
+                                lf.flush()
+                        
+                        # Track tool execution
+                        if msg_type == "tool_use":
+                            tool_start_time = time.time()
+                            # Extract tool name (simplified)
+                            part = msg.get("part", {})
+                            current_tool = part.get("tool", part.get("name", "unknown"))
                         if msg_type == "assistant":
                             for block in msg.get("message", {}).get("content", []):
                                 bt = block.get("type")
@@ -279,10 +348,30 @@ class ClaudeBackend(AgentBackend):
                                     else:
                                         desc = name
 
-                                    lf.write(f"  >> {desc}\n")
+                                    # Write enhanced log with timestamp
+                                    ts = datetime.utcnow().isoformat()
+                                    lf.write(f"{ts} >> {desc}\n")
+
+                                    # Add dashboard event
+                                    add_event(f"[W{worker_id}] {desc[:80]}")
+
+                                    # Update state
                                     ws = get_state(worker_id)
                                     cur_actions = ws.actions if ws else 0
                                     update_state(worker_id, actions=cur_actions + 1, last_action=desc[:35])
+
+                                    # Write JSONL audit entry
+                                    audit_entry = {
+                                        "timestamp": ts,
+                                        "worker_id": worker_id,
+                                        "type": "tool_use",
+                                        "tool": name,
+                                        "input": inp,  # Full input payload
+                                        "tab_id": inp.get("tab_id"),
+                                        "url": inp.get("url"),
+                                    }
+                                    audit_file.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+                                    audit_file.flush()
                         elif msg_type == "result":
                             stats = {
                                 "input_tokens": msg.get("usage", {}).get("input_tokens", 0),
@@ -362,6 +451,7 @@ class ClaudeBackend(AgentBackend):
             update_state(worker_id, status="failed", last_action=f"ERROR: {str(e)[:25]}")
             return f"failed:{str(e)[:100]}", duration_ms
         finally:
+            audit_file.close()
             self._active_procs.pop(worker_id, None)
             if proc is not None and proc.poll() is None:
                 self._kill_process_tree(proc.pid)
@@ -411,8 +501,11 @@ class OpenCodeBackend(AgentBackend):
     since OpenCode does not accept per-invocation MCP config files.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, use_global_config: bool | None = None) -> None:
         self._active_procs: dict[int, subprocess.Popen] = {}
+        if use_global_config is None:
+            use_global_config = os.environ.get("APPLY_OPENCODE_USE_GLOBAL_CONFIG", "").lower() in ("1", "true", "yes")
+        self._use_global_config = use_global_config
 
     @property
     def name(self) -> str:
@@ -465,6 +558,10 @@ class OpenCodeBackend(AgentBackend):
             cmd.extend(["--model", model])
         if agent:
             cmd.extend(["--agent", agent])
+        # Add --variant for faster reasoning (minimal = fastest, high = most thorough)
+        variant = os.environ.get("APPLY_OPENCODE_VARIANT", "minimal")
+        if variant:
+            cmd.extend(["--variant", variant])
         # OpenCode expects the prompt as positional argument(s)
         cmd.append(prompt)
         return cmd
@@ -506,38 +603,106 @@ class OpenCodeBackend(AgentBackend):
             "Expected baseline: " + ", ".join(required) + ". Example: `opencode mcp add <name> -- <command>`"
         )
 
+    def _validate_agent_config(self, agent: str | None) -> None:
+        """Validate that the agent exists in the resolved opencode config.
+
+        Uses `opencode debug agent <name>` so the CLI loads and merges all
+        config files itself — no manual JSONC parsing needed.
+
+        Args:
+            agent: Agent name to validate.
+        Raises:
+            BackendError: If the agent is not found or the CLI check fails.
+        """
+        if not agent:
+            return
+        import json
+
+        binary = self._find_binary()
+        env = self._prepare_environment()
+        from applypilot import config as ap_config
+        proc = subprocess.run(
+            [binary, "debug", "agent", agent],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            cwd=str(ap_config.APP_DIR),
+        )
+        if proc.returncode != 0:
+            err = (proc.stdout or proc.stderr or "").strip()
+            raise BackendError(
+                f"Agent '{agent}' not found in opencode config. "
+                f"opencode said: {err}. "
+                "Make sure the agent is defined in ~/.applypilot/.opencode/opencode.jsonc "
+                "and named 'applypilot-apply'."
+            )
+        # Parse the returned JSON to surface any prompt file issues early.
+        # Failures here are non-fatal: the agent exists, run_job will catch issues.
+        try:
+            json.loads(ANSI_ESCAPE_RE.sub("", proc.stdout))
+        except json.JSONDecodeError:
+            pass
+
+
     def _prepare_environment(self) -> dict[str, str]:
-        """Prepare environment for OpenCode process."""
+        """Prepare environment for OpenCode process.
+
+        By default, redirects XDG_CONFIG_HOME so opencode only loads the
+        applypilot project config (~/.applypilot/.opencode/opencode.jsonc)
+        and ignores the user's global ~/.config/opencode/ directory.
+
+        Set APPLY_OPENCODE_USE_GLOBAL_CONFIG=true to opt into loading the
+        global opencode config alongside the project config.
+        """
         env = os.environ.copy()
-        
-        # Remove OpenCode Desktop environment variables if they exist
-        # These interfere with CLI mode - they are only for desktop app integration
+        # Remove OpenCode Desktop environment variables.
+        # When running inside the desktop app, these vars cause the CLI to
+        # attach to the existing desktop session instead of running standalone.
+        # XDG_STATE_HOME is also stripped: the desktop app points it at
+        # /Library/Application Support/ai.opencode.desktop/ which is wrong
+        # for standalone CLI usage; letting it fall back to the default
+        # (~/.local/state/opencode/) is correct.
         desktop_vars = [
             "OPENCODE_CLIENT",
-            "OPENCODE_SERVER_PASSWORD", 
+            "OPENCODE_SERVER_PASSWORD",
             "OPENCODE_SERVER_USERNAME",
             "OPENCODE",
             "OPENCODE_EXPERIMENTAL_FILEWATCHER",
             "OPENCODE_EXPERIMENTAL_ICON_DISCOVERY",
             "__CFBundleIdentifier",
+            "XDG_STATE_HOME",
         ]
         for key in desktop_vars:
             env.pop(key, None)
-        
-        # Ensure PATH includes opencode binary directory
+        # Ensure PATH includes the opencode binary directory so the CLI is
+        # always found even when not on the user's normal PATH.
         opencode_bin = str(Path.home() / ".opencode" / "bin")
         current_path = env.get("PATH", "")
         if opencode_bin not in current_path:
             env["PATH"] = f"{opencode_bin}:{current_path}"
-        
-        # Set TERM if not set (needed for proper terminal handling)
+        # Set TERM if absent (needed for proper terminal handling).
         if "TERM" not in env or not env["TERM"]:
             env["TERM"] = "xterm-256color"
-        
-        # Disable interactive prompts and pre-approve permissions
-        # This prevents the "question" tool from hanging in batch mode
-        # and allows external directory access for file operations
-        env["OPENCODE_CONFIG_CONTENT"] = ('{"permission":{"*":"allow","external_directory":"allow","question":"deny"},"tools":{"question":false}}')
+        if not self._use_global_config:
+            # Redirect XDG_CONFIG_HOME so opencode looks for its "global" config
+            # at ~/.applypilot/opencode/ (which does not exist) instead of
+            # ~/.config/opencode/. This prevents the user's personal opencode
+            # config — including plugins like OMO and personal instructions —
+            # from being loaded.
+            #
+            # Why not use "plugin": [] to suppress plugins? opencode's config
+            # merge function (mergeConfigConcatArrays) CONCATENATES arrays across
+            # config files — setting an empty array in project config does not
+            # clear entries from global config. XDG_CONFIG_HOME redirection is the
+            # only reliable way to prevent global config from loading.
+            #
+            # XDG_CONFIG_HOME only affects config file discovery. Auth credentials
+            # (~/.opencode/auth.json), the session DB (~/.local/share/opencode/),
+            # and state (~/.local/state/opencode/) use different XDG vars and are
+            # unaffected by this redirect.
+            from applypilot import config as ap_config
+            env["XDG_CONFIG_HOME"] = str(ap_config.APP_DIR)
         return env
 
     def run_job(
@@ -562,12 +727,13 @@ class OpenCodeBackend(AgentBackend):
         """
         import re
         import time
-        from datetime import datetime
+        from datetime import datetime, timedelta
 
         from applypilot import config
         from applypilot.apply.dashboard import add_event, get_state, update_state
 
         self._ensure_required_mcp_servers(required_mcp_servers)
+        self._validate_agent_config(agent)
         cmd = self._build_command(model, worker_dir, agent, prompt)
         env = self._prepare_environment()
 
@@ -582,8 +748,25 @@ class OpenCodeBackend(AgentBackend):
             last_action="starting (opencode)",
         )
         add_event(f"[W{worker_id}] Starting (opencode): {job['title'][:40]} @ {job.get('site', '')}")
+        
+        # Let user know initialization takes time
+        add_event(f"[W{worker_id}] ⏳ OpenCode initializing (15-20s)...")
 
         worker_log = config.LOG_DIR / f"worker-{worker_id}.log"
+
+        # Set up JSONL audit file
+        audit_path = config.LOG_DIR / f"worker-{worker_id}.events.jsonl"
+        audit_file = open(audit_path, "a", encoding="utf-8")
+
+        # Clean up old audit files (30-day retention)
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        for old_file in config.LOG_DIR.glob("worker-*.events.jsonl"):
+            try:
+                if datetime.utcfromtimestamp(old_file.stat().st_mtime) < cutoff:
+                    old_file.unlink()
+            except Exception:
+                pass
+
         ts_header = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_header = (
             f"\n{'=' * 60}\n"
@@ -622,13 +805,68 @@ class OpenCodeBackend(AgentBackend):
             with open(worker_log, "a", encoding="utf-8") as lf:
                 lf.write(log_header)
 
+                # Instrumentation for timing analysis
+                last_msg_time = None
+                tool_start_time = None
+                current_tool = None
+                turn_count = 0
+                perf_log_path = config.LOG_DIR / f"worker-{worker_id}.perf.jsonl"
+                perf_file = open(perf_log_path, "a", encoding="utf-8")
+                
                 for line in stdout:
                     line = line.strip()
                     if not line:
                         continue
+                    
+                    msg_received_time = time.time()
+                    
+                    # Calculate gap from last message
+                    if last_msg_time:
+                        gap_ms = (msg_received_time - last_msg_time) * 1000
+                    else:
+                        gap_ms = 0
+                    
                     try:
                         msg = json.loads(line)
                         msg_type = msg.get("type")
+                        
+                        # Log message timing
+                        if gap_ms > 100:  # Only log significant gaps (>100ms)
+                            perf_entry = {
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "event": "message_received",
+                                "msg_type": msg_type,
+                                "gap_ms": round(gap_ms, 2),
+                                "turn": turn_count,
+                            }
+                            perf_file.write(json.dumps(perf_entry) + "\n")
+                            perf_file.flush()
+                        
+                        # Track step start
+                        if msg_type == "step_start":
+                            turn_count += 1
+                            step_start_time = time.time()
+                            if turn_count == 1:
+                                add_event(f"[W{worker_id}] ✓ Agent active - starting application...")
+                            perf_entry = {
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "event": "llm_turn_start",
+                                "turn": turn_count,
+                            }
+                            perf_file.write(json.dumps(perf_entry) + "\n")
+                            perf_file.flush()
+                            
+                            # Log if this was a long wait
+                            if gap_ms > 5000:  # >5 seconds
+                                lf.write(f"\n[PERF] Long gap before turn {turn_count}: {gap_ms/1000:.1f}s (likely API latency + LLM thinking)\n")
+                                lf.flush()
+                        
+                        # Track tool execution
+                        if msg_type == "tool_use":
+                            tool_start_time = time.time()
+                            # Extract tool name (simplified)
+                            part = msg.get("part", {})
+                            current_tool = part.get("tool", part.get("name", "unknown"))
 
                         if msg_type == "text":
                             text_content = msg.get("part", {}).get("text", "")
@@ -637,11 +875,29 @@ class OpenCodeBackend(AgentBackend):
                                 lf.write(text_content + "\n")
 
                         elif msg_type == "tool_use":
-                            part = msg.get("part", {})
-                            name = (
-                                part.get("name", "").replace("mcp__playwright__", "").replace("mcp__gmail__", "gmail:")
-                            )
-                            inp = part.get("input", {})
+                            # Try multiple locations for tool name and input
+                            # OpenCode may output these at top level or in "part" sub-object
+                            name = msg.get("name", "")
+                            if not name:
+                                part = msg.get("part", {})
+                                name = part.get("name", "")
+                            if not name:
+                                part = msg.get("part", {})
+                                name = part.get("tool", "")  # OpenCode uses 'tool' field
+                            inp = msg.get("input", {})
+                            if not inp:
+                                part = msg.get("part", {})
+                                inp = part.get("input", {})
+                            if not inp:
+                                part = msg.get("part", {})
+                                state = part.get("state", {})
+                                inp = state.get("input", {})  # OpenCode nests input in state
+                            # Clean up MCP prefixes
+                            name = name.replace("mcp__playwright__", "").replace("mcp__gmail__", "gmail:")
+
+                            # Debug: log structure to help diagnose format issues
+                            if not name:
+                                logger.debug(f"Tool use message has empty name. Keys: {list(msg.keys())}")
                             if "url" in inp:
                                 desc = f"{name} {inp['url'][:60]}"
                             elif "ref" in inp:
@@ -653,7 +909,14 @@ class OpenCodeBackend(AgentBackend):
                             else:
                                 desc = name
 
-                            lf.write(f"  >> {desc}\n")
+                            # Write enhanced log with timestamp
+                            ts = datetime.utcnow().isoformat()
+                            lf.write(f"{ts} >> {desc}\n")
+
+                            # Add dashboard event
+                            add_event(f"[W{worker_id}] {desc[:80]}")
+
+                            # Update state
                             ws = get_state(worker_id)
                             cur_actions = ws.actions if ws else 0
                             update_state(
@@ -662,10 +925,54 @@ class OpenCodeBackend(AgentBackend):
                                 last_action=desc[:35],
                             )
 
+                            # Calculate tool timing if we have start time
+                            tool_exec_time = None
+                            if tool_start_time:
+                                tool_exec_time = time.time() - tool_start_time
+                            
+                            # Write JSONL audit entry
+                            audit_entry = {
+                                "timestamp": ts,
+                                "worker_id": worker_id,
+                                "type": "tool_use",
+                                "tool": name,
+                                "input": inp,  # Full input payload
+                                "tab_id": inp.get("tab_id"),
+                                "url": inp.get("url"),
+                                "tool_exec_time": round(tool_exec_time, 3) if tool_exec_time else None,
+                                "turn": turn_count,
+                            }
+                            audit_file.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+                            audit_file.flush()
+                            
+                            # Log performance data
+                            if tool_exec_time:
+                                perf_entry = {
+                                    "timestamp": ts,
+                                    "event": "tool_executed",
+                                    "tool": name,
+                                    "exec_time_ms": round(tool_exec_time * 1000, 2),
+                                    "turn": turn_count,
+                                }
+                                perf_file.write(json.dumps(perf_entry) + "\n")
+                                perf_file.flush()
+
                         elif msg_type == "step_finish":
+                            step_end_time = time.time()
                             part = msg.get("part", {})
                             tokens = part.get("tokens", {})
                             cache = tokens.get("cache", {})
+                            
+                            # Log turn completion
+                            perf_entry = {
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "event": "llm_turn_complete",
+                                "turn": turn_count,
+                                "input_tokens": tokens.get("input", 0),
+                                "output_tokens": tokens.get("output", 0),
+                            }
+                            perf_file.write(json.dumps(perf_entry) + "\n")
+                            perf_file.flush()
                             stats = {
                                 "input_tokens": tokens.get("input", 0),
                                 "output_tokens": tokens.get("output", 0),
@@ -763,6 +1070,7 @@ class OpenCodeBackend(AgentBackend):
             )
             return f"failed:{str(e)[:100]}", duration_ms
         finally:
+            audit_file.close()
             self._active_procs.pop(worker_id, None)
             if proc is not None and proc.poll() is None:
                 self._kill_process_tree(proc.pid)
@@ -839,5 +1147,6 @@ def resolve_default_model(backend_name: str) -> str:
 
 def resolve_default_agent(backend_name: str) -> str | None:
     if backend_name == "opencode":
-        return os.environ.get("APPLY_OPENCODE_AGENT")
+        # Default to "applypilot-apply" agent defined in opencode.jsonc, unless overridden by env var
+        return os.environ.get("APPLY_OPENCODE_AGENT") or "applypilot-apply"
     return None
