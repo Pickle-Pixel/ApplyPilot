@@ -220,17 +220,31 @@ This isolation ensures ApplyPilot's agent configuration doesn't interfere with y
       "model": "github-copilot/gpt-5-mini",
       "prompt": "{file:../prompts/apply-agent.md}",
       "permission": {
+        // Safety: deny file editing and bash
         "task": "deny",
         "edit": "deny",
         "write": "deny",
-        "read": "allow",
         "bash": "deny",
+        // Read-only tools allowed
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "lsp": "allow",
+        // All Playwright browser tools enabled
         "playwright_browser_navigate": "allow",
         "playwright_browser_click": "allow",
         "playwright_browser_fill_form": "allow",
         "playwright_browser_snapshot": "allow",
         "playwright_browser_evaluate": "allow",
-        "playwright_browser_file_upload": "allow"
+        "playwright_browser_file_upload": "allow",
+        "playwright_browser_tabs": "allow",
+        "playwright_browser_wait_for": "allow",
+        "playwright_browser_screenshot": "allow",
+        // All Gmail tools enabled
+        "gmail_search_emails": "allow",
+        "gmail_read_email": "allow",
+        "gmail_send_email": "allow",
+        "gmail_create_draft": "allow"
       }
     }
   },
@@ -239,9 +253,15 @@ This isolation ensures ApplyPilot's agent configuration doesn't interfere with y
       "type": "local",
       "enabled": true,
       "command": [
-        "npx",
-        "@playwright/mcp@latest",
+        "npx", "@playwright/mcp@latest",
         "--cdp-endpoint=http://localhost:9222"
+      ]
+    },
+    "gmail": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "npx", "-y", "@gongrzhe/server-gmail-autoauth-mcp"
       ]
     }
   }
