@@ -307,7 +307,7 @@ def _setup_auto_apply() -> None:
         return
 
     # Choose backend
-    console.print("\nSupported backends: [bold]opencode[/bold] (recommended), [bold]claude[/bold] (fallback)")
+    console.print("\nSupported backends: [bold]claude[/bold] (default), [bold]opencode[/bold]")
     backend = Prompt.ask("Which backend to use for auto-apply?", choices=["opencode", "claude"], default="opencode")
 
     if backend == "opencode":
