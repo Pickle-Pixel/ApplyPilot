@@ -514,17 +514,10 @@ class OpenCodeBackend(AgentBackend):
     def _find_binary(self) -> str:
         """Locate the opencode binary, raising clear errors if missing."""
         import shutil
-
-        # Check PATH first
-        binary = shutil.which("opencode")
-        if binary:
-            return binary
-
         # Check default installation location
         default_path = Path.home() / ".opencode" / "bin" / "opencode"
         if default_path.exists():
             return str(default_path)
-
         raise BackendError(
             "OpenCode CLI not found on PATH. "
             "Install it from https://opencode.ai or run: "
