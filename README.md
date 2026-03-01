@@ -181,6 +181,88 @@ ApplyPilot supports multiple LLM backends. The baseline-first approach for LLMs 
 8) Verification
 - After setting env vars and optionally registering MCPs for opencode, run `applypilot doctor`. It will report configured providers and flag missing MCP registration or missing CLI binaries. If doctor reports issues, follow its guidance.
 
+### OpenCode Configuration Details
+
+ApplyPilot uses OpenCode in **project mode** with isolated configuration to prevent conflicts with your personal OpenCode setup:
+
+**Configuration File:** `~/.applypilot/.opencode/opencode.jsonc`
+
+This file is where you define:
+- The custom `applypilot-apply` agent
+- MCP server configurations
+- Permission scopes
+- Model defaults
+
+**XDG Directory Isolation:**
+ApplyPilot sets `XDG_CONFIG_HOME=~/.applypilot` when running OpenCode, which means:
+- OpenCode loads **only** `~/.applypilot/.opencode/opencode.jsonc`
+- Your global `~/.config/opencode/` is ignored
+- Auth credentials (`~/.opencode/auth.json`) still work (different XDG var)
+- State and sessions use default locations
+
+This isolation ensures ApplyPilot's agent configuration doesn't interfere with your personal OpenCode workflows.
+
+**Example `~/.applypilot/.opencode/opencode.jsonc`:**
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "*": "allow",
+    "question": "deny"
+  },
+  "tools": {
+    "question": false
+  },
+  "agent": {
+    "applypilot-apply": {
+      "description": "Autonomous job application agent",
+      "mode": "primary",
+      "model": "github-copilot/gpt-5-mini",
+      "prompt": "{file:../prompts/apply-agent.md}",
+      "permission": {
+        "task": "deny",
+        "edit": "deny",
+        "write": "deny",
+        "read": "allow",
+        "bash": "deny",
+        "playwright_browser_navigate": "allow",
+        "playwright_browser_click": "allow",
+        "playwright_browser_fill_form": "allow",
+        "playwright_browser_snapshot": "allow",
+        "playwright_browser_evaluate": "allow",
+        "playwright_browser_file_upload": "allow"
+      }
+    }
+  },
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "npx",
+        "@playwright/mcp@latest",
+        "--cdp-endpoint=http://localhost:9222"
+      ]
+    }
+  }
+}
+```
+
+**MCP Server Registration:**
+```bash
+# Register Playwright MCP for browser automation
+opencode mcp add playwright --provider=openai --url="$LLM_URL" --api-key="$LLM_API_KEY"
+
+# Verify registration
+opencode mcp list
+```
+
+**Key Points:**
+- The agent name `applypilot-apply` is referenced in the backend code
+- The prompt file path is relative to the `~/.applypilot/` directory
+- Browser tools are explicitly allowed; file editing is denied for safety
+- Model can be overridden via `APPLY_OPENCODE_MODEL` environment variable
+
 ---
 
 ### Package configs (shipped with ApplyPilot)
