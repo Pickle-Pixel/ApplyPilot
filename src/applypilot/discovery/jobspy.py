@@ -20,7 +20,15 @@ from applypilot.database import get_connection, init_db, store_jobs
 log = logging.getLogger(__name__)
 
 
+def _clean(val) -> str | None:
+    if val is None:
+        return None
+    s = str(val)
+    return s if s and s != "nan" else None
+
+
 # -- Proxy parsing -----------------------------------------------------------
+
 
 def parse_proxy(proxy_str: str) -> dict:
     """Parse host:port:user:pass into components."""
@@ -50,13 +58,11 @@ def parse_proxy(proxy_str: str) -> dict:
             "playwright": {"server": f"http://{host}:{port}"},
         }
     else:
-        raise ValueError(
-            f"Proxy format not recognized: {proxy_str}. "
-            f"Expected: host:port:user:pass or host:port"
-        )
+        raise ValueError(f"Proxy format not recognized: {proxy_str}. Expected: host:port:user:pass or host:port")
 
 
 # -- Retry wrapper -----------------------------------------------------------
+
 
 def _scrape_with_retry(kwargs: dict, max_retries: int = 2, backoff: float = 5.0):
     """Call scrape_jobs with retry on transient failures."""
@@ -75,6 +81,7 @@ def _scrape_with_retry(kwargs: dict, max_retries: int = 2, backoff: float = 5.0)
 
 
 # -- Location filtering ------------------------------------------------------
+
 
 def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
     """Extract accept/reject location lists from search config.
@@ -117,6 +124,7 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 
 # -- DB storage (JobSpy DataFrame -> SQLite) ---------------------------------
 
+
 def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tuple[int, int]:
     """Store JobSpy DataFrame results into the DB. Returns (new, existing)."""
     now = datetime.now(timezone.utc).isoformat()
@@ -128,25 +136,24 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
         if not url or url == "nan":
             continue
 
-        title = str(row.get("title", "")) if str(row.get("title", "")) != "nan" else None
-        company = str(row.get("company", "")) if str(row.get("company", "")) != "nan" else None
-        location_str = str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None
+        title = _clean(row.get("title"))
+        company = _clean(row.get("company"))
+        location_str = _clean(row.get("location"))
 
-        # Build salary string from min/max
         salary = None
-        min_amt = row.get("min_amount")
-        max_amt = row.get("max_amount")
-        interval = str(row.get("interval", "")) if str(row.get("interval", "")) != "nan" else ""
-        currency = str(row.get("currency", "")) if str(row.get("currency", "")) != "nan" else ""
-        if min_amt and str(min_amt) != "nan":
-            if max_amt and str(max_amt) != "nan":
+        min_amt = _clean(row.get("min_amount"))
+        max_amt = _clean(row.get("max_amount"))
+        interval = _clean(row.get("interval")) or ""
+        currency = _clean(row.get("currency")) or ""
+        if min_amt:
+            if max_amt:
                 salary = f"{currency}{int(float(min_amt)):,}-{currency}{int(float(max_amt)):,}"
             else:
                 salary = f"{currency}{int(float(min_amt)):,}"
             if interval:
                 salary += f"/{interval}"
 
-        description = str(row.get("description", "")) if str(row.get("description", "")) != "nan" else None
+        description = _clean(row.get("description"))
         site_name = str(row.get("site", source_label))
         is_remote = row.get("is_remote", False)
 
@@ -164,15 +171,26 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
             detail_scraped_at = now
 
         # Extract apply URL if JobSpy provided it
-        apply_url = str(row.get("job_url_direct", "")) if str(row.get("job_url_direct", "")) != "nan" else None
+        apply_url = _clean(row.get("job_url_direct"))
 
         try:
             conn.execute(
                 "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at, "
                 "full_description, application_url, detail_scraped_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (url, title, salary, description, location_str, site_label, strategy, now,
-                 full_description, apply_url, detail_scraped_at),
+                (
+                    url,
+                    title,
+                    salary,
+                    description,
+                    location_str,
+                    site_label,
+                    strategy,
+                    now,
+                    full_description,
+                    apply_url,
+                    detail_scraped_at,
+                ),
             )
             new += 1
         except sqlite3.IntegrityError:
@@ -183,6 +201,7 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
 
 
 # -- Single search execution -------------------------------------------------
+
 
 def _run_one_search(
     search: dict,
@@ -198,7 +217,7 @@ def _run_one_search(
 ) -> dict:
     """Run a single search query and store results in DB."""
     s = search
-    label = f"\"{s['query']}\" in {s['location']} {'(remote)' if s.get('remote') else ''}"
+    label = f'"{s["query"]}" in {s["location"]} {"(remote)" if s.get("remote") else ""}'
     if "tier" in s:
         label += f" [tier {s['tier']}]"
 
@@ -260,6 +279,7 @@ def _run_one_search(
 
     import pandas as pd
     import warnings
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
         df = pd.concat(all_dfs, ignore_index=True) if len(all_dfs) > 1 else all_dfs[0]
@@ -270,10 +290,16 @@ def _run_one_search(
 
     # Filter by location before storing
     before = len(df)
-    df = df[df.apply(lambda row: _location_ok(
-        str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None,
-        accept_locs, reject_locs,
-    ), axis=1)]
+    df = df[
+        df.apply(
+            lambda row: _location_ok(
+                str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None,
+                accept_locs,
+                reject_locs,
+            ),
+            axis=1,
+        )
+    ]
     filtered = before - len(df)
 
     conn = get_connection()
@@ -288,6 +314,7 @@ def _run_one_search(
 
 
 # -- Single query search -----------------------------------------------------
+
 
 def search_jobs(
     query: str,
@@ -305,7 +332,7 @@ def search_jobs(
 
     proxy_config = parse_proxy(proxy) if proxy else None
 
-    log.info("Search: \"%s\" in %s | sites=%s | remote=%s", query, location, sites, remote_only)
+    log.info('Search: "%s" in %s | sites=%s | remote=%s', query, location, sites, remote_only)
 
     kwargs = {
         "site_name": sites,
@@ -357,6 +384,7 @@ def search_jobs(
 
 # -- Full crawl (all queries x all locations) --------------------------------
 
+
 def _full_crawl(
     search_cfg: dict,
     tiers: list[int] | None = None,
@@ -386,18 +414,19 @@ def _full_crawl(
     searches = []
     for q in queries:
         for loc in locs:
-            searches.append({
-                "query": q["query"],
-                "location": loc["location"],
-                "remote": loc.get("remote", False),
-                "tier": q.get("tier", 0),
-            })
+            searches.append(
+                {
+                    "query": q["query"],
+                    "location": loc["location"],
+                    "remote": loc.get("remote", False),
+                    "tier": q.get("tier", 0),
+                }
+            )
 
     proxy_config = parse_proxy(proxy) if proxy else None
 
     log.info("Full crawl: %d search combinations", len(searches))
-    log.info("Sites: %s | Results/site: %d | Hours old: %d",
-             ", ".join(sites), results_per_site, hours_old)
+    log.info("Sites: %s | Results/site: %d | Hours old: %d", ", ".join(sites), results_per_site, hours_old)
 
     # Ensure DB schema is ready
     init_db()
@@ -409,9 +438,16 @@ def _full_crawl(
 
     for s in searches:
         result = _run_one_search(
-            s, sites, results_per_site, hours_old,
-            proxy_config, defaults, max_retries,
-            accept_locs, reject_locs, glassdoor_map,
+            s,
+            sites,
+            results_per_site,
+            hours_old,
+            proxy_config,
+            defaults,
+            max_retries,
+            accept_locs,
+            reject_locs,
+            glassdoor_map,
         )
         completed += 1
         total_new += result["new"]
@@ -419,15 +455,26 @@ def _full_crawl(
         total_errors += result["errors"]
 
         if completed % 5 == 0 or completed == len(searches):
-            log.info("Progress: %d/%d queries done (%d new, %d dupes, %d errors)",
-                     completed, len(searches), total_new, total_existing, total_errors)
+            log.info(
+                "Progress: %d/%d queries done (%d new, %d dupes, %d errors)",
+                completed,
+                len(searches),
+                total_new,
+                total_existing,
+                total_errors,
+            )
 
     # Final stats
     conn = get_connection()
     db_total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
 
-    log.info("Full crawl complete: %d new | %d dupes | %d errors | %d total in DB",
-             total_new, total_existing, total_errors, db_total)
+    log.info(
+        "Full crawl complete: %d new | %d dupes | %d errors | %d total in DB",
+        total_new,
+        total_existing,
+        total_errors,
+        db_total,
+    )
 
     return {
         "new": total_new,
@@ -439,6 +486,7 @@ def _full_crawl(
 
 
 # -- Public entry point ------------------------------------------------------
+
 
 def run_discovery(cfg: dict | None = None) -> dict:
     """Main entry point for JobSpy-based job discovery.
