@@ -111,14 +111,17 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     Returns:
         {"scored": int, "errors": int, "elapsed": float, "distribution": list}
     """
+    if not RESUME_PATH.exists():
+        log.error("Resume file not found: %s. Run 'applypilot init' first.", RESUME_PATH)
+        return {"scored": 0, "errors": 0, "elapsed": 0.0, "distribution": []}
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
 
     if rescore:
-        query = "SELECT * FROM jobs WHERE full_description IS NOT NULL"
         if limit > 0:
-            query += f" LIMIT {limit}"
-        jobs = conn.execute(query).fetchall()
+            jobs = conn.execute("SELECT * FROM jobs WHERE full_description IS NOT NULL LIMIT ?", (limit,)).fetchall()
+        else:
+            jobs = conn.execute("SELECT * FROM jobs WHERE full_description IS NOT NULL").fetchall()
     else:
         jobs = get_jobs_by_stage(conn=conn, stage="pending_score", limit=limit)
 
@@ -149,7 +152,10 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
 
         log.info(
             "[%d/%d] score=%d  %s",
-            completed, len(jobs), result["score"], job.get("title", "?")[:60],
+            completed,
+            len(jobs),
+            result["score"],
+            job.get("title", "?")[:60],
         )
 
     # Write scores to DB
@@ -162,7 +168,9 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     conn.commit()
 
     elapsed = time.time() - t0
-    log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
+    log.info(
+        "Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0
+    )
 
     # Score distribution
     dist = conn.execute("""
