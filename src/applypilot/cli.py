@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 import typer
@@ -11,11 +12,37 @@ from rich.table import Table
 
 from applypilot import __version__
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%H:%M:%S",
-)
+
+def _configure_logging() -> None:
+    """Set consistent logging output for CLI runs."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # Keep LiteLLM internals quiet by default; warnings/errors still surface.
+    for name in ("LiteLLM", "litellm"):
+        noisy = logging.getLogger(name)
+        noisy.handlers.clear()
+        noisy.setLevel(logging.WARNING)
+        noisy.propagate = True
+
+    # Route verbose tailor/cover loggers to a file instead of the terminal.
+    # Per-attempt warnings and validation details are useful for debugging
+    # but too noisy for normal CLI output.
+    from applypilot.config import LOG_DIR
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _file_fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="%H:%M:%S")
+    for logger_name in ("applypilot.scoring.tailor", "applypilot.scoring.cover_letter"):
+        file_log = logging.getLogger(logger_name)
+        file_log.propagate = False  # suppress terminal output
+        fh = logging.FileHandler(LOG_DIR / f"{logger_name.split('.')[-1]}.log", encoding="utf-8")
+        fh.setFormatter(_file_fmt)
+        file_log.addHandler(fh)
+
+
+_configure_logging()
 
 app = typer.Typer(
     name="applypilot",
@@ -211,7 +238,7 @@ def apply(
             raise typer.Exit(code=1)
 
     if gen:
-        from applypilot.apply.launcher import gen_prompt, BASE_CDP_PORT
+        from applypilot.apply.launcher import gen_prompt
         target = url or ""
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
@@ -222,7 +249,7 @@ def apply(
             raise typer.Exit(code=1)
         mcp_path = _profile_path.parent / ".mcp-apply-0.json"
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
-        console.print(f"\n[bold]Run manually:[/bold]")
+        console.print("\n[bold]Run manually:[/bold]")
         console.print(
             f"  claude --model {model} -p "
             f"--mcp-config {mcp_path} "
@@ -338,7 +365,7 @@ def doctor() -> None:
     import shutil
     from applypilot.config import (
         load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
+        SEARCH_CONFIG_PATH, get_chrome_path,
     )
 
     load_env()
@@ -379,21 +406,25 @@ def doctor() -> None:
                         "pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex"))
 
     # --- Tier 2 checks ---
-    import os
-    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
-    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_local = bool(os.environ.get("LLM_URL"))
-    if has_gemini:
-        model = os.environ.get("LLM_MODEL", "gemini-2.0-flash")
-        results.append(("LLM API key", ok_mark, f"Gemini ({model})"))
-    elif has_openai:
-        model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-        results.append(("LLM API key", ok_mark, f"OpenAI ({model})"))
-    elif has_local:
-        results.append(("LLM API key", ok_mark, f"Local: {os.environ.get('LLM_URL')}"))
-    else:
-        results.append(("LLM API key", fail_mark,
-                        "Set GEMINI_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
+    from applypilot.llm import resolve_llm_config
+
+    try:
+        llm_cfg = resolve_llm_config()
+        if llm_cfg.api_base:
+            results.append(("LLM API key", ok_mark, f"Custom endpoint: {llm_cfg.api_base} ({llm_cfg.model})"))
+        else:
+            label = {
+                "gemini": "Gemini",
+                "openai": "OpenAI",
+                "anthropic": "Anthropic",
+            }.get(llm_cfg.provider, llm_cfg.provider)
+            results.append(("LLM API key", ok_mark, f"{label} ({llm_cfg.model})"))
+    except RuntimeError:
+        results.append(
+            ("LLM API key", fail_mark,
+             "Set one of GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, LLM_URL, "
+             "or set LLM_MODEL with LLM_API_KEY in ~/.applypilot/.env")
+        )
 
     # --- Tier 3 checks ---
     # Claude Code CLI
