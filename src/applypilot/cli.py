@@ -453,5 +453,10 @@ def doctor() -> None:
     console.print()
 
 
+
+# Import and add greenhouse subcommand
+from applypilot.cli_greenhouse import app as greenhouse_app
+app.add_typer(greenhouse_app, name="greenhouse", help="Manage Greenhouse ATS employers")
+
 if __name__ == "__main__":
     app()
