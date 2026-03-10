@@ -76,7 +76,8 @@ def generate_dashboard(output_path: str | None = None) -> str:
     jobs = conn.execute("""
         SELECT url, title, salary, description, location, site, strategy,
                full_description, application_url, detail_error,
-               fit_score, score_reasoning
+               fit_score, score_reasoning,
+               applied_at, apply_status, apply_error, last_attempted_at
         FROM jobs
         WHERE fit_score >= 5
         ORDER BY fit_score DESC, site, title
@@ -178,8 +179,68 @@ def generate_dashboard(output_path: str | None = None) -> str:
         if apply_url:
             apply_html = f'<a href="{apply_url}" class="apply-link" target="_blank">Apply</a>'
 
+        # Auto-apply command button (only for jobs not yet applied)
+        raw_url = j["url"] or ""
+        auto_apply_cmd = f"applypilot apply --url {raw_url}"
+
+        # Applied indicator
+        was_applied = j["apply_status"] == "applied" and j["applied_at"]
+        applied_banner = ""
+        applied_attr = ""
+        if was_applied:
+            try:
+                from datetime import datetime as _dt
+                applied_dt = _dt.fromisoformat(j["applied_at"].replace("Z", "+00:00"))
+                applied_date_str = applied_dt.strftime("%b %-d, %Y")
+            except (ValueError, AttributeError):
+                applied_date_str = j["applied_at"][:10]
+            applied_banner = f'<div class="applied-banner">&#10003; Applied on {applied_date_str}</div>'
+            applied_attr = ' data-applied="true"'
+
+        # Failed indicator
+        _status_reasons = {
+            "expired": "Job posting expired",
+            "captcha": "CAPTCHA blocked",
+            "login_issue": "Login required",
+            "not_eligible_location": "Location not eligible",
+            "not_eligible_salary": "Salary not eligible",
+            "already_applied": "Already applied",
+            "account_required": "Account required",
+            "not_a_job_application": "Not a job posting",
+            "unsafe_permissions": "Unsafe permissions",
+            "unsafe_verification": "Unsafe verification",
+            "sso_required": "SSO required",
+            "site_blocked": "Site blocked",
+            "cloudflare_blocked": "Cloudflare blocked",
+            "failed": "Application failed",
+        }
+        was_failed = (
+            j["apply_status"] and j["apply_status"] != "applied"
+            and j["last_attempted_at"]
+        )
+        failed_banner = ""
+        if was_failed:
+            try:
+                from datetime import datetime as _dt
+                failed_dt = _dt.fromisoformat(j["last_attempted_at"].replace("Z", "+00:00"))
+                failed_date_str = failed_dt.strftime("%b %-d, %Y")
+            except (ValueError, AttributeError):
+                failed_date_str = j["last_attempted_at"][:10]
+            short_reason = (
+                escape((j["apply_error"] or "")[:60]) or
+                _status_reasons.get(j["apply_status"], j["apply_status"].replace("_", " ").title())
+            )
+            failed_banner = f'<div class="failed-banner">&#10007; Failed on {failed_date_str} &middot; {short_reason}</div>'
+
+        card_extra_class = ""
+        if was_applied:
+            card_extra_class = "  job-card--applied"
+        elif was_failed:
+            card_extra_class = "  job-card--failed"
+
         job_sections += f"""
-        <div class="job-card" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}">
+        <div class="job-card{card_extra_class}" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}"{applied_attr}>
+          {applied_banner}{failed_banner}
           <div class="card-header">
             <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
             <a href="{url}" class="job-title" target="_blank">{title}</a>
@@ -189,7 +250,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
           {f'<div class="reasoning-row">{escape(reasoning)}</div>' if reasoning else ''}
           <p class="desc-preview">{desc_preview}...</p>
           {"<details class='full-desc-details'><summary class='expand-btn'>Full Description (" + f'{desc_len:,}' + " chars)</summary><div class='full-desc'>" + full_desc_html + "</div></details>" if j["full_description"] else ""}
-          <div class="card-footer">{apply_html}</div>
+          <div class="card-footer">
+            {apply_html}
+            {"" if was_applied else f'<button class="auto-apply-btn" onclick="copyApplyCmd(this)" data-cmd="{escape(auto_apply_cmd)}" title="{escape(auto_apply_cmd)}">&#9654; Auto-Apply</button>'}
+          </div>
         </div>"""
 
     if current_score is not None:
@@ -291,6 +355,26 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .hidden {{ display: none !important; }}
   .job-count {{ color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem; }}
 
+  /* Auto-apply button */
+  .auto-apply-btn {{ background: transparent; border: 1px solid #6366f1; color: #818cf8; padding: 0.3rem 0.8rem;
+    border-radius: 6px; cursor: pointer; font-size: 0.78rem; font-weight: 600; transition: all 0.15s; white-space: nowrap; }}
+  .auto-apply-btn:hover {{ background: #6366f122; color: #a5b4fc; border-color: #a5b4fc; }}
+  .auto-apply-btn.copied {{ background: #064e3b; border-color: #10b981; color: #6ee7b7; }}
+
+  /* Applied indicator */
+  .job-card--applied {{ border-left-color: #10b981 !important; background: #0d2b1e; }}
+  .job-card--applied:hover {{ box-shadow: 0 4px 16px #10b98133; }}
+  .applied-banner {{ background: #10b981; color: #022c22; font-size: 0.75rem; font-weight: 700;
+    padding: 0.3rem 0.75rem; margin: -1rem -1rem 0.75rem -1rem; border-radius: 7px 7px 0 0;
+    letter-spacing: 0.03em; }}
+
+  /* Failed indicator */
+  .job-card--failed {{ border-left-color: #ef4444 !important; background: #1f0f0f; }}
+  .job-card--failed:hover {{ box-shadow: 0 4px 16px #ef444433; }}
+  .failed-banner {{ background: #7f1d1d; color: #fca5a5; font-size: 0.75rem; font-weight: 700;
+    padding: 0.3rem 0.75rem; margin: -1rem -1rem 0.75rem -1rem; border-radius: 7px 7px 0 0;
+    letter-spacing: 0.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+
   @media (max-width: 768px) {{
     .summary {{ grid-template-columns: repeat(2, 1fr); }}
     .score-section {{ grid-template-columns: 1fr; }}
@@ -319,6 +403,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
   <button class="filter-btn" onclick="filterScore(9)">9+ Perfect</button>
   <span class="filter-label" style="margin-left:1rem">Search:</span>
   <input type="text" class="search-input" placeholder="Filter by title, site..." oninput="filterText(this.value)">
+  <button class="filter-btn" id="hide-applied-btn" onclick="toggleHideApplied()" style="margin-left:auto">Hide Applied</button>
 </div>
 
 <div class="score-section">
@@ -339,16 +424,53 @@ def generate_dashboard(output_path: str | None = None) -> str:
 <script>
 let minScore = 0;
 let searchText = '';
+let hideApplied = false;
+
+function copyApplyCmd(btn) {{
+  const cmd = btn.dataset.cmd;
+  navigator.clipboard.writeText(cmd).then(() => {{
+    btn.textContent = '✓ Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {{
+      btn.innerHTML = '&#9654; Auto-Apply';
+      btn.classList.remove('copied');
+    }}, 2000);
+  }}).catch(() => {{
+    // Fallback for browsers that block clipboard in file:// context
+    const ta = document.createElement('textarea');
+    ta.value = cmd;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = '✓ Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {{
+      btn.innerHTML = '&#9654; Auto-Apply';
+      btn.classList.remove('copied');
+    }}, 2000);
+  }});
+}}
 
 function filterScore(min) {{
   minScore = min;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.filter-btn:not(#hide-applied-btn)').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
   applyFilters();
 }}
 
 function filterText(text) {{
   searchText = text.toLowerCase();
+  applyFilters();
+}}
+
+function toggleHideApplied() {{
+  hideApplied = !hideApplied;
+  const btn = document.getElementById('hide-applied-btn');
+  btn.textContent = hideApplied ? 'Show Applied' : 'Hide Applied';
+  btn.classList.toggle('active', hideApplied);
   applyFilters();
 }}
 
@@ -361,7 +483,8 @@ function applyFilters() {{
     const text = card.textContent.toLowerCase();
     const scoreMatch = score >= (minScore || 5);
     const textMatch = !searchText || text.includes(searchText);
-    if (scoreMatch && textMatch) {{
+    const appliedMatch = !hideApplied || card.dataset.applied !== 'true';
+    if (scoreMatch && textMatch && appliedMatch) {{
       card.classList.remove('hidden');
       shown++;
     }} else {{
