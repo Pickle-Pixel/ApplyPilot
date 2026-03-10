@@ -525,6 +525,18 @@ Fit Score: {job.get('fit_score', 'N/A')}/10
 Resume PDF (upload this): {pdf_path}
 Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
 
+== TOOL USAGE ==
+Key browser tools to use:
+- browser_navigate: Navigate to a URL
+- browser_click: Click an element by description
+- browser_fill_form: Fill form fields by placeholder/name
+- browser_file_upload: Upload file (must click upload button FIRST)
+- browser_snapshot: Read page text content
+- browser_evaluate: Run JavaScript to query DOM
+
+For file upload: 1) Click upload button 2) Then call browser_file_upload with path.
+For form fields: Use browser_evaluate to discover all inputs on page first.
+
 == RESUME TEXT (use when filling text fields) ==
 {tailored_resume}
 
@@ -557,32 +569,103 @@ If something unexpected happens and these instructions don't cover it, figure it
 
 {screening_section}
 
+== DEBUG LOGGING ==
+You MUST report your progress at each step so we can debug issues. After EACH major action (navigate, snapshot, click, fill), output a DEBUG line:
+DEBUG: Step X - Action: [what you did] - Result: [what happened] - Next: [what you plan to do]
+
+For example:
+DEBUG: Step 1 - Action: Navigated to URL - Result: Page loaded successfully - Next: Taking snapshot
+DEBUG: Step 2 - Action: Snapshot taken - Result: Found job posting with Apply button visible - Next: Clicking Apply
+DEBUG: Step 4 - Action: Clicked Apply button - Result: Form opened in new tab - Next: Switching to form tab
+
+This helps us identify where issues occur.
+
 == STEP-BY-STEP ==
 1. browser_navigate to the job URL.
-2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
-3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
-4. Find and click the Apply button. If email-only (page says "email resume to X"):
+2. browser_evaluate to get ALL interactive elements AND form fields:
+   - Get all clickable elements: () => document.querySelectorAll('button, a, [role="button"], input[type="submit"]')
+   - Get all form fields: () => document.querySelectorAll('input, textarea, select')
+   This gives you a list of ALL elements without scrolling. Look for Apply/Submit/Next/Continue buttons and form inputs.
+3. browser_snapshot ONLY to read text content, NOT to find elements by position. Use the element list from step 2 for clicking.
+4. Run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
+5. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
+
+LINKEDIN EASY APPLY - CRITICAL FAST PATH:
+   When on ANY LinkedIn job page (url contains linkedin.com/jobs):
+   - IGNORE everything except finding the "Easy Apply" button
+   - DO NOT read job description, DO NOT scroll, DO NOT analyze
+   - IMMEDIATELY use browser_evaluate to find and click Easy Apply:
+     () => {
+       const btn = Array.from(document.querySelectorAll('button, a')).find(b =>
+         b.textContent.toLowerCase().includes('easy apply') ||
+         b.getAttribute('aria-label')?.toLowerCase().includes('easy apply')
+       );
+       if (btn) { btn.click(); return 'clicked easy apply'; }
+       return 'not found';
+     }
+   - If JavaScript fails, use browser_click on "Easy Apply" text
+   - MAXIMUM 5 seconds from page load to Easy Apply click
+   
+   LINKEDIN MODAL HANDLING:
+   When modal opens:
+   - DO NOT scroll page behind modal
+   - Find "Continue" button and click immediately
+   - If blocked by overlay (#interop-outlet):
+     () => {
+       const overlay = document.querySelector('#interop-outlet');
+       if (overlay) overlay.style.pointerEvents = 'none';
+       const btn = document.querySelector('button[aria-label*="Continue"], button.artdeco-button--primary');
+       if (btn) { btn.click(); return 'clicked'; }
+       return 'not found';
+     }
+
+6. Find and click the Apply button using browser_click with text matching. Common button texts: "Apply", "Apply Now", "Apply for this job", "I'm Interested", "Submit Application", "Start Application". 
+   - If multiple apply buttons exist, click the main one (usually largest/most prominent)
+   - If you can't find it in your element list, run: browser_evaluate () => {{ return Array.from(document.querySelectorAll('button, a')).filter(b => /apply|submit|interest/i.test(b.textContent)).map(b => ({{ text: b.textContent.trim(), outerHTML: b.outerHTML.substring(0,100) }})) }}
+   If email-only (page says "email resume to X"):
    - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
    - Output RESULT:APPLIED. Done.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
-5. Login wall?
-   5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
-   5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
-   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
-   5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
-   5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
-   5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
-   5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
-6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
-7. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> use the cover letter PDF path.
-8. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
+ 7. Login wall or Auth required?
+    7a. LINKEDIN SPECIFIC: If you see the LinkedIn auth wall or sign-up page:
+        - FIRST: Check if you're already logged in. Look for a profile picture, name, or "Me" dropdown in the top navigation. If logged in elements are visible -> SKIP auth, proceed directly to find and click the "Easy Apply" button on the job page.
+        - If NOT logged in: This is CRITICAL - you MUST attempt Google authentication FIRST:
+           1. Look IMMEDIATELY for "Sign in with Google", "Continue with Google", "Sign in", or Google logo buttons on the auth wall
+           2. Also look for text like "Sign in with Google to apply" or similar Google auth options
+           3. If you see ANY Google sign-in option, CLICK IT IMMEDIATELY - this is the PRIMARY path
+           4. Only if NO Google option is visible on the auth wall, then click "Sign in" link (not "Join now") to see more options
+        - Google auth flow: After clicking Google sign-in, wait for redirect/popup. If already authenticated with Google in this browser, it may auto-approve. If account selector appears, pick the first account. Once back on LinkedIn, proceed to apply.
+        - IMPORTANT: The applicant's Google account is already authenticated in this browser. Google sign-in should work automatically or with minimal interaction. DO NOT give up without trying Google auth first.
+    7b. OTHER SITES - Check for Google Sign-In: Look for buttons like "Sign in with Google", "Continue with Google", or Google logo buttons. If present:
+        - Click the Google sign-in button
+        - Wait for redirect/popup and complete Google auth (auto-approve if already authenticated, otherwise select account)
+        - Once back on the job site, continue with the application flow
+    7c. If you land on SSO/OAuth pages other than Google (Microsoft, Okta, corporate SSO) -> STOP. Output RESULT:FAILED:sso_required.
+    7d. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's non-Google SSO -> RESULT:FAILED:sso_required.
+    7e. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
+    7f. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
+    7g. Sign in failed? Try sign up with same email and password.
+    7h. Need email verification? Use search_emails + read_email to get the code.
+    7i. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
+    7j. All failed? Output RESULT:FAILED:login_issue. Do not loop.
+8. Upload resume (EXISTENCE-BASED - ACT FAST).
+    RULE: If you see the resume step, take action within 2 seconds. DO NOT sit and think.
+    
+    a) Look for upload button ("Upload", "Select File", "+" icon) -> CLICK IT IMMEDIATELY.
+    b) Call browser_file_upload with {{"paths": ["{pdf_path}"]}}.
+    c) Wait 2 seconds for upload to complete.
+    d) Click "Next"/"Continue" immediately. DO NOT verify, DO NOT check filename, DO NOT scroll.
+    
+    IF CLICK FAILS: Use this JavaScript immediately:
+    () => {{ const btn = Array.from(document.querySelectorAll('button')).find(b => /next|continue/i.test(b.textContent)); if(btn) {{ btn.click(); return 'ok'; }} return 'none'; }}
+9. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> click upload button first, then browser_file_upload with the cover letter PDF path.
+10. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
    - "Current Job Title" or "Most Recent Title" -> use the title from the TAILORED RESUME summary, NOT whatever the parser guessed.
    - Compare every other field to the APPLICANT PROFILE. Fix mismatches. Fill empty fields.
-9. Answer screening questions using the rules above.
-10. {submit_instruction}
-11. After submit: browser_snapshot. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, solve it (the form will auto-submit once the token clears, or you may need to click Submit again). Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
-12. Output your result.
+11. Answer screening questions using the rules above.
+12. {submit_instruction}
+13. After submit: browser_snapshot. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, solve it (the form will auto-submit once the token clears, or you may need to click Submit again). Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
+14. Output your result.
 
 == RESULT CODES (output EXACTLY one) ==
 RESULT:APPLIED -- submitted successfully
@@ -594,17 +677,24 @@ RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
 RESULT:FAILED:reason -- any other failure (brief reason)
 
 == BROWSER EFFICIENCY ==
-- browser_snapshot ONCE per page to understand it. Then use browser_take_screenshot to check results (10x less memory).
-- Only snapshot again when you need element refs to click/fill.
-- Multi-page forms (Workday, Taleo, iCIMS): snapshot each new page, fill all fields, click Next/Continue. Repeat until final review page.
-- Fill ALL fields in ONE browser_fill_form call. Not one at a time.
+- **SCROLL ONLY WHEN NECESSARY**. Use browser_evaluate to query the DOM programmatically instead of scrolling. Example: () => document.querySelectorAll('button').map(b => b.textContent)
+- **ALWAYS use browser_evaluate first** to find elements by selector or text content. This is 100x faster than visual scanning.
+- browser_snapshot ONCE per page to read text content, NOT to find element positions.
+- Only snapshot again when you need to see the visual layout for verification.
+- Use browser_click with text references (element descriptions), not coordinates.
+- Multi-page forms (Workday, Taleo, iCIMS): Use browser_evaluate to list all inputs, then fill ALL fields in ONE browser_fill_form call. Not one at a time.
 - Keep your thinking SHORT. Don't repeat page structure back.
-- CAPTCHA AWARENESS: After any navigation, Apply/Submit/Login click, or when a page feels stuck -- run CAPTCHA DETECT (see CAPTCHA section). Invisible CAPTCHAs (Turnstile, reCAPTCHA v3) show NO visual widget but block form submissions silently. The detect script finds them even when invisible.
+- CAPTCHA AWARENESS: After any navigation, Apply/Submit/Login click, or when a page feels stuck -- run CAPTCHA DETECT (see CAPTCHA section).
 
 == FORM TRICKS ==
 - Popup/new window opened? browser_tabs action "list" to see all tabs. browser_tabs action "select" with the tab index to switch. ALWAYS check for new tabs after clicking login/apply/sign-in buttons.
 - "Upload your resume" pre-fill page (Workday, Lever, etc.): This is NOT the application form yet. Click "Select file" or the upload area, then browser_file_upload with the resume PDF path. Wait for parsing to finish. Then click Next/Continue to reach the actual form.
-- File upload not working? Try: (1) browser_click the upload button/area, (2) browser_file_upload with the path. If still failing, look for a hidden file input or a "Select file" link and click that first.
+- File upload workflow (MUST follow this order):
+  1. browser_click the upload button/dropzone FIRST - this triggers the file chooser modal
+  2. THEN call browser_file_upload with {{"paths": ["/absolute/path/to/file.pdf"]}}
+  3. NEVER call browser_file_upload without clicking the upload button first - it will fail
+  If upload button is hidden: use browser_evaluate to find and click the hidden input, or look for "Select file" link.
+  - Workday specific: Look for "Resume" section, click "Upload" or file icon, then browser_file_upload.
 - Dropdown won't fill? browser_click to open it, then browser_click the option.
 - Checkbox won't check via fill_form? Use browser_click on it instead. Snapshot to verify.
 - Phone field with country prefix: just type digits {phone_digits}

@@ -8,6 +8,8 @@ from typing import Optional
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich import box
 
 from applypilot import __version__
 
@@ -33,6 +35,7 @@ VALID_STAGES = ("discover", "enrich", "score", "tailor", "cover", "pdf")
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _bootstrap() -> None:
     """Common setup: load env, create dirs, init DB."""
     from applypilot.config import load_env, ensure_dirs
@@ -53,10 +56,13 @@ def _version_callback(value: bool) -> None:
 # Commands
 # ---------------------------------------------------------------------------
 
+
 @app.callback()
 def main(
     version: bool = typer.Option(
-        False, "--version", "-V",
+        False,
+        "--version",
+        "-V",
         help="Show version and exit.",
         callback=_version_callback,
         is_eager=True,
@@ -77,11 +83,7 @@ def init() -> None:
 def run(
     stages: Optional[list[str]] = typer.Argument(
         None,
-        help=(
-            "Pipeline stages to run. "
-            f"Valid: {', '.join(VALID_STAGES)}, all. "
-            "Defaults to 'all' if omitted."
-        ),
+        help=(f"Pipeline stages to run. Valid: {', '.join(VALID_STAGES)}, all. Defaults to 'all' if omitted."),
     ),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for tailor/cover stages."),
     workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discovery/enrichment stages."),
@@ -108,25 +110,20 @@ def run(
     # Validate stage names
     for s in stage_list:
         if s != "all" and s not in VALID_STAGES:
-            console.print(
-                f"[red]Unknown stage:[/red] '{s}'. "
-                f"Valid stages: {', '.join(VALID_STAGES)}, all"
-            )
+            console.print(f"[red]Unknown stage:[/red] '{s}'. Valid stages: {', '.join(VALID_STAGES)}, all")
             raise typer.Exit(code=1)
 
     # Gate AI stages behind Tier 2
     llm_stages = {"score", "tailor", "cover"}
     if any(s in stage_list for s in llm_stages) or "all" in stage_list:
         from applypilot.config import check_tier
+
         check_tier(2, "AI scoring/tailoring")
 
     # Validate the --validation flag value
     valid_modes = ("strict", "normal", "lenient")
     if validation not in valid_modes:
-        console.print(
-            f"[red]Invalid --validation value:[/red] '{validation}'. "
-            f"Choose from: {', '.join(valid_modes)}"
-        )
+        console.print(f"[red]Invalid --validation value:[/red] '{validation}'. Choose from: {', '.join(valid_modes)}")
         raise typer.Exit(code=1)
 
     result = run_pipeline(
@@ -147,14 +144,18 @@ def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel browser workers."),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for job selection."),
-    model: str = typer.Option("haiku", "--model", "-m", help="Claude model name."),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Backend model override."),
+    agent: Optional[str] = typer.Option(None, "--agent", help="OpenCode agent override."),
+    backend: Optional[str] = typer.Option(None, "--backend", "-b", help="Backend to use (claude or opencode). Uses APPLY_BACKEND env var or defaults to claude."),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
     url: Optional[str] = typer.Option(None, "--url", help="Apply to a specific job URL."),
     gen: bool = typer.Option(False, "--gen", help="Generate prompt file for manual debugging instead of running."),
     mark_applied: Optional[str] = typer.Option(None, "--mark-applied", help="Manually mark a job URL as applied."),
-    mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
+    mark_failed: Optional[str] = typer.Option(
+        None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."
+    ),
     fail_reason: Optional[str] = typer.Option(None, "--fail-reason", help="Reason for --mark-failed."),
     reset_failed: bool = typer.Option(False, "--reset-failed", help="Reset all failed jobs for retry."),
 ) -> None:
@@ -168,18 +169,21 @@ def apply(
 
     if mark_applied:
         from applypilot.apply.launcher import mark_job
+
         mark_job(mark_applied, "applied")
         console.print(f"[green]Marked as applied:[/green] {mark_applied}")
         return
 
     if mark_failed:
         from applypilot.apply.launcher import mark_job
+
         mark_job(mark_failed, "failed", reason=fail_reason)
         console.print(f"[yellow]Marked as failed:[/yellow] {mark_failed} ({fail_reason or 'manual'})")
         return
 
     if reset_failed:
         from applypilot.apply.launcher import reset_failed as do_reset
+
         count = do_reset()
         console.print(f"[green]Reset {count} failed job(s) for retry.[/green]")
         return
@@ -191,10 +195,7 @@ def apply(
 
     # Check 2: Profile exists
     if not _profile_path.exists():
-        console.print(
-            "[red]Profile not found.[/red]\n"
-            "Run [bold]applypilot init[/bold] to create your profile first."
-        )
+        console.print("[red]Profile not found.[/red]\nRun [bold]applypilot init[/bold] to create your profile first.")
         raise typer.Exit(code=1)
 
     # Check 3: Tailored resumes exist (skip for --gen with --url)
@@ -212,11 +213,13 @@ def apply(
 
     if gen:
         from applypilot.apply.launcher import gen_prompt, BASE_CDP_PORT
+
         target = url or ""
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
             raise typer.Exit(code=1)
-        prompt_file = gen_prompt(target, min_score=min_score, model=model)
+        manual_model: str = model if model is not None else "haiku"
+        prompt_file = gen_prompt(target, min_score=min_score, model=manual_model)
         if not prompt_file:
             console.print("[red]No matching job found for that URL.[/red]")
             raise typer.Exit(code=1)
@@ -224,9 +227,7 @@ def apply(
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
         console.print(f"\n[bold]Run manually:[/bold]")
         console.print(
-            f"  claude --model {model} -p "
-            f"--mcp-config {mcp_path} "
-            f"--permission-mode bypassPermissions < {prompt_file}"
+            f"  claude --model {manual_model} -p --mcp-config {mcp_path} --permission-mode bypassPermissions < {prompt_file}"
         )
         return
 
@@ -237,7 +238,11 @@ def apply(
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
     console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
     console.print(f"  Workers:  {workers}")
-    console.print(f"  Model:    {model}")
+    console.print(f"  Model:    {model or '[backend default]'}")
+    if backend:
+        console.print(f"  Backend:  {backend}")
+    if agent:
+        console.print(f"  Agent:    {agent}")
     console.print(f"  Headless: {headless}")
     console.print(f"  Dry run:  {dry_run}")
     if url:
@@ -250,9 +255,11 @@ def apply(
         min_score=min_score,
         headless=headless,
         model=model,
+        agent=agent,
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
+        backend_name=backend,
     )
 
 
@@ -332,13 +339,197 @@ def dashboard() -> None:
     open_dashboard()
 
 
+
+@app.command()
+def analyze(
+    worker: int = typer.Option(0, "--worker", "-w", help="Worker ID to analyze (default: 0)"),
+    last: bool = typer.Option(False, "--last", "-l", help="Analyze the most recent run"),
+    summary: bool = typer.Option(False, "--summary", "-s", help="Show summary only"),
+) -> None:
+    """Analyze a recent apply run: timing, steps, and failures."""
+    from pathlib import Path
+    from datetime import datetime
+    import json
+    from applypilot import config
+    
+    log_dir = Path(config.LOG_DIR)
+    
+    # Find the worker log file
+    worker_log = log_dir / f"worker-{worker}.log"
+    audit_log = log_dir / f"worker-{worker}.events.jsonl"
+    
+    if not worker_log.exists():
+        console.print(f"[red]No worker log found:[/red] {worker_log}")
+        raise typer.Exit(code=1)
+    
+    # Parse the audit log
+    actions = []
+    if audit_log.exists():
+        with open(audit_log) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        actions.append(json.loads(line))
+                    except:
+                        pass
+    
+    # Parse the worker log for context
+    with open(worker_log) as f:
+        log_content = f.read()
+    
+    # Extract job info from log header
+    job_title = "Unknown"
+    job_url = "Unknown"
+    job_site = "Unknown"
+    for line in log_content.split('\n')[:10]:
+        if '@' in line and 'http' not in line:
+            job_title = line.split('@')[0].strip().split(']')[-1].strip()[:50]
+            job_site = line.split('@')[-1].strip().split('\n')[0][:20]
+        if 'URL:' in line:
+            job_url = line.split('URL:')[-1].strip()[:60]
+    
+    # Analyze timing
+    if actions:
+        start_time = datetime.fromisoformat(actions[0]['timestamp'])
+        end_time = datetime.fromisoformat(actions[-1]['timestamp'])
+        duration = (end_time - start_time).total_seconds()
+    else:
+        duration = 0
+    
+    # Calculate delays between actions
+    delays = []
+    for i in range(1, len(actions)):
+        t1 = datetime.fromisoformat(actions[i-1]['timestamp'])
+        t2 = datetime.fromisoformat(actions[i]['timestamp'])
+        delays.append((t2 - t1).total_seconds())
+    
+    avg_delay = sum(delays) / len(delays) if delays else 0
+    max_delay = max(delays) if delays else 0
+    
+    # Check for failure
+    status = "unknown"
+    failure_reason = None
+    if "RESULT:APPLIED" in log_content:
+        status = "success"
+    elif "RESULT:CAPTCHA" in log_content or "captcha" in log_content.lower():
+        status = "captcha"
+        failure_reason = "CAPTCHA detected - automatic solving not configured"
+    elif "RESULT:FAILED" in log_content:
+        status = "failed"
+        # Extract failure reason
+        for line in log_content.split('\n'):
+            if "RESULT:FAILED" in line:
+                failure_reason = line.split("RESULT:FAILED")[-1].strip(": ")
+                break
+    elif "RESULT:LOGIN_ISSUE" in log_content:
+        status = "login"
+        failure_reason = "Login/authentication issue"
+    elif "RESULT:EXPIRED" in log_content:
+        status = "expired"
+        failure_reason = "Job expired or no longer accepting applications"
+    
+    # Display results
+    console.print()
+    console.print(Panel(
+        f"[bold blue]{job_title}[/bold blue] @ [cyan]{job_site}[/cyan]\n"
+        f"[dim]{job_url}[/dim]",
+        title="Job Application Analysis",
+        border_style="blue"
+    ))
+    
+    # Status panel
+    status_colors = {
+        "success": "green",
+        "failed": "red",
+        "captcha": "yellow",
+        "login": "yellow",
+        "expired": "dim",
+        "unknown": "dim"
+    }
+    status_text = status.upper()
+    if status == "success":
+        status_text = "✓ SUCCESS"
+    
+    console.print(Panel(
+        f"[bold {status_colors.get(status, 'white')}]{status_text}[/bold {status_colors.get(status, 'white')}]\n"
+        f"Duration: [bold]{duration:.0f}s[/bold] ({len(actions)} actions)\n"
+        f"Avg delay: [bold]{avg_delay:.1f}s[/bold] | Max delay: [bold]{max_delay:.1f}s[/bold]",
+        title="Summary",
+        border_style=status_colors.get(status, "white")
+    ))
+    
+    if failure_reason:
+        console.print(Panel(
+            f"[yellow]{failure_reason}[/yellow]",
+            title="Failure Reason",
+            border_style="yellow"
+        ))
+    
+    if not summary and actions:
+        # Show action timeline
+        console.print()
+        table = Table(title="Action Timeline", box=box.SIMPLE)
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Tool", style="cyan", width=35)
+        table.add_column("Delay", style="yellow", width=10)
+        table.add_column("Details", style="white")
+        
+        prev_time = None
+        for i, action in enumerate(actions[:50]):  # Limit to 50 actions
+            ts = datetime.fromisoformat(action['timestamp'])
+            tool = action.get('tool', 'unknown')[:32]
+            
+            if prev_time:
+                delay = (ts - prev_time).total_seconds()
+                delay_str = f"{delay:.1f}s"
+                
+                # Color code delays
+                if delay > 10:
+                    delay_str = f"[red]{delay_str}[/red]"
+                elif delay > 5:
+                    delay_str = f"[yellow]{delay_str}[/yellow]"
+            else:
+                delay_str = "-"
+            
+            # Extract relevant details
+            details = ""
+            inp = action.get('input', {})
+            if inp:
+                if 'url' in inp:
+                    details = f"url: {inp['url'][:40]}..."
+                elif 'element' in inp:
+                    details = f"element: {str(inp['element'])[:40]}"
+                elif 'fields' in inp:
+                    details = f"fields: {len(inp['fields'])}"
+                elif 'text' in inp:
+                    details = f"text: {str(inp['text'])[:40]}"
+            
+            table.add_row(str(i+1), tool, delay_str, details)
+            prev_time = ts
+        
+        console.print(table)
+        
+        if len(actions) > 50:
+            console.print(f"[dim]... and {len(actions) - 50} more actions[/dim]")
+    
+    console.print()
+    console.print(f"[dim]Full logs: {worker_log}[/dim]")
+    console.print(f"[dim]Audit log: {audit_log}[/dim]")
+    console.print()
+
 @app.command()
 def doctor() -> None:
     """Check your setup and diagnose missing requirements."""
     import shutil
     from applypilot.config import (
-        load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
+        load_env,
+        PROFILE_PATH,
+        RESUME_PATH,
+        RESUME_PDF_PATH,
+        SEARCH_CONFIG_PATH,
+        ENV_PATH,
+        get_chrome_path,
     )
 
     load_env()
@@ -373,13 +564,20 @@ def doctor() -> None:
     # jobspy (discovery dep installed separately)
     try:
         import jobspy  # noqa: F401
+
         results.append(("python-jobspy", ok_mark, "Job board scraping available"))
     except ImportError:
-        results.append(("python-jobspy", warn_mark,
-                        "pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex"))
+        results.append(
+            (
+                "python-jobspy",
+                warn_mark,
+                "pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex",
+            )
+        )
 
     # --- Tier 2 checks ---
     import os
+
     has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
     has_local = bool(os.environ.get("LLM_URL"))
@@ -392,41 +590,47 @@ def doctor() -> None:
     elif has_local:
         results.append(("LLM API key", ok_mark, f"Local: {os.environ.get('LLM_URL')}"))
     else:
-        results.append(("LLM API key", fail_mark,
-                        "Set GEMINI_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
+        results.append(("LLM API key", fail_mark, "Set GEMINI_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
 
     # --- Tier 3 checks ---
     # Claude Code CLI
+    # Backend CLIs: check which are installed
+    opencode_bin = shutil.which("opencode")
     claude_bin = shutil.which("claude")
-    if claude_bin:
+    if opencode_bin:
+        results.append(("OpenCode CLI", ok_mark, opencode_bin))
+        results.append(("Claude Code CLI", warn_mark, "Optional: Claude not required when using OpenCode"))
+    elif claude_bin:
+        results.append(("OpenCode CLI", fail_mark, "Install OpenCode CLI for preferred backend (optional)"))
         results.append(("Claude Code CLI", ok_mark, claude_bin))
     else:
-        results.append(("Claude Code CLI", fail_mark,
-                        "Install from https://claude.ai/code (needed for auto-apply)"))
+        results.append(("OpenCode CLI", fail_mark, "Install OpenCode CLI and run 'opencode mcp add' to configure MCP"))
+        results.append(("Claude Code CLI", fail_mark, "Install from https://claude.ai/code "))
 
     # Chrome
     try:
         chrome_path = get_chrome_path()
         results.append(("Chrome/Chromium", ok_mark, chrome_path))
     except FileNotFoundError:
-        results.append(("Chrome/Chromium", fail_mark,
-                        "Install Chrome or set CHROME_PATH env var (needed for auto-apply)"))
+        results.append(
+            ("Chrome/Chromium", fail_mark, "Install Chrome or set CHROME_PATH env var (needed for auto-apply)")
+        )
 
     # Node.js / npx (for Playwright MCP)
     npx_bin = shutil.which("npx")
     if npx_bin:
         results.append(("Node.js (npx)", ok_mark, npx_bin))
     else:
-        results.append(("Node.js (npx)", fail_mark,
-                        "Install Node.js 18+ from nodejs.org (needed for auto-apply)"))
+        results.append(("Node.js (npx)", fail_mark, "Install Node.js 18+ from nodejs.org (needed for auto-apply)"))
 
     # CapSolver (optional)
     capsolver = os.environ.get("CAPSOLVER_API_KEY")
     if capsolver:
         results.append(("CapSolver API key", ok_mark, "CAPTCHA solving enabled"))
     else:
-        results.append(("CapSolver API key", "[dim]optional[/dim]",
-                        "Set CAPSOLVER_API_KEY in .env for CAPTCHA solving"))
+        results.append(
+            ("CapSolver API key", "[dim]optional[/dim]", "Set CAPSOLVER_API_KEY in .env for CAPTCHA solving")
+        )
 
     # --- Render results ---
     console.print()
@@ -441,14 +645,19 @@ def doctor() -> None:
 
     # Tier summary
     from applypilot.config import get_tier, TIER_LABELS
+
     tier = get_tier()
     console.print(f"[bold]Current tier: Tier {tier} — {TIER_LABELS[tier]}[/bold]")
 
     if tier == 1:
         console.print("[dim]  → Tier 2 unlocks: scoring, tailoring, cover letters (needs LLM API key)[/dim]")
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print(
+            "[dim]  → Tier 3 unlocks: auto-apply (needs OpenCode CLI or Claude Code CLI + Chrome + Node.js)[/dim]"
+        )
     elif tier == 2:
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print(
+            "[dim]  → Tier 3 unlocks: auto-apply (needs OpenCode CLI or Claude Code CLI + Chrome + Node.js)[/dim]"
+        )
 
     console.print()
 
