@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-02-17
 
+## [0.3.0] - 2026-03-11
+
+### Added
+- **Human-in-the-loop safety belt** – `APPLYPILOT_REQUIRE_APPROVAL` forces `applypilot apply` to present every job for manual approval before Chrome/Claude is launched. `APPLYPILOT_APPROVAL_WINDOW` controls how many jobs appear per review batch.
+- **Gustaf Garnow preset** – Stockholms-focused profile (`profiles/gustaf/`) with structured profile.json, resume.txt, searches.yaml, and `.env` defaults.
+- **Bootstrap helper** – `scripts/bootstrap_profile.py` copies the selected preset into `~/.applypilot/` (with `--force` to overwrite).
+- **Repo docs** – AGENTS.md + MEMORY.md capture operating procedures and state for future agents.
+
+### Changed
+- README now documents the Gustaf preset workflow and the approval requirement.
+- `.env.example` lists the new safety environment variables.
+
 ### Added
 - **Parallel workers for discovery/enrichment** - `applypilot run --workers N` enables
   ThreadPoolExecutor-based parallelism for Workday scraping, smart extract, and detail

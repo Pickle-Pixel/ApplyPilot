@@ -1,0 +1,69 @@
+# ApplyPilot search configuration for Gustaf Garnow
+# Copy to ~/.applypilot/searches.yaml via scripts/bootstrap_profile.py
+
+queries:
+  - query: "creative technologist"
+    tier: 1
+  - query: "digital designer"
+    tier: 1
+  - query: "digital producer"
+    tier: 1
+  - query: "marketing technologist"
+    tier: 2
+  - query: "experience designer"
+    tier: 2
+  - query: "art director"
+    tier: 2
+  - query: "motion designer"
+    tier: 3
+  - query: "content designer"
+    tier: 3
+  - query: "creative strategist"
+    tier: 3
+
+locations:
+  - location: "Stockholm, Sweden"
+    remote: false
+  - location: "Göteborg, Sweden"
+    remote: false
+  - location: "Remote Europe"
+    remote: true
+
+location:
+  accept_patterns:
+    - "Stockholm"
+    - "Sweden"
+    - "Nordics"
+    - "Scandinavia"
+    - "Remote"
+    - "Hybrid"
+    - "Europe"
+  reject_patterns:
+    - "United States"
+    - "Canada"
+    - "Only US"
+    - "Only UK"
+
+country: "Sweden"
+
+boards:
+  - linkedin
+  - indeed
+  - glassdoor
+  - zip_recruiter
+  - google
+
+defaults:
+  results_per_site: 60
+  hours_old: 96
+
+exclude_titles:
+  - "intern"
+  - "internship"
+  - "trainee"
+  - "vp"
+  - "vice president"
+  - "chief"
+  - "cto"
+  - "coo"
+  - "director of marketing"

@@ -1,10 +1,14 @@
+/Users/matriarch/.openclaw/completions/openclaw.zsh:3570: command not found: compdef
 # User data (NEVER commit)
-profile.json
-resume.txt
-resume.pdf
+/profile.json
+/resume.txt
+/resume.pdf
 *.env
 .env.*
 !.env.example
+!profiles/**/.env
+!profiles/**/profile.json
+!profiles/**/resume.txt
 
 # Runtime artifacts
 *.db
@@ -26,6 +30,7 @@ __pycache__/
 dist/
 build/
 *.egg
+venv/
 
 # IDE
 .vscode/

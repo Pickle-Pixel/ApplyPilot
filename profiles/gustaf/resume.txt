@@ -1,0 +1,43 @@
+/Users/matriarch/.openclaw/completions/openclaw.zsh:3570: command not found: compdef
+GUSTAF GARNOW
+Stockholm, Sweden  •  gustaf@example.com  •  +46 70 000 00 00
+linkedin.com/in/gustafgarnow  •  github.com/Baltsar  •  opensverige.se
+
+SUMMARY
+Creative Technologist and digital designer with 10+ years of shipping regulated financial marketing, motion graphics, and full-funnel campaigns. Combines Adobe CC mastery with AI-first workflows (Claude, Cursor, autonomous agents) to ship faster assets with fewer handoffs. Comfortable owning briefs end-to-end: research, concept, design, automation, QA, and deployment.
+
+TECHNICAL SKILLS
+Creative: Photoshop, Illustrator, InDesign, After Effects, Premiere Pro, Lightroom.
+Product/UX: Figma, Keynote, PowerPoint, responsive HTML/CSS, basic JS.
+Channels: Lifecycle email, paid social, web landing pages, infographics, animation, video, short-form film, print, on-site event content.
+AI & Automation: Claude, Cursor.ai, Hermes Agent, OpenClaw, Agent Zero, MCP (Model Context Protocol), LLM evaluation, prompt engineering, Playwright MCP, vibecoding.
+Operations: Email deliverability/QA, CRM asset management, compliance reviews, localization workflows, production scheduling, vendor coordination.
+
+EXPERIENCE
+AMF Pension — Digital Designer / Creative Technologist (2016–2024)
+• Produced thousands of regulated Facebook/Meta creatives, landing pages, newsletters, motion spots, and internal decks for Sweden’s largest pension mutual.
+• Led email marketing design + production: segmentation strategy, HTML modules, deliverability QA; maintained avg 38% open rate / 12% CTR across 1,200+ sends.
+• Partnered with UX, copy, and engineering to launch pension calculators, infographics, and explainers that satisfied Finansinspektionen compliance requirements.
+• Built template libraries + automation scripts to cut asset turnarounds from days to hours; introduced AI-assisted storyboard + copy review loops for faster approvals.
+
+FamiljenPangea & River (Agencies) — Digital Designer / Motion Lead (2012–2016)
+• Led concept-to-delivery campaigns for clients such as Coca-Cola, DreamHack, and telco brands covering experiential activations, microsites, and paid media kits.
+• Directed on-site event content teams (DreamHack, Glow events) including screen packages, lower thirds, sponsor roll-outs, and recaps.
+
+Early Roles — UX Intern, Event Producer, Freelancer (2008–2012)
+• Mixed UX internships with freelance visual design, live-stream overlays, and e-sports stage production, developing multi-disciplinary generalist skills.
+
+PROJECTS
+Monero MCP — Built the world’s first MCP server for the Monero ecosystem; open-sourced with CLI tooling so agents can query Monero nodes securely.
+OpenSverige — Founder of Sweden’s first AI-agent community (meetups, Discord, tooling swaps, public talks on vibecoding and HITL automation).
+Monero Android Wallet (FOSS) — Contributor to the first fully open-source Monero Android wallet; UX + onboarding flows.
+AI Driver AB — Building an AI-native digital studio focused on human-in-the-loop automation for design + comms teams.
+
+EDUCATION
+Medieinstitutet — Digital Content Designer diploma
+Beckmans College of Design — Design courses
+Norra Konstskola — Foundational art studies
+Berghs School of Communication — Motion design intensives
+
+LANGUAGES
+Swedish (native) • English (professional)

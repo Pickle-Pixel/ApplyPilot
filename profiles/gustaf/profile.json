@@ -1,0 +1,110 @@
+/Users/matriarch/.openclaw/completions/openclaw.zsh:3570: command not found: compdef
+{
+  "personal": {
+    "full_name": "Gustaf Garnow",
+    "preferred_name": "Gustaf",
+    "email": "gustaf@example.com",
+    "password": "",
+    "phone": "+46 70 000 00 00",
+    "address": "Stockholm (update with street if desired)",
+    "city": "Stockholm",
+    "province_state": "Stockholms län",
+    "country": "Sweden",
+    "postal_code": "SE-100 00",
+    "linkedin_url": "https://www.linkedin.com/in/gustafgarnow",
+    "github_url": "https://github.com/Baltsar",
+    "portfolio_url": "https://opensverige.se",
+    "website_url": "https://gustafgarnow.com"
+  },
+  "work_authorization": {
+    "legally_authorized_to_work": "Yes",
+    "require_sponsorship": "No",
+    "work_permit_type": "Swedish citizen (EU)"
+  },
+  "availability": {
+    "earliest_start_date": "Immediately",
+    "available_for_full_time": "Yes",
+    "available_for_contract": "Yes"
+  },
+  "compensation": {
+    "salary_expectation": "564000",
+    "salary_currency": "SEK",
+    "salary_range_min": "540000",
+    "salary_range_max": "650000",
+    "currency_conversion_note": "Minimum 47 000 SEK/month before tax."
+  },
+  "experience": {
+    "years_of_experience_total": "12",
+    "education_level": "Diploma - Digital Content Designer",
+    "current_job_title": "Creative Technologist / Digital Designer",
+    "current_company": "AMF Pension",
+    "target_role": "Creative Technologist"
+  },
+  "skills_boundary": {
+    "creative_suite": [
+      "Adobe Photoshop",
+      "Adobe Illustrator",
+      "Adobe InDesign",
+      "Adobe After Effects",
+      "Adobe Premiere Pro"
+    ],
+    "prototyping": [
+      "Figma",
+      "Keynote",
+      "PowerPoint"
+    ],
+    "channels": [
+      "Email automation",
+      "Landing pages",
+      "Paid social",
+      "Infographics",
+      "Video editing"
+    ],
+    "ai_stack": [
+      "Claude",
+      "Cursor",
+      "OpenClaw",
+      "Agent Zero",
+      "Hermes Agent",
+      "LLM evaluation"
+    ],
+    "other": [
+      "HTML/CSS",
+      "Motion graphics",
+      "Event production",
+      "Monero ecosystem"
+    ]
+  },
+  "resume_facts": {
+    "preserved_companies": [
+      "AMF Pension",
+      "FamiljenPangea",
+      "River"
+    ],
+    "preserved_projects": [
+      "Monero MCP",
+      "OpenSverige",
+      "Monero Android Wallet",
+      "AI Driver AB"
+    ],
+    "preserved_school": "Medieinstitutet",
+    "real_metrics": [
+      "7+ years delivering regulated pension communications at AMF",
+      "Launched 1,200+ omni-channel assets annually",
+      "Email programs averaging 38% open rate and 12% CTR",
+      "Founded Sweden's first AI agent community"
+    ]
+  },
+  "eeo_voluntary": {
+    "gender": "Decline to self-identify",
+    "race_ethnicity": "Decline to self-identify",
+    "veteran_status": "I am not a protected veteran",
+    "disability_status": "I do not wish to answer"
+  },
+  "languages": {
+    "spoken": [
+      "Swedish - native",
+      "English - professional"
+    ]
+  }
+}

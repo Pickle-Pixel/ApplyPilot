@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from applypilot import __version__
@@ -231,9 +233,102 @@ def apply(
         return
 
     from applypilot.apply.launcher import main as apply_main
-
+ 
     effective_limit = limit if limit is not None else (0 if continuous else 1)
+ 
+    require_hitl = os.environ.get("APPLYPILOT_REQUIRE_APPROVAL", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+ 
+    if require_hitl and continuous:
+        console.print("[red]Human-in-the-loop mode does not support --continuous.[/red]")
+        raise typer.Exit(code=1)
+ 
+    if require_hitl and workers > 1:
+        console.print("[yellow]Human-in-the-loop mode forces a single worker. Using workers=1.[/yellow]")
+        workers = 1
+ 
+    if require_hitl and not dry_run:
+        conn = get_connection()
+        approval_window = int(os.environ.get("APPLYPILOT_APPROVAL_WINDOW", "10") or 10)
+        fetch_limit = approval_window
+        if effective_limit and effective_limit > 0:
+            fetch_limit = max(approval_window, effective_limit)
 
+        rows = conn.execute(
+            """
+            SELECT url, title, site, location, fit_score, application_url,
+                   score_reasoning
+            FROM jobs
+            WHERE tailored_resume_path IS NOT NULL
+              AND applied_at IS NULL
+              AND (apply_status IS NULL OR apply_status != 'applied')
+              AND application_url IS NOT NULL
+              AND fit_score >= ?
+            ORDER BY fit_score DESC, discovered_at DESC
+            LIMIT ?
+            """,
+            (min_score, fetch_limit),
+        ).fetchall()
+
+        if not rows:
+            console.print("[yellow]No jobs are ready for review. Run 'applypilot run' first.")
+            return
+
+        console.print(
+            Panel(
+                "[bold yellow]Human-in-the-loop enabled[/bold yellow]\n"
+                "Review each job manually — nothing sends without your approval.",
+                border_style="yellow",
+            )
+        )
+
+        approved: list[dict] = []
+        for idx, row in enumerate(rows, start=1):
+            console.print(
+                f"\n[bold]{idx}. {row['title']}[/bold] @ {row['site'] or 'Unknown'}"
+            )
+            console.print(
+                f"   Score: {row['fit_score']}/10 | Location: {row['location'] or 'N/A'}"
+            )
+            console.print(f"   URL: {row['application_url'] or row['url']}")
+            if row["score_reasoning"]:
+                reasoning = row["score_reasoning"]
+                if len(reasoning) > 320:
+                    reasoning = reasoning[:317] + "..."
+                console.print(f"   Match notes: {reasoning}")
+
+            if typer.confirm("Approve auto-apply for this job?", default=False):
+                approved.append(dict(row))
+
+            if effective_limit and effective_limit > 0 and len(approved) >= effective_limit:
+                break
+
+        if not approved:
+            console.print("[yellow]No jobs approved. Exiting without sending anything.[/yellow]")
+            return
+
+        console.print(f"\n[green]Approved {len(approved)} job(s). Launching sequential auto-apply...[/green]")
+
+        for idx, job in enumerate(approved, start=1):
+            console.print(
+                f"\n[bold cyan]({idx}/{len(approved)}) Applying to {job['title']}"
+                f" @ {job.get('site') or 'Unknown'}[/bold cyan]"
+            )
+            apply_main(
+                limit=1,
+                target_url=job["url"],
+                min_score=min_score,
+                headless=headless,
+                model=model,
+                dry_run=dry_run,
+                continuous=False,
+                workers=1,
+            )
+
+        console.print("\n[green]Human-in-the-loop run finished.[/green]")
+        return
+ 
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
     console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
     console.print(f"  Workers:  {workers}")

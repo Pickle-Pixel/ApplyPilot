@@ -124,6 +124,28 @@ API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` 
 - `config/sites.yaml` - Direct career sites (30+), blocked sites, base URLs, manual ATS domains
 - `config/searches.example.yaml` - Example search configuration
 
+### Gustaf Garnow preset (Stockholm)
+This repo ships a Sweden-focused preset under `profiles/gustaf/` containing:
+
+```
+profiles/gustaf/
+  profile.json      # Structured bio + work authorization + salary expectations
+  resume.txt        # Base resume with SUMMARY/TECHNICAL SKILLS/EXPERIENCE sections
+  searches.yaml     # Creative technologist queries for Stockholm & remote EU roles
+  .env              # Gemini model + APPLYPILOT_REQUIRE_APPROVAL enabled
+```
+
+Bootstrap it with:
+
+```bash
+python scripts/bootstrap_profile.py gustaf --force
+```
+
+This copies the files into `~/.applypilot/`. Review and adjust contact info before running the pipeline.
+
+### Human-in-the-loop auto-apply
+Set `APPLYPILOT_REQUIRE_APPROVAL=1` in `.env` to gate `applypilot apply` behind an approval prompt. The CLI will list the top matches (window configurable via `APPLYPILOT_APPROVAL_WINDOW`) and only launch Chrome for the jobs you manually approve, keeping every outbound submission human-reviewed.
+
 ---
 
 ## How Stages Work
