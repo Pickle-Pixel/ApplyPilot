@@ -157,11 +157,20 @@ class LLMClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        # Newer OpenAI models (gpt-4.1+, gpt-5.x, o-series) require
+        # max_completion_tokens instead of the legacy max_tokens parameter.
+        # Sending max_tokens to these models returns HTTP 400.
+        _new_param_models = ("gpt-4.1", "gpt-5", "o1", "o3", "o4")
+        if any(self.model.startswith(p) for p in _new_param_models):
+            token_param: dict[str, int] = {"max_completion_tokens": max_tokens}
+        else:
+            token_param = {"max_tokens": max_tokens}
+
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            **token_param,
         }
 
         resp = self._client.post(
