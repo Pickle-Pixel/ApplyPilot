@@ -5,6 +5,13 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **OpenAI newer models (gpt-4.1+, gpt-5.x, o-series) rejected with HTTP 400** — these models
+  require `max_completion_tokens` instead of the legacy `max_tokens` parameter. `_chat_compat()`
+  now detects the model prefix and sends the correct parameter automatically.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added
