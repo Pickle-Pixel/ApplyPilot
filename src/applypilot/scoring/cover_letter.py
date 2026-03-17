@@ -237,10 +237,12 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             letter = generate_cover_letter(resume_text, job, profile,
                                           validation_mode=validation_mode)
 
-            # Build safe filename prefix
+            # Build safe filename prefix with job_id to prevent overwrites
+            import hashlib
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
             safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            job_id = hashlib.md5(job["url"].encode("utf-8")).hexdigest()[:6]
+            prefix = f"{safe_site}_{safe_title}_{job_id}"
 
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
