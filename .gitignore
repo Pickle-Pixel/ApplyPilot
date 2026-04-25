@@ -8,6 +8,9 @@ resume.pdf
 
 # Runtime artifacts
 *.db
+*.db-shm
+*.db-wal
+.venv/
 tailored_resumes/
 cover_letters/
 chrome-workers/
@@ -15,11 +18,24 @@ apply-workers/
 apply_logs/
 logs/
 
+# Local job-search workbench artifacts
+STATUS.md
+MATCH_QUALITY_AUDIT.md
+CLEANUP_REPORT.md
+cleanup_db.py
+generate_application_pack.py
+application_packs/
+.worktrees/
+_archive/
+.fuse_hidden*
+
 # MCP configs (per-machine)
 .mcp*.json
 
 # Python
 __pycache__/
+pytest-cache-files-*/
+.pytest_cache/
 *.py[cod]
 *$py.class
 *.egg-info/

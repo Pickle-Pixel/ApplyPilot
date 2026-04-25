@@ -143,6 +143,28 @@ def run(
 
 
 @app.command()
+def pack(
+    min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for exported packs."),
+    limit: int = typer.Option(10, "--limit", "-l", help="Maximum ready jobs to export."),
+    lane: str = typer.Option("primary", "--lane", help="Job lane to export: primary or all."),
+) -> None:
+    """Export ready application PDFs and next steps into ~/.applypilot/application_packs."""
+    _bootstrap()
+
+    from applypilot.application_packs import export_ready_packs
+
+    if lane not in ("primary", "all"):
+        console.print("[red]Invalid --lane value.[/red] Use 'primary' or 'all'.")
+        raise typer.Exit(code=1)
+
+    result = export_ready_packs(min_score=min_score, limit=limit, lane=lane)
+    console.print(f"[green]Exported:[/green] {result['exported']} pack(s)")
+    if result["skipped"]:
+        console.print(f"[yellow]Skipped:[/yellow] {result['skipped']} job(s) with missing/invalid PDFs")
+    console.print(f"[bold]Output:[/bold] {result['output_dir']}")
+
+
+@app.command()
 def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel browser workers."),
@@ -281,7 +303,8 @@ def status() -> None:
     summary.add_row("Tailored resumes", str(stats["tailored"]))
     summary.add_row("Pending tailoring (7+)", str(stats["untailored_eligible"]))
     summary.add_row("Cover letters", str(stats["with_cover_letter"]))
-    summary.add_row("Ready to apply", str(stats["ready_to_apply"]))
+    summary.add_row("Ready to apply (primary lane)", str(stats["ready_to_apply"]))
+    summary.add_row("Flex lane scored", str(stats["flex_scored"]))
     summary.add_row("Applied", str(stats["applied"]))
     summary.add_row("Apply errors", str(stats["apply_errors"]))
 
@@ -318,6 +341,16 @@ def status() -> None:
             site_table.add_row(site or "Unknown", str(count))
 
         console.print(site_table)
+
+    if stats.get("by_lane"):
+        lane_table = Table(title="\nJobs by Lane", show_header=True, header_style="bold green")
+        lane_table.add_column("Lane")
+        lane_table.add_column("Count", justify="right")
+
+        for lane, count in stats["by_lane"]:
+            lane_table.add_row(lane, str(count))
+
+        console.print(lane_table)
 
     console.print()
 

@@ -178,7 +178,7 @@ Hard facts -> answer truthfully from the profile. No guessing. This includes:
   - Citizenship, clearance, licenses, certifications: answer from profile only
   - Criminal/background: answer from profile only
 
-Skills and tools -> be confident. This candidate is a {target_role} with {years} years experience. If the question asks "Do you have experience with [tool]?" and it's in the same domain (DevOps, backend, ML, cloud, automation), answer YES. Software engineers learn tools fast. Don't sell short.
+Skills and tools -> be confident, but stay role-accurate. This candidate is a {target_role} with {years} years experience. If the question asks "Do you have experience with [tool/process]?" and it is clearly related to the resume domain (document review, records verification, QA, compliance, healthcare operations, WFM, Excel/reporting, CRM documentation, technical support, or SQL analysis), answer YES. If it is a specialized tool or credential not shown in the profile/resume, answer honestly and do not invent it.
 
 Open-ended questions ("Why do you want this role?", "Tell us about yourself", "What interests you?") -> Write 2-3 sentences. Be specific to THIS job. Reference something from the job description. Connect it to a real achievement from the resume. No generic fluff. No "I am passionate about..." -- sound like a real person.
 

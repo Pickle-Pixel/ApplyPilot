@@ -110,3 +110,9 @@ exclude_titles:
   - "clearance required"
   - "TS/SCI"
   - "principal scientist"
+
+# Optional company-level exclusions -- useful for recurring sources that are
+# outside your geography, seniority, or target lane even when titles look close.
+exclude_companies:
+  - "Example Staffing Platform"
+  - "Example Non-US Employer"

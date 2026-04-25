@@ -85,6 +85,44 @@ def _build_skills_set(profile: dict) -> set[str]:
     return allowed
 
 
+def _company_match_tokens(name: str) -> list[str]:
+    """Return lowercase candidate tokens to test against experience headers.
+
+    Handles common drift between profile entries and resume headers:
+      "NCO Group (now Alorica)"   -> ["nco group (now alorica)", "nco group", "alorica"]
+      "Jack Henry & Associates"   -> ["jack henry & associates", "jack henry"]
+      "Globe Life AO"             -> ["globe life ao", "globe life"]
+
+    A header that contains ANY of these tokens (substring, case-insensitive)
+    counts as the company being present. This stops the validator from killing
+    tailoring runs over cosmetic name variants while still catching the case
+    where the LLM dropped the employer entirely.
+    """
+    base = (name or "").lower().strip()
+    if not base:
+        return []
+    tokens: list[str] = [base]
+
+    # Token from inside parentheses, e.g. "(now Alorica)" -> "alorica"
+    paren_inner = re.search(r"\(([^)]+)\)", base)
+    if paren_inner:
+        inner = re.sub(r"^(now|formerly|aka|fka|previously)\s+", "", paren_inner.group(1).strip())
+        if inner:
+            tokens.append(inner)
+
+    # Same name with the parenthesised qualifier removed
+    no_paren = re.sub(r"\s*\([^)]*\)\s*", " ", base).strip()
+    if no_paren and no_paren != base:
+        tokens.append(no_paren)
+
+    # Stem before "&" / "and" so "Jack Henry & Associates" still matches "Jack Henry"
+    stem_amp = re.split(r"\s+(?:&|and)\s+", no_paren or base)[0].strip()
+    if stem_amp and stem_amp not in tokens:
+        tokens.append(stem_amp)
+
+    return list(dict.fromkeys(tokens))
+
+
 def sanitize_text(text: str) -> str:
     """Auto-fix common LLM output issues instead of rejecting."""
     text = text.replace(" \u2014 ", ", ").replace("\u2014", ", ")   # em dash -> comma
@@ -113,10 +151,15 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
     errors: list[str] = []
     warnings: list[str] = []
 
-    # Required keys — always checked regardless of mode
-    for key in ("title", "summary", "skills", "experience", "projects", "education"):
+    # Required keys — always checked regardless of mode.
+    # Projects is allowed to be present-but-empty (some users have no
+    # independent projects on their resume; forcing the LLM to fabricate one
+    # is worse than accepting an empty list).
+    for key in ("title", "summary", "skills", "experience", "education"):
         if key not in data or not data[key]:
             errors.append(f"Missing required field: {key}")
+    if "projects" not in data:
+        errors.append("Missing required field: projects")
     if errors:
         return {"passed": False, "errors": errors, "warnings": warnings}
 
@@ -137,13 +180,31 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
     preserved_companies = resume_facts.get("preserved_companies", [])
 
     if isinstance(data["experience"], list):
+        experience_headers = [
+            f"{e.get('header', '')} {e.get('subtitle', '')}"
+            for e in data["experience"]
+        ]
+        missing_companies: list[str] = []
         for company in preserved_companies:
+            tokens = _company_match_tokens(company)
             has_company = any(
-                company.lower() in str(e.get("header", "")).lower()
-                for e in data["experience"]
+                any(tok in header.lower() for tok in tokens)
+                for header in experience_headers
             )
             if not has_company:
-                errors.append(f"Company '{company}' missing from experience")
+                missing_companies.append(company)
+        if missing_companies:
+            # In strict mode, dropping a preserved employer is a hard error and
+            # triggers a retry. In normal/lenient modes, it's a warning so the
+            # tailoring still ships — small fast models routinely drop older
+            # employers when optimizing for relevance, and a partial-but-honest
+            # tailored resume beats no tailored resume at all. The warning is
+            # surfaced to the reviewer for manual reinstatement if needed.
+            msg = "Companies missing from experience: " + ", ".join(missing_companies)
+            if mode == "strict":
+                errors.append(msg)
+            else:
+                warnings.append(msg)
         for entry in data["experience"]:
             for b in entry.get("bullets", []):
                 all_text_parts.append(b)
@@ -197,7 +258,12 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
     """
     errors: list[str] = []
     warnings: list[str] = []
+    stripped = text.strip()
     text_lower = text.lower()
+
+    if not stripped:
+        errors.append("Resume is empty.")
+        return {"passed": False, "errors": errors, "warnings": warnings}
 
     personal = profile.get("personal", {})
     resume_facts = profile.get("resume_facts", {})
@@ -308,7 +374,12 @@ def validate_cover_letter(text: str, mode: str = "normal") -> dict:
     """
     errors: list[str] = []
     warnings: list[str] = []
+    stripped = text.strip()
     text_lower = text.lower()
+
+    if not stripped:
+        errors.append("Cover letter is empty.")
+        return {"passed": False, "errors": errors, "warnings": warnings}
 
     # 1. Em dashes — always an error (sanitize_text should have caught these)
     if "\u2014" in text or "\u2013" in text:
@@ -326,6 +397,8 @@ def validate_cover_letter(text: str, mode: str = "normal") -> dict:
 
     # 3. Word count
     words = len(text.split())
+    if words < 40:
+        errors.append(f"Too short ({words} words). Minimum 40.")
     if mode == "strict" and words > 250:
         errors.append(f"Too long ({words} words). Max 250.")
     elif mode == "normal" and words > 275:
@@ -338,7 +411,6 @@ def validate_cover_letter(text: str, mode: str = "normal") -> dict:
         errors.append(f"LLM self-talk: '{found_leaks[0]}'")
 
     # 5. Must start with "Dear" — always checked (preamble should have been stripped)
-    stripped = text.strip()
     if not stripped.lower().startswith("dear"):
         errors.append("Must start with 'Dear Hiring Manager,'")
 

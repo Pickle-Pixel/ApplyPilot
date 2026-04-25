@@ -68,7 +68,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     Schema columns by stage:
       - Discovery:  url, title, salary, description, location, site, strategy, discovered_at
       - Enrichment: full_description, application_url, detail_scraped_at, detail_error
-      - Scoring:    fit_score, score_reasoning, scored_at
+      - Scoring:    fit_score, score_reasoning, scored_at, job_lane
       - Tailoring:  tailored_resume_path, tailored_at, tailor_attempts
       - Cover:      cover_letter_path, cover_letter_at, cover_attempts
       - Apply:      applied_at, apply_status, apply_error, apply_attempts,
@@ -92,6 +92,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             -- Discovery stage (smart_extract / job_search)
             url                   TEXT PRIMARY KEY,
             title                 TEXT,
+            company               TEXT,
             salary                TEXT,
             description           TEXT,
             location              TEXT,
@@ -109,6 +110,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             fit_score             INTEGER,
             score_reasoning       TEXT,
             scored_at             TEXT,
+            job_lane              TEXT DEFAULT 'primary',
 
             -- Tailoring stage (resume tailor)
             tailored_resume_path  TEXT,
@@ -147,6 +149,7 @@ _ALL_COLUMNS: dict[str, str] = {
     # Discovery
     "url": "TEXT PRIMARY KEY",
     "title": "TEXT",
+    "company": "TEXT",
     "salary": "TEXT",
     "description": "TEXT",
     "location": "TEXT",
@@ -162,6 +165,7 @@ _ALL_COLUMNS: dict[str, str] = {
     "fit_score": "INTEGER",
     "score_reasoning": "TEXT",
     "scored_at": "TEXT",
+    "job_lane": "TEXT DEFAULT 'primary'",
     # Tailoring
     "tailored_resume_path": "TEXT",
     "tailored_at": "TEXT",
@@ -279,6 +283,12 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
     ).fetchall()
     stats["score_distribution"] = [(row[0], row[1]) for row in dist_rows]
 
+    lane_rows = conn.execute(
+        "SELECT COALESCE(job_lane, 'primary') as lane, COUNT(*) as cnt "
+        "FROM jobs GROUP BY COALESCE(job_lane, 'primary') ORDER BY cnt DESC"
+    ).fetchall()
+    stats["by_lane"] = [(row[0], row[1]) for row in lane_rows]
+
     # Tailoring stage
     stats["tailored"] = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL"
@@ -319,8 +329,16 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
     stats["ready_to_apply"] = conn.execute(
         "SELECT COUNT(*) FROM jobs "
         "WHERE tailored_resume_path IS NOT NULL "
+        "AND cover_letter_path IS NOT NULL "
         "AND applied_at IS NULL "
-        "AND application_url IS NOT NULL"
+        "AND url IS NOT NULL "
+        "AND COALESCE(job_lane, 'primary') = 'primary'"
+    ).fetchone()[0]
+
+    stats["flex_scored"] = conn.execute(
+        "SELECT COUNT(*) FROM jobs "
+        "WHERE fit_score IS NOT NULL "
+        "AND COALESCE(job_lane, 'primary') = 'flex'"
     ).fetchone()[0]
 
     return stats

@@ -5,6 +5,7 @@ and exports to PDF using headless Chromium via Playwright.
 """
 
 import logging
+from html import escape
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
@@ -355,6 +356,42 @@ def render_pdf(html: str, output_path: str) -> None:
         browser.close()
 
 
+def build_cover_letter_html(text: str) -> str:
+    """Build simple professional HTML for a cover letter."""
+    paragraphs = [p.strip() for p in text.strip().split("\n\n") if p.strip()]
+    body = "\n".join(f"<p>{escape(p).replace(chr(10), '<br>')}</p>" for p in paragraphs)
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@page {{
+    size: letter;
+    margin: 0.65in 0.75in;
+}}
+body {{
+    font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.45;
+    color: #1f2933;
+}}
+.cover-letter {{
+    max-width: 7in;
+}}
+p {{
+    margin: 0 0 12px;
+}}
+</style>
+</head>
+<body>
+<main class="cover-letter">
+{body}
+</main>
+</body>
+</html>"""
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 def convert_to_pdf(
@@ -373,6 +410,8 @@ def convert_to_pdf(
     """
     text_path = Path(text_path)
     text = text_path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError(f"Cannot convert empty text file to PDF: {text_path}")
     resume = parse_resume(text)
     html = build_html(resume)
 
@@ -387,6 +426,31 @@ def convert_to_pdf(
     out = Path(out)
     render_pdf(html, str(out))
     log.info("PDF generated: %s", out)
+    return out
+
+
+def convert_cover_letter_to_pdf(
+    text_path: Path, output_path: Path | None = None, html_only: bool = False
+) -> Path:
+    """Convert a cover-letter text file to PDF using a letter template."""
+    text_path = Path(text_path)
+    text = text_path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError(f"Cannot convert empty cover letter to PDF: {text_path}")
+
+    html = build_cover_letter_html(text)
+
+    if html_only:
+        out = output_path or text_path.with_suffix(".html")
+        out = Path(out)
+        out.write_text(html, encoding="utf-8")
+        log.info("Cover letter HTML generated: %s", out)
+        return out
+
+    out = output_path or text_path.with_suffix(".pdf")
+    out = Path(out)
+    render_pdf(html, str(out))
+    log.info("Cover letter PDF generated: %s", out)
     return out
 
 

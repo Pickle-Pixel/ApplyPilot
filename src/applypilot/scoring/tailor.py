@@ -18,7 +18,11 @@ from pathlib import Path
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
-from applypilot.llm import get_client
+from applypilot.llm import get_stage_client
+from applypilot.scoring.role_signals import (
+    filter_role_sensitive_metrics,
+    job_targets_insurance_domain,
+)
 from applypilot.scoring.validator import (
     BANNED_WORDS,
     FABRICATION_WATCHLIST,
@@ -34,7 +38,7 @@ MAX_ATTEMPTS = 5  # max cross-run retries before giving up
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
 
-def _build_tailor_prompt(profile: dict) -> str:
+def _build_tailor_prompt(profile: dict, job: dict | None = None) -> str:
     """Build the resume tailoring system prompt from the user's profile.
 
     All skills boundaries, preserved entities, and formatting rules are
@@ -55,11 +59,23 @@ def _build_tailor_prompt(profile: dict) -> str:
     companies = resume_facts.get("preserved_companies", [])
     projects = resume_facts.get("preserved_projects", [])
     school = resume_facts.get("preserved_school", "")
-    real_metrics = resume_facts.get("real_metrics", [])
+    insurance_role = job_targets_insurance_domain(job)
+    real_metrics = filter_role_sensitive_metrics(
+        resume_facts.get("real_metrics", []),
+        insurance_role=insurance_role,
+    )
 
     companies_str = ", ".join(companies) if companies else "N/A"
     projects_str = ", ".join(projects) if projects else "N/A"
     metrics_str = ", ".join(real_metrics) if real_metrics else "N/A"
+    companies_requirement = (
+        "EXPERIENCE: Include every preserved company exactly as listed in an "
+        f"experience header or subtitle: {companies_str}. If combining roles "
+        "to fit one page, the combined header/subtitle must still name each "
+        "company."
+        if companies
+        else "EXPERIENCE: Keep real employer names in the experience section."
+    )
 
     # Include ALL banned words from the validator so the LLM knows exactly
     # what will be rejected — the validator checks for these automatically.
@@ -67,6 +83,11 @@ def _build_tailor_prompt(profile: dict) -> str:
 
     education = profile.get("experience", {})
     education_level = education.get("education_level", "")
+    role_guardrail = (
+        "Insurance licenses can be mentioned when the job is explicitly insurance-domain work."
+        if insurance_role
+        else "Do not mention insurance licenses, state licenses, or licensed-agent status for this role."
+    )
 
     return f"""You are a senior technical recruiter rewriting a resume to get this person an interview.
 
@@ -105,12 +126,24 @@ BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, De
   {banned_str}
 - No em dashes. Use commas, periods, or hyphens.
 
-## HARD RULES:
-- Do NOT invent work, companies, degrees, or certifications
-- Do NOT change real numbers ({metrics_str})
-- Preserved companies: {companies_str} -- names stay as-is
+## HARD RULES (validation will reject and waste a retry if any are broken):
+- The TARGET JOB is what we are APPLYING TO. NEVER list the target role title
+  or the target company name as current or prior experience. Experience entries
+  must be drawn ONLY from employers in the original resume.
+- KEEP EVERY PRESERVED COMPANY in the experience array, even if the role seems
+  off-target. Dropping or merging-away any of these = automatic validation
+  failure: {companies_str}
+- {companies_requirement}
+- Use ONLY the dates from the original resume. Do not invent, shift, or copy a
+  date from one entry into another.
+- Do NOT invent work, companies, degrees, certifications, or projects. If the
+  original resume has no PROJECTS section, leave the projects array empty.
+- Do NOT invent metrics or percentages. Use ONLY numbers that appear in the
+  original resume text. Approved real metrics: {metrics_str}.
+- Do NOT change real numbers from the original resume.
 - Preserved school: {school}
-- Must fit 1 page.
+- {role_guardrail}
+- Must fit 1 page (achieve this by trimming bullets, NOT by removing employers).
 
 ## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
 
@@ -325,8 +358,9 @@ def judge_tailored_resume(
         )},
     ]
 
-    client = get_client()
-    response = client.chat(messages, max_tokens=512, temperature=0.1)
+    # The judge runs on the same model class as tailoring (it judges that work).
+    client, model = get_stage_client("TAILOR")
+    response = client.chat(messages, max_tokens=512, temperature=0.1, model=model)
 
     passed = "VERDICT: PASS" in response.upper()
     issues = "none"
@@ -382,8 +416,8 @@ def tailor_resume(
     }
     avoid_notes: list[str] = []
     tailored = ""
-    client = get_client()
-    tailor_prompt_base = _build_tailor_prompt(profile)
+    client, model = get_stage_client("TAILOR")
+    tailor_prompt_base = _build_tailor_prompt(profile, job)
 
     for attempt in range(max_retries + 1):
         report["attempts"] = attempt + 1
@@ -400,7 +434,7 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        raw = client.chat(messages, max_tokens=2048, temperature=0.4)
+        raw = client.chat(messages, max_tokens=2048, temperature=0.4, model=model)
 
         # Parse JSON from response
         try:
@@ -483,12 +517,38 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     completed = 0
     results: list[dict] = []
     stats: dict[str, int] = {"approved": 0, "failed_validation": 0, "failed_judge": 0, "error": 0}
+    success_statuses = {"approved", "approved_with_judge_warning"}
 
     for job in jobs:
         completed += 1
         try:
             tailored, report = tailor_resume(resume_text, job, profile,
                                              validation_mode=validation_mode)
+            status = report.get("status", "error")
+            if status not in success_statuses or not tailored.strip():
+                result = {
+                    "url": job["url"],
+                    "path": None,
+                    "pdf_path": None,
+                    "title": job["title"],
+                    "site": job["site"],
+                    "status": status,
+                    "attempts": report.get("attempts", 0),
+                }
+                results.append(result)
+                stats[result.get("status", "error")] = stats.get(result.get("status", "error"), 0) + 1
+
+                elapsed = time.time() - t0
+                rate = completed / elapsed if elapsed > 0 else 0
+                log.info(
+                    "%d/%d [%s] attempts=%s | %.1f jobs/min | %s",
+                    completed, len(jobs),
+                    result["status"].upper(),
+                    result.get("attempts", "?"),
+                    rate * 60,
+                    result["title"][:40],
+                )
+                continue
 
             # Build safe filename prefix
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
@@ -518,7 +578,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             # Generate PDF for approved resumes (best-effort)
             # "approved_with_judge_warning" is also a success — resume was generated.
             pdf_path = None
-            if report["status"] in ("approved", "approved_with_judge_warning"):
+            if report["status"] in success_statuses:
                 try:
                     from applypilot.scoring.pdf import convert_to_pdf
                     pdf_path = str(convert_to_pdf(txt_path))
@@ -557,9 +617,8 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
 
     # Persist to DB: increment attempt counter for ALL, save path only for approved
     now = datetime.now(timezone.utc).isoformat()
-    _success_statuses = {"approved", "approved_with_judge_warning"}
     for r in results:
-        if r["status"] in _success_statuses:
+        if r["status"] in success_statuses:
             conn.execute(
                 "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
                 "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",

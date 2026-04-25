@@ -81,9 +81,36 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
 
     Falls back to sensible defaults if not defined in the YAML.
     """
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
+    location_cfg = search_cfg.get("location", {})
+    accept = search_cfg.get("location_accept") or location_cfg.get("accept_patterns", [])
+    reject = search_cfg.get("location_reject_non_remote") or location_cfg.get("reject_patterns", [])
     return accept, reject
+
+
+def _passes_search_filters(
+    title: str | None,
+    description: str | None,
+    search_cfg: dict,
+    company: str | None = None,
+) -> tuple[bool, str | None]:
+    """Apply config-driven title/description exclusions before storing jobs."""
+    title_text = (title or "").lower()
+    description_text = (description or "").lower()
+    company_text = (company or "").lower()
+
+    for blocked in search_cfg.get("exclude_companies", []):
+        if blocked and blocked.lower() in company_text:
+            return False, "company"
+
+    for blocked in search_cfg.get("exclude_titles", []):
+        if blocked and blocked.lower() in title_text:
+            return False, "title"
+
+    for blocked in search_cfg.get("exclude_description_keywords", []):
+        if blocked and blocked.lower() in description_text:
+            return False, "description"
+
+    return True, None
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
@@ -118,7 +145,18 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 # -- DB storage (JobSpy DataFrame -> SQLite) ---------------------------------
 
 def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tuple[int, int]:
-    """Store JobSpy DataFrame results into the DB. Returns (new, existing)."""
+    """Store JobSpy DataFrame results into the DB. Returns (new, existing).
+
+    Deduplication strategy:
+    - Primary:  URL is PRIMARY KEY -> sqlite3.IntegrityError catches same-URL dupes.
+    - Secondary: Before insert, check for an existing row with the same
+      (title, company) pair. Skip if the existing row's description is
+      equal or longer; otherwise update the existing row with the richer
+      description + any new full_description / apply_url fields.
+    - This prevents the cross-site duplication (same job listed on Indeed +
+      LinkedIn + ZipRecruiter with different URLs) that the cleanup script
+      had to remove 454 records for on 2026-04-19.
+    """
     now = datetime.now(timezone.utc).isoformat()
     new = 0
     existing = 0
@@ -166,12 +204,41 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
         # Extract apply URL if JobSpy provided it
         apply_url = str(row.get("job_url_direct", "")) if str(row.get("job_url_direct", "")) != "nan" else None
 
+        # --- Secondary dedup: same (title, company) from a different URL ---
+        # Only applies when BOTH title and company are known; otherwise we
+        # fall through to the URL-level primary-key check.
+        if title and company:
+            match = conn.execute(
+                "SELECT url, description, full_description FROM jobs "
+                "WHERE title = ? AND company = ? AND url != ? LIMIT 1",
+                (title, company, url),
+            ).fetchone()
+            if match is not None:
+                existing_url, existing_desc, existing_full = match
+                existing_len = max(len(existing_desc or ""), len(existing_full or ""))
+                new_len = len(description or "")
+                if new_len <= existing_len:
+                    # Existing row is equal or richer -> skip this insert.
+                    existing += 1
+                    continue
+                # New row has a richer description -> upgrade the existing
+                # row in place rather than inserting a duplicate.
+                conn.execute(
+                    "UPDATE jobs SET description = ?, full_description = COALESCE(?, full_description), "
+                    "application_url = COALESCE(?, application_url), "
+                    "detail_scraped_at = COALESCE(?, detail_scraped_at) "
+                    "WHERE url = ?",
+                    (description, full_description, apply_url, detail_scraped_at, existing_url),
+                )
+                existing += 1
+                continue
+
         try:
             conn.execute(
-                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at, "
+                "INSERT INTO jobs (url, title, company, salary, description, location, site, strategy, discovered_at, "
                 "full_description, application_url, detail_scraped_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (url, title, salary, description, location_str, site_label, strategy, now,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (url, title, company, salary, description, location_str, site_label, strategy, now,
                  full_description, apply_url, detail_scraped_at),
             )
             new += 1
@@ -186,6 +253,7 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
 
 def _run_one_search(
     search: dict,
+    search_cfg: dict,
     sites: list[str],
     results_per_site: int,
     hours_old: int,
@@ -274,14 +342,26 @@ def _run_one_search(
         str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None,
         accept_locs, reject_locs,
     ), axis=1)]
-    filtered = before - len(df)
+    filtered_location = before - len(df)
+
+    before_content = len(df)
+    df = df[df.apply(lambda row: _passes_search_filters(
+        str(row.get("title", "")) if str(row.get("title", "")) != "nan" else None,
+        str(row.get("description", "")) if str(row.get("description", "")) != "nan" else None,
+        search_cfg,
+        company=str(row.get("company", "")) if str(row.get("company", "")) != "nan" else None,
+    )[0], axis=1)]
+    filtered_content = before_content - len(df)
+    filtered = filtered_location + filtered_content
 
     conn = get_connection()
     new, existing = store_jobspy_results(conn, df, s["query"])
 
     msg = f"[{label}] {before} results -> {new} new, {existing} dupes"
-    if filtered:
-        msg += f", {filtered} filtered (location)"
+    if filtered_location:
+        msg += f", {filtered_location} filtered (location)"
+    if filtered_content:
+        msg += f", {filtered_content} filtered (title/body)"
     log.info(msg)
 
     return {"new": new, "existing": existing, "errors": 0, "filtered": filtered, "total": before, "label": label}
@@ -409,7 +489,7 @@ def _full_crawl(
 
     for s in searches:
         result = _run_one_search(
-            s, sites, results_per_site, hours_old,
+            s, search_cfg, sites, results_per_site, hours_old,
             proxy_config, defaults, max_retries,
             accept_locs, reject_locs, glassdoor_map,
         )
@@ -461,7 +541,7 @@ def run_discovery(cfg: dict | None = None) -> dict:
         return {"new": 0, "existing": 0, "errors": 0, "db_total": 0, "queries": 0}
 
     proxy = cfg.get("proxy")
-    sites = cfg.get("sites")
+    sites = cfg.get("boards") or cfg.get("sites")  # searches.yaml uses "boards:" key
     results_per_site = cfg.get("defaults", {}).get("results_per_site", 100)
     hours_old = cfg.get("defaults", {}).get("hours_old", 72)
     tiers = cfg.get("tiers")

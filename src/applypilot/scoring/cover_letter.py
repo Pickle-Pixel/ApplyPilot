@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
-from applypilot.llm import get_client
+from applypilot.llm import get_stage_client
+from applypilot.scoring.role_signals import (
+    filter_role_sensitive_metrics,
+    job_targets_insurance_domain,
+)
 from applypilot.scoring.validator import (
     BANNED_WORDS,
     LLM_LEAK_PHRASES,
@@ -28,7 +32,7 @@ MAX_ATTEMPTS = 5  # max cross-run retries before giving up
 
 # ── Prompt Builder (profile-driven) ──────────────────────────────────────
 
-def _build_cover_letter_prompt(profile: dict) -> str:
+def _build_cover_letter_prompt(profile: dict, job: dict | None = None) -> str:
     """Build the cover letter system prompt from the user's profile.
 
     All personal data, skills, and sign-off name come from the profile.
@@ -48,7 +52,11 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     skills_str = ", ".join(all_skills) if all_skills else "the tools listed in the resume"
 
     # Real metrics from resume_facts
-    real_metrics = resume_facts.get("real_metrics", [])
+    insurance_role = job_targets_insurance_domain(job)
+    real_metrics = filter_role_sensitive_metrics(
+        resume_facts.get("real_metrics", []),
+        insurance_role=insurance_role,
+    )
     preserved_projects = resume_facts.get("preserved_projects", [])
 
     # Build achievement examples for the prompt
@@ -59,6 +67,12 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     metrics_hint = ""
     if real_metrics:
         metrics_hint = f"\nReal metrics to use: {', '.join(real_metrics)}"
+
+    role_guardrail = (
+        "Insurance licenses may be referenced only when the target job is explicitly insurance-domain work."
+        if insurance_role
+        else "Do not mention insurance licenses, state licenses, or licensed-agent status in this letter."
+    )
 
     # Build the full banned list from the validator so the prompt stays in sync
     # with what will actually be rejected — the validator checks all of these.
@@ -71,7 +85,7 @@ STRUCTURE: 3 short paragraphs. Under 250 words. Every sentence must earn its pla
 
 PARAGRAPH 1 (2-3 sentences): Open with a specific thing YOU built that solves THEIR problem. Not "I'm excited about this role." Not "This role aligns with my experience." Start with the work.
 
-PARAGRAPH 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to THIS job. Use numbers. Frame as solving their problem, not listing your accomplishments.{projects_hint}{metrics_hint}
+PARAGRAPH 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to THIS job. Use ONLY numbers that already appear in the resume or in the approved real-metrics list — NEVER invent a percentage, dollar figure, or count. Frame as solving their problem, not listing your accomplishments. NEVER attribute a bullet from one employer to a different employer (no swapping who did what).{projects_hint}{metrics_hint}
 
 PARAGRAPH 3 (1-2 sentences): One specific thing about the company from the job description (a product, a technical challenge, a team structure). Then close. "Happy to walk through any of this in more detail." or "Let's discuss." Nothing else.
 
@@ -93,6 +107,12 @@ VOICE:
 FABRICATION = INSTANT REJECTION:
 The candidate's real tools are ONLY: {skills_str}.
 Do NOT mention ANY tool not in this list. If the job asks for tools not listed, talk about the work you did, not the tools.
+Do NOT claim domain experience the candidate doesn't have. If the job is in
+"disputes operations" / "credit union" / "healthcare RCM" and the resume
+doesn't show that exact domain, frame your background as transferable
+("workforce management background that translates to..."), never claim direct
+experience in that domain.
+{role_guardrail}
 
 Sign off: just "{sign_off_name}"
 
@@ -145,8 +165,8 @@ def generate_cover_letter(
 
     avoid_notes: list[str] = []
     letter = ""
-    client = get_client()
-    cl_prompt_base = _build_cover_letter_prompt(profile)
+    client, model = get_stage_client("COVER_LETTER")
+    cl_prompt_base = _build_cover_letter_prompt(profile, job)
 
     for attempt in range(max_retries + 1):
         # Fresh conversation every attempt
@@ -165,7 +185,7 @@ def generate_cover_letter(
             )},
         ]
 
-        letter = client.chat(messages, max_tokens=1024, temperature=0.7)
+        letter = client.chat(messages, max_tokens=1024, temperature=0.7, model=model)
         letter = sanitize_text(letter)  # auto-fix em dashes, smart quotes
         letter = _strip_preamble(letter)  # remove any "Here is the letter:" prefix
 
@@ -221,7 +241,6 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
 
-    COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
     log.info(
         "Generating cover letters for %d jobs (score >= %d)...",
         len(jobs), min_score,
@@ -236,20 +255,24 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
         try:
             letter = generate_cover_letter(resume_text, job, profile,
                                           validation_mode=validation_mode)
+            validation = validate_cover_letter(letter, mode=validation_mode)
+            if not validation["passed"]:
+                raise ValueError("Invalid cover letter: " + "; ".join(validation["errors"]))
 
             # Build safe filename prefix
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
             safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
             prefix = f"{safe_site}_{safe_title}"
 
+            COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
 
             # Generate PDF (best-effort)
             pdf_path = None
             try:
-                from applypilot.scoring.pdf import convert_to_pdf
-                pdf_path = str(convert_to_pdf(cl_path))
+                from applypilot.scoring.pdf import convert_cover_letter_to_pdf
+                pdf_path = str(convert_cover_letter_to_pdf(cl_path))
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 

@@ -70,6 +70,7 @@ def _make_mcp_config(cdp_port: int) -> dict:
             "playwright": {
                 "command": "npx",
                 "args": [
+                    "-y",
                     "@playwright/mcp@latest",
                     f"--cdp-endpoint=http://localhost:{cdp_port}",
                     f"--viewport-size={config.DEFAULTS['viewport']}",
@@ -106,12 +107,12 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
         if target_url:
             like = f"%{target_url.split('?')[0].rstrip('/')}%"
             row = conn.execute("""
-                SELECT url, title, site, application_url, tailored_resume_path,
+                SELECT url, title, site, company, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
                 WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
                   AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND (apply_status IS NULL OR apply_status != 'in_progress')
                 LIMIT 1
             """, (target_url, target_url, like, like)).fetchone()
         else:
@@ -128,13 +129,14 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
             row = conn.execute(f"""
-                SELECT url, title, site, application_url, tailored_resume_path,
+                SELECT url, title, site, company, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
                 WHERE tailored_resume_path IS NOT NULL
                   AND (apply_status IS NULL OR apply_status = 'failed')
                   AND (apply_attempts IS NULL OR apply_attempts < ?)
                   AND fit_score >= ?
+                  AND COALESCE(job_lane, 'primary') = 'primary'
                   {site_clause}
                   {url_clauses}
                 ORDER BY fit_score DESC, url
@@ -145,8 +147,21 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             conn.rollback()
             return None
 
+        # Hard-exclude AVOID-list companies. Belt-and-suspenders on top of the
+        # ingest-time filter and the pack-export filter — last line of defense
+        # before an actual (or dry-run) submission.
+        from applypilot.config import is_avoid_company, is_manual_ats
+        candidate_name = (row["company"] if "company" in row.keys() else None) or row["site"] or ""
+        if candidate_name and is_avoid_company(candidate_name):
+            conn.execute(
+                "UPDATE jobs SET apply_status = 'avoid', apply_error = 'AVOID list' WHERE url = ?",
+                (row["url"],),
+            )
+            conn.commit()
+            logger.info("Skipping AVOID-list company: %s", candidate_name[:80])
+            return None
+
         # Skip manual ATS sites (unsolvable CAPTCHAs)
-        from applypilot.config import is_manual_ats
         apply_url = row["application_url"] or row["url"]
         if is_manual_ats(apply_url):
             conn.execute(
@@ -608,6 +623,18 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
                 continue
+            elif dry_run:
+                release_lock(job["url"])
+                if result == "applied":
+                    applied += 1
+                    update_state(worker_id, jobs_applied=applied,
+                                 jobs_done=applied + failed)
+                    add_event(f"[W{worker_id}] Dry run complete: {job['title'][:30]}")
+                else:
+                    failed += 1
+                    update_state(worker_id, jobs_failed=failed,
+                                 jobs_done=applied + failed)
+                    add_event(f"[W{worker_id}] Dry run result: {result[:40]}")
             elif result == "applied":
                 mark_result(job["url"], "applied", duration_ms=duration_ms)
                 applied += 1

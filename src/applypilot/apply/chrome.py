@@ -126,9 +126,18 @@ def setup_worker_profile(worker_id: int) -> Path:
     if source is None:
         source = config.get_chrome_user_data()
 
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    if not source.exists():
+        logger.info(
+            "[worker-%d] Chrome source profile not found at %s; creating clean worker profile",
+            worker_id,
+            source,
+        )
+        (profile_dir / "Default").mkdir(parents=True, exist_ok=True)
+        return profile_dir
+
     logger.info("[worker-%d] Copying Chrome profile from %s (first time setup)...",
                 worker_id, source.name)
-    profile_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy essential profile dirs -- skip caches and heavy transient data
     skip = {
