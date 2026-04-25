@@ -51,6 +51,13 @@ Saved evidence:
   - Allows per-stage `:cloud` model names to fall back to the configured default client when `OLLAMA_API_KEY` is unavailable, instead of crashing tailoring immediately.
 - Added local portal scripts under `C:\Users\bibyd\.applypilot\_archive\20260425-queue-refresh` for Sharecare Workday, SmartRecruiters, Crelate, and Snaphunt attempts. These scripts are operational evidence and local workbench artifacts, not committed repo source.
 
+## Repository Sync
+
+- Committed the ApplyPilot job-readiness workflow updates on `codex/applypilot-job-readiness`.
+- Direct push to `Pickle-Pixel/ApplyPilot` was denied because the authenticated `bibyd21` account has read-only permission on upstream.
+- Created and used the `bibyd21/ApplyPilot` fork remote for publishing.
+- Opened draft PR `https://github.com/Pickle-Pixel/ApplyPilot/pull/47` back to upstream `main`.
+
 ## Verification
 
 - `applypilot doctor`: passed; CapSolver remains optional and unset.
