@@ -24,6 +24,7 @@ from applypilot.scoring.validator import (
     sanitize_text,
     validate_cover_letter,
 )
+from applypilot.scoring import template_matcher
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +157,21 @@ def generate_cover_letter(
     Returns:
         The cover letter text (best attempt even if validation failed).
     """
+    # ── Template matching path (preferred when templates exist) ────────────
+    if template_matcher.templates_available():
+        letter = template_matcher.generate_cover_letter_from_template(job, profile)
+        if letter:
+            letter = sanitize_text(letter)
+            validation = validate_cover_letter(letter, mode=validation_mode)
+            if validation["passed"]:
+                log.info("Cover letter from template passed validation.")
+                return letter
+            log.warning(
+                "Template cover letter failed validation: %s",
+                validation["errors"],
+            )
+            # If template validation fails, fall through to LLM as backup.
+    # ── LLM generation path (fallback) ─────────────────────────────────────
     job_text = (
         f"TITLE: {job['title']}\n"
         f"COMPANY: {job['site']}\n"
