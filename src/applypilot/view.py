@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import webbrowser
+from datetime import datetime
 from html import escape
 from pathlib import Path
 
@@ -81,6 +82,29 @@ def generate_dashboard(output_path: str | None = None) -> str:
         WHERE fit_score >= 5
         ORDER BY fit_score DESC, site, title
     """).fetchall()
+
+    # Successfully submitted applications
+    applied_jobs = conn.execute("""
+        SELECT url, title, site, location, fit_score,
+               applied_at, apply_duration_ms, application_url
+        FROM jobs
+        WHERE apply_status = 'applied' AND applied_at IS NOT NULL
+        ORDER BY applied_at DESC
+    """).fetchall()
+
+    # Failed applications (attempted but not successfully applied)
+    failed_jobs = conn.execute("""
+        SELECT url, title, site, location, fit_score,
+               apply_status, apply_error, apply_attempts, last_attempted_at,
+               application_url
+        FROM jobs
+        WHERE apply_status IS NOT NULL AND apply_status != 'applied'
+          AND apply_attempts > 0
+        ORDER BY last_attempted_at DESC
+    """).fetchall()
+
+    applied_count = len(applied_jobs)
+    failed_count = len(failed_jobs)
 
     # Color map per site
     colors = {
@@ -195,6 +219,104 @@ def generate_dashboard(output_path: str | None = None) -> str:
     if current_score is not None:
         job_sections += "</div>"
 
+    # --- Submitted applications table ---
+    def _fmt_date(iso: str | None) -> str:
+        """Format ISO timestamp to a readable local date/time string."""
+        if not iso:
+            return "—"
+        try:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            return dt.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            return escape(iso[:16])
+
+    def _fmt_duration(ms: int | None) -> str:
+        if not ms:
+            return "—"
+        if ms < 60_000:
+            return f"{ms // 1000}s"
+        return f"{ms // 60_000}m {(ms % 60_000) // 1000}s"
+
+    def _score_chip(score: int | None) -> str:
+        if score is None:
+            return '<span style="color:#475569">—</span>'
+        color = "#10b981" if score >= 7 else ("#f59e0b" if score >= 5 else "#ef4444")
+        return f'<span class="score-chip" style="background:{color}">{score}</span>'
+
+    def _status_chip(status: str | None) -> str:
+        if not status:
+            return "—"
+        css = f"status-{status}" if status in (
+            "applied", "expired", "captcha", "login_issue", "failed"
+        ) else "status-default"
+        return f'<span class="status-chip {css}">{escape(status.replace("_", " "))}</span>'
+
+    if applied_jobs:
+        applied_rows = ""
+        for j in applied_jobs:
+            title = escape(j["title"] or "Untitled")
+            url = escape(j["url"] or "#")
+            app_url = escape(j["application_url"] or "")
+            site = escape(j["site"] or "")
+            location = escape(j["location"] or "—")
+            applied_rows += f"""
+            <tr>
+              <td>{_fmt_date(j['applied_at'])}</td>
+              <td><a href="{url}" class="job-link" target="_blank">{title}</a></td>
+              <td>{_score_chip(j['fit_score'])}</td>
+              <td>{site}</td>
+              <td>{location}</td>
+              <td>{_fmt_duration(j['apply_duration_ms'])}</td>
+              <td>{"<a href='" + app_url + "' class='apply-btn' target='_blank'>View</a>" if app_url else "—"}</td>
+            </tr>"""
+        applied_table_html = f"""
+        <div class="app-table-wrap">
+          <table class="app-table">
+            <thead><tr>
+              <th>Date Submitted</th><th>Job Title</th><th>Score</th>
+              <th>Source</th><th>Location</th><th>Duration</th><th>Posting</th>
+            </tr></thead>
+            <tbody>{applied_rows}</tbody>
+          </table>
+        </div>"""
+    else:
+        applied_table_html = '<p class="empty-state">No submitted applications yet.</p>'
+
+    # --- Failed applications table ---
+    if failed_jobs:
+        failed_rows = ""
+        for j in failed_jobs:
+            title = escape(j["title"] or "Untitled")
+            url = escape(j["url"] or "#")
+            app_url = escape(j["application_url"] or "")
+            site = escape(j["site"] or "")
+            reason = escape(j["apply_error"] or "")
+            attempts = j["apply_attempts"] or 0
+            failed_rows += f"""
+            <tr>
+              <td>{_fmt_date(j['last_attempted_at'])}</td>
+              <td><a href="{url}" class="job-link" target="_blank">{title}</a></td>
+              <td>{_score_chip(j['fit_score'])}</td>
+              <td>{_status_chip(j['apply_status'])}</td>
+              <td class="fail-reason">{reason or "—"}</td>
+              <td style="text-align:center">{attempts}</td>
+              <td>{site}</td>
+              <td>{"<a href='" + app_url + "' class='apply-btn' target='_blank'>View</a>" if app_url else "—"}</td>
+            </tr>"""
+        failed_table_html = f"""
+        <div class="app-table-wrap">
+          <table class="app-table">
+            <thead><tr>
+              <th>Last Attempted</th><th>Job Title</th><th>Score</th>
+              <th>Status</th><th>Failure Reason</th><th>Tries</th>
+              <th>Source</th><th>Posting</th>
+            </tr></thead>
+            <tbody>{failed_rows}</tbody>
+          </table>
+        </div>"""
+    else:
+        failed_table_html = '<p class="empty-state">No failed applications.</p>'
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -209,7 +331,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .subtitle {{ color: #94a3b8; margin-bottom: 2rem; }}
 
   /* Summary cards */
-  .summary {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2.5rem; }}
+  .summary {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 2.5rem; }}
   .stat-card {{ background: #1e293b; border-radius: 12px; padding: 1.25rem; }}
   .stat-num {{ font-size: 2rem; font-weight: 700; }}
   .stat-label {{ color: #94a3b8; font-size: 0.85rem; margin-top: 0.25rem; }}
@@ -291,6 +413,33 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .hidden {{ display: none !important; }}
   .job-count {{ color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem; }}
 
+  /* Application tables */
+  .app-section {{ margin-bottom: 3rem; }}
+  .app-section h2 {{ font-size: 1.3rem; font-weight: 700; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 2px solid #334155; display: flex; align-items: center; gap: 0.75rem; }}
+  .app-section h2 .count-badge {{ background: #334155; color: #94a3b8; font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 99px; font-weight: 600; }}
+  .app-table-wrap {{ overflow-x: auto; }}
+  .app-table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+  .app-table th {{ text-align: left; padding: 0.6rem 0.75rem; color: #94a3b8; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #334155; white-space: nowrap; }}
+  .app-table td {{ padding: 0.65rem 0.75rem; border-bottom: 1px solid #1e293b; vertical-align: top; }}
+  .app-table tr:last-child td {{ border-bottom: none; }}
+  .app-table tr:hover td {{ background: #1e293b44; }}
+  .app-table .job-link {{ color: #e2e8f0; text-decoration: none; font-weight: 600; }}
+  .app-table .job-link:hover {{ color: #60a5fa; }}
+  .app-table .apply-btn {{ color: #60a5fa; text-decoration: none; font-size: 0.78rem; padding: 0.2rem 0.6rem; border: 1px solid #60a5fa33; border-radius: 5px; white-space: nowrap; }}
+  .app-table .apply-btn:hover {{ background: #60a5fa22; }}
+  .score-chip {{ display: inline-flex; align-items: center; justify-content: center; min-width: 1.6rem; height: 1.4rem; border-radius: 5px; font-weight: 700; font-size: 0.78rem; color: #0f172a; }}
+  .status-chip {{ display: inline-block; font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: 600; white-space: nowrap; }}
+  .status-applied {{ background: #064e3b; color: #6ee7b7; }}
+  .status-expired {{ background: #1c1917; color: #78716c; }}
+  .status-captcha {{ background: #3b0764; color: #d8b4fe; }}
+  .status-login_issue {{ background: #450a0a; color: #fca5a5; }}
+  .status-failed {{ background: #431407; color: #fdba74; }}
+  .status-default {{ background: #1e293b; color: #94a3b8; }}
+  .fail-reason {{ color: #f87171; font-size: 0.78rem; max-width: 300px; }}
+  .empty-state {{ color: #475569; font-style: italic; padding: 2rem; text-align: center; }}
+  .stat-applied .stat-num {{ color: #6ee7b7; }}
+  .stat-failed .stat-num {{ color: #f87171; }}
+
   @media (max-width: 768px) {{
     .summary {{ grid-template-columns: repeat(2, 1fr); }}
     .score-section {{ grid-template-columns: 1fr; }}
@@ -309,6 +458,8 @@ def generate_dashboard(output_path: str | None = None) -> str:
   <div class="stat-card stat-ok"><div class="stat-num">{ready}</div><div class="stat-label">Ready (desc + URL)</div></div>
   <div class="stat-card stat-scored"><div class="stat-num">{scored}</div><div class="stat-label">Scored by LLM</div></div>
   <div class="stat-card stat-high"><div class="stat-num">{high_fit}</div><div class="stat-label">Strong Fit (7+)</div></div>
+  <div class="stat-card stat-applied"><div class="stat-num">{applied_count}</div><div class="stat-label">Submitted</div></div>
+  <div class="stat-card stat-failed"><div class="stat-num">{failed_count}</div><div class="stat-label">Failed</div></div>
 </div>
 
 <div class="filters">
@@ -330,6 +481,16 @@ def generate_dashboard(output_path: str | None = None) -> str:
     <h3>By Source</h3>
     {site_rows}
   </div>
+</div>
+
+<div class="app-section">
+  <h2 style="color:#6ee7b7">Submitted Applications <span class="count-badge">{applied_count}</span></h2>
+  {applied_table_html}
+</div>
+
+<div class="app-section">
+  <h2 style="color:#f87171">Failed Applications <span class="count-badge">{failed_count}</span></h2>
+  {failed_table_html}
 </div>
 
 <div id="job-count" class="job-count"></div>
