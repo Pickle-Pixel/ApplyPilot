@@ -1,8 +1,12 @@
 """Regenerate resume.txt from MASTER_RESUME.docx.
 
 ApplyPilot reads `C:\\Users\\bibyd\\.applypilot\\resume.txt` on every tailoring
-run. The canonical master/fact bank lives outside the upload-only resume folder
-at `C:\\Users\\bibyd\\.applypilot\\job_application_ready_2026-04-24\\04_fact_bank_do_not_submit\\MASTER_RESUME.docx`.
+run. The canonical master/fact bank lives at
+`C:\\Users\\bibyd\\.applypilot\\resume-overhaul\\MASTER_RESUME.docx` (canonical
+as of 2026-04-27 per .applypilot\\00_START_HERE\\CANONICAL.md). The previous default was
+`.applypilot\\job_application_ready_2026-04-24\\04_fact_bank_do_not_submit\\MASTER_RESUME.docx`;
+that path is retained as LEGACY_SOURCE for one release.
+
 This script converts the .docx to the flat text form ApplyPilot expects,
 preserving bullet structure and heading separation.
 
@@ -26,6 +30,12 @@ from pathlib import Path
 from docx import Document
 
 DEFAULT_SOURCE = Path(
+    r"C:\Users\bibyd\.applypilot\resume-overhaul\MASTER_RESUME.docx"
+)
+# Legacy path retained for one release in case a stale workflow still calls it;
+# resume-overhaul/ is canonical as of 2026-04-27
+# (see .applypilot\00_START_HERE\CANONICAL.md).
+LEGACY_SOURCE = Path(
     r"C:\Users\bibyd\.applypilot\job_application_ready_2026-04-24\04_fact_bank_do_not_submit\MASTER_RESUME.docx"
 )
 DEFAULT_OUTPUT = Path(r"C:\Users\bibyd\.applypilot\resume.txt")

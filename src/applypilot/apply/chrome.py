@@ -6,11 +6,13 @@ worker profile setup/cloning, and cross-platform process cleanup.
 
 import json
 import logging
+import os
 import platform
 import shutil
 import subprocess
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from applypilot import config
@@ -23,6 +25,10 @@ BASE_CDP_PORT = 9222
 # Track Chrome processes per worker for cleanup
 _chrome_procs: dict[int, subprocess.Popen] = {}
 _chrome_lock = threading.Lock()
+
+
+class BrowserLaunchError(RuntimeError):
+    """Raised when Chrome starts but its DevTools endpoint is unavailable."""
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +106,8 @@ def _kill_on_port(port: int) -> None:
 def setup_worker_profile(worker_id: int) -> Path:
     """Create an isolated Chrome profile for a worker.
 
-    On first run, clones from an existing worker profile (preferred, since
-    it already has session cookies) or from the user's real Chrome profile.
-    Subsequent runs reuse the existing worker profile.
+    Defaults to a clean ApplyPilot-owned profile. Reusing an existing Chrome
+    session is opt-in because copied cookies and browser state are sensitive.
 
     Args:
         worker_id: Numeric worker identifier.
@@ -114,7 +119,13 @@ def setup_worker_profile(worker_id: int) -> Path:
     if (profile_dir / "Default").exists():
         return profile_dir  # Already initialized
 
-    # Find a source: prefer existing worker (has session cookies), else user profile
+    reuse_profile = os.environ.get("APPLYPILOT_REUSE_CHROME_PROFILE", "").strip() == "1"
+    if not reuse_profile:
+        logger.info("[worker-%d] Creating clean Chrome worker profile", worker_id)
+        (profile_dir / "Default").mkdir(parents=True, exist_ok=True)
+        return profile_dir
+
+    # Opt-in source: prefer existing worker, else user profile.
     source: Path | None = None
     for wid in range(10):
         if wid == worker_id:
@@ -139,13 +150,15 @@ def setup_worker_profile(worker_id: int) -> Path:
     logger.info("[worker-%d] Copying Chrome profile from %s (first time setup)...",
                 worker_id, source.name)
 
-    # Copy essential profile dirs -- skip caches and heavy transient data
+    # Copy profile dirs with credential/session stores excluded.
     skip = {
         "ShaderCache", "GrShaderCache", "Service Worker", "Cache",
         "Code Cache", "GPUCache", "CacheStorage", "Crashpad",
         "BrowserMetrics", "SafeBrowsing", "Crowd Deny",
         "MEIPreload", "SSLErrorAssistant", "recovery", "Temp",
         "SingletonLock", "SingletonSocket", "SingletonCookie",
+        "Cookies", "Login Data", "Local State", "Extensions", "Web Data",
+        "Network", "Sessions", "Session Storage", "Local Storage",
     }
 
     for item in source.iterdir():
@@ -158,6 +171,8 @@ def setup_worker_profile(worker_id: int) -> Path:
                     str(item), str(dst), dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns(
                         "Cache", "Code Cache", "GPUCache", "Service Worker",
+                        "Cookies", "Login Data", "Local State", "Extensions",
+                        "Web Data", "Network", "Sessions", "Session Storage",
                     ),
                 )
             else:
@@ -254,8 +269,30 @@ def launch_chrome(worker_id: int, port: int | None = None,
     with _chrome_lock:
         _chrome_procs[worker_id] = proc
 
-    # Give Chrome time to start and open the debug port
-    time.sleep(3)
+    # Wait for Chrome to expose its DevTools endpoint before handing it to MCP.
+    version_url = f"http://127.0.0.1:{port}/json/version"
+    deadline = time.time() + 15
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            with _chrome_lock:
+                _chrome_procs.pop(worker_id, None)
+            raise BrowserLaunchError(f"Chrome exited before CDP became ready on port {port}")
+        try:
+            with urllib.request.urlopen(version_url, timeout=1) as response:
+                if response.status == 200:
+                    break
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.5)
+    else:
+        _kill_process_tree(proc.pid)
+        with _chrome_lock:
+            _chrome_procs.pop(worker_id, None)
+        raise BrowserLaunchError(
+            f"Chrome CDP endpoint did not become ready on port {port}: {last_error}"
+        )
+
     logger.info("[worker-%d] Chrome started on port %d (pid %d)",
                 worker_id, port, proc.pid)
     return proc

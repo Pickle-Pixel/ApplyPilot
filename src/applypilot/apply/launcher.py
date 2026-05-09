@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import queue
 import re
 import signal
 import subprocess
@@ -25,7 +26,7 @@ from rich.live import Live
 
 from applypilot import config
 from applypilot.database import get_connection
-from applypilot.apply import chrome, dashboard, prompt as prompt_mod
+from applypilot.apply import prompt as prompt_mod
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
     reset_worker_dir, cleanup_on_exit, _kill_process_tree,
@@ -37,6 +38,42 @@ from applypilot.apply.dashboard import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+ApplyResultLike = str
+RESULT_TOKEN_MARKERS = {
+    "APPLIED": "applied",
+    "DRY_RUN_READY": "dry_run_ready",
+    "EXPIRED": "expired",
+    "CAPTCHA": "captcha",
+    "LOGIN_ISSUE": "login_issue",
+}
+RESULT_FAILED_TOKEN = "FAILED"
+
+
+def _normalize_failure_reason(raw_reason: str) -> str:
+    """Normalize free-form failure detail into a DB-safe reason token."""
+    if not raw_reason:
+        return "unknown"
+    normalized = raw_reason.strip().lower()
+    normalized = normalized.split("\n", 1)[0].strip()
+    normalized = re.sub(r"\s+", "_", normalized)
+    normalized = re.sub(r"[^a-z0-9_:-]", "", normalized)
+    return normalized or "unknown"
+
+
+def _extract_result_token(output: str) -> str | None:
+    # Example inputs:
+    # - RESULT:APPLIED
+    # - RESULT:FAILED
+    # - RESULT:FAILED: reason text
+    match = re.search(r"(?im)^[ \t]*RESULT:\s*([A-Za-z0-9_]+)(?::\s*(.*))?\s*$", output)
+    if not match:
+        return None
+    token = match.group(1).upper()
+    if token == RESULT_FAILED_TOKEN and match.group(2):
+        return f"{token}:{match.group(2).strip()}"
+    return token
 
 # Blocked sites loaded from config/sites.yaml
 def _load_blocked():
@@ -76,12 +113,21 @@ def _make_mcp_config(cdp_port: int) -> dict:
                     f"--viewport-size={config.DEFAULTS['viewport']}",
                 ],
             },
-            "gmail": {
-                "command": "npx",
-                "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
-            },
         }
     }
+
+
+def _build_claude_command(model: str, mcp_config_path: Path) -> list[str]:
+    """Build the Claude command for apply workers without blanket bypass."""
+    return [
+        "claude",
+        "--model", model,
+        "-p",
+        "--mcp-config", str(mcp_config_path),
+        "--no-session-persistence",
+        "--output-format", "stream-json",
+        "--verbose", "-",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -103,45 +149,74 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        blocked_sites, blocked_patterns = _load_blocked()
+        lane_filter = "AND COALESCE(job_lane, 'primary') = 'primary'"
+        readiness_filters = """
+            AND tailored_resume_path IS NOT NULL
+            AND tailored_resume_path <> ''
+            AND cover_letter_path IS NOT NULL
+            AND cover_letter_path <> ''
+            AND fit_score >= ?
+            AND (COALESCE(apply_status, '') = ''
+                 OR apply_status = 'failed'
+                 OR apply_status LIKE 'failed:%')
+            AND (apply_attempts IS NULL OR apply_attempts < ?)
+        """
+        blocked_site_clause = ""
+        params_suffix: list = []
+        if blocked_sites:
+            placeholders = ",".join("?" * len(blocked_sites))
+            blocked_site_clause = f" AND site NOT IN ({placeholders})"
+            params_suffix.extend(blocked_sites)
+        blocked_url_clause = ""
+        if blocked_patterns:
+            blocked_url_clause = " ".join("AND url NOT LIKE ?" for _ in blocked_patterns)
+            params_suffix.extend(blocked_patterns)
 
         if target_url:
-            like = f"%{target_url.split('?')[0].rstrip('/')}%"
+            norm_url = target_url.split('?')[0].rstrip('/')
             row = conn.execute("""
                 SELECT url, title, site, company, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
-                WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
-                  AND tailored_resume_path IS NOT NULL
-                  AND (apply_status IS NULL OR apply_status != 'in_progress')
+                WHERE (url = ? OR application_url = ? OR url = ? OR application_url = ?)
+                  {lane_filter}
+                  {readiness_filters}
+                  {blocked_site_clause}
+                  {blocked_url_clause}
                 LIMIT 1
-            """, (target_url, target_url, like, like)).fetchone()
+            """.format(
+                lane_filter=lane_filter,
+                readiness_filters=readiness_filters,
+                blocked_site_clause=blocked_site_clause,
+                blocked_url_clause=blocked_url_clause,
+            ), (
+                target_url,
+                target_url,
+                norm_url,
+                norm_url,
+                min_score,
+                config.DEFAULTS["max_apply_attempts"],
+                *params_suffix,
+            )).fetchone()
         else:
-            blocked_sites, blocked_patterns = _load_blocked()
-            # Build parameterized filters to avoid SQL injection
-            params: list = [min_score]
-            site_clause = ""
-            if blocked_sites:
-                placeholders = ",".join("?" * len(blocked_sites))
-                site_clause = f"AND site NOT IN ({placeholders})"
-                params.extend(blocked_sites)
-            url_clauses = ""
-            if blocked_patterns:
-                url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
-                params.extend(blocked_patterns)
             row = conn.execute(f"""
                 SELECT url, title, site, company, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
-                WHERE tailored_resume_path IS NOT NULL
-                  AND (apply_status IS NULL OR apply_status = 'failed')
-                  AND (apply_attempts IS NULL OR apply_attempts < ?)
-                  AND fit_score >= ?
-                  AND COALESCE(job_lane, 'primary') = 'primary'
-                  {site_clause}
-                  {url_clauses}
+                WHERE 1=1
+                  {lane_filter}
+                  {readiness_filters}
+                  {blocked_site_clause}
+                  {blocked_url_clause}
                 ORDER BY fit_score DESC, url
                 LIMIT 1
-            """, [config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
+            """.format(
+                lane_filter=lane_filter,
+                readiness_filters=readiness_filters,
+                blocked_site_clause=blocked_site_clause,
+                blocked_url_clause=blocked_url_clause,
+            ), [min_score, config.DEFAULTS["max_apply_attempts"]] + params_suffix).fetchone()
 
         if not row:
             conn.rollback()
@@ -211,14 +286,64 @@ def mark_result(url: str, status: str, error: str | None = None,
     conn.commit()
 
 
-def release_lock(url: str) -> None:
+def release_lock(url: str, release_reason: str | None = None) -> None:
     """Release the in_progress lock without changing status."""
     conn = get_connection()
+    if release_reason:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET agent_id = NULL,
+                apply_error = COALESCE(?, apply_error)
+            WHERE url = ? AND apply_status = 'in_progress'
+            """,
+            (release_reason, url),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET agent_id = NULL
+            WHERE url = ? AND apply_status = 'in_progress'
+            """,
+            (url,),
+        )
+    conn.commit()
+
+
+def release_generated_prompt_lock(url: str) -> None:
+    """Undo the temporary claim taken only to generate a manual prompt."""
+    conn = get_connection()
     conn.execute(
-        "UPDATE jobs SET apply_status = NULL, agent_id = NULL WHERE url = ? AND apply_status = 'in_progress'",
+        """
+        UPDATE jobs
+        SET apply_status = NULL,
+            apply_error = NULL,
+            agent_id = NULL
+        WHERE url = ? AND apply_status = 'in_progress'
+        """,
         (url,),
     )
     conn.commit()
+
+
+def release_stale_locks(
+    max_age_minutes: int = 60,
+    status: str = "manual_review",
+    reason: str = "stale_in_progress_orphaned",
+) -> int:
+    """Move old in-progress rows to manual review instead of silently retrying."""
+    conn = get_connection()
+    cursor = conn.execute("""
+        UPDATE jobs
+        SET apply_status = ?,
+            apply_error = ?,
+            agent_id = NULL
+        WHERE apply_status = 'in_progress'
+          AND datetime(last_attempted_at) < datetime('now', ?)
+    """, (status, reason, f"-{max_age_minutes} minutes"))
+    conn.commit()
+    return cursor.rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -243,10 +368,10 @@ def gen_prompt(target_url: str, min_score: int = 7,
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
 
-    prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text)
+    prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text, dry_run=True)
 
     # Release the lock so the job stays available
-    release_lock(job["url"])
+    release_generated_prompt_lock(job["url"])
 
     # Write prompt file
     config.ensure_dirs()
@@ -287,6 +412,101 @@ def mark_job(url: str, status: str, reason: str | None = None) -> None:
     conn.commit()
 
 
+def parse_apply_result(output: str) -> str:
+    """Classify Claude apply output into ApplyPilot status strings."""
+    if not output:
+        return "failed:no_result_line"
+
+    lower = output.lower()
+    result_marker = _extract_result_token(output)
+    if result_marker:
+        marker = result_marker.upper()
+        for token, normalized in RESULT_TOKEN_MARKERS.items():
+            if marker == token:
+                return normalized
+        if marker.startswith(RESULT_FAILED_TOKEN):
+            if marker == RESULT_FAILED_TOKEN:
+                raw_reason = "unknown"
+            else:
+                raw_reason = result_marker.split(":", 1)[-1]
+            raw_reason = raw_reason.strip() if raw_reason else "unknown"
+            if not raw_reason:
+                raw_reason = "unknown"
+            reason = _normalize_failure_reason(raw_reason or "unknown")
+            return f"failed:{reason}"
+
+    submitted_markers = [
+        "application successfully submitted",
+        "application has been completed and submitted",
+        "thank you for completing",
+        "thank you for applying",
+        "/apply/thanks",
+        "appreciate your interest in working with our company",
+    ]
+    if any(marker in lower for marker in submitted_markers):
+        return "applied"
+
+    expired_markers = [
+        "no longer accepting applications",
+        "no longer open",
+        "no longer available",
+        "page you are looking for doesn't exist",
+        "page you are looking for does not exist",
+        "job posting is no longer available",
+        "job posting has expired",
+    ]
+    if any(marker in lower for marker in expired_markers):
+        return "expired"
+
+    manual_approval_markers = [
+        "manual review required",
+        "requires manual review",
+        "needs manual follow-up",
+        "manual intervention",
+        "requires human review",
+        "manual review",
+    ]
+    if any(marker in lower for marker in manual_approval_markers):
+        return "failed:manual_review_required"
+
+    captcha_markers = ["captcha", "recaptcha", "hcaptcha", "turnstile", "cloudflare"]
+    if any(marker in lower for marker in captcha_markers):
+        return "captcha"
+
+    login_issue_markers = [
+        "could not sign in",
+        "unable to sign in",
+        "could not log in",
+        "unable to log in",
+        "please log in to",
+        "please sign in to",
+        "login required",
+        "sign in required",
+        "must log in",
+        "must sign in",
+        "sign in to",
+        "login to",
+        "log in to",
+        "cannot log in",
+        "can't log in",
+        "account setup",
+        "create an account",
+    ]
+    if any(marker in lower for marker in login_issue_markers):
+        return "login_issue"
+
+    browser_lost_markers = [
+        "localhost:9222 is being refused",
+        "browser backend",
+        "connection refused",
+        "cdp",
+    ]
+    if any(marker in lower for marker in browser_lost_markers):
+        return "failed:browser_backend_lost"
+
+    return "failed:no_result_line"
+
+
 def reset_failed() -> int:
     """Reset all failed jobs so they can be retried.
 
@@ -298,8 +518,7 @@ def reset_failed() -> int:
         UPDATE jobs SET apply_status = NULL, apply_error = NULL,
                        apply_attempts = 0, agent_id = NULL
         WHERE apply_status = 'failed'
-          OR (apply_status IS NOT NULL AND apply_status != 'applied'
-              AND apply_status != 'in_progress')
+           OR apply_status LIKE 'failed:%'
     """)
     conn.commit()
     return cursor.rowcount
@@ -315,8 +534,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
     Returns:
         Tuple of (status_string, duration_ms). Status is one of:
-        'applied', 'expired', 'captcha', 'login_issue',
-        'failed:reason', or 'skipped'.
+        'applied', 'dry_run_ready', 'expired', 'captcha', 'login_issue',
+        'failed:<reason>'.
     """
     # Read tailored resume text
     resume_path = job.get("tailored_resume_path")
@@ -336,27 +555,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
     mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
 
-    # Build claude command
-    cmd = [
-        "claude",
-        "--model", model,
-        "-p",
-        "--mcp-config", str(mcp_config_path),
-        "--permission-mode", "bypassPermissions",
-        "--no-session-persistence",
-        "--disallowedTools", (
-            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
-            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
-            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
-            "mcp__gmail__create_label,mcp__gmail__update_label,"
-            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
-            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
-            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
-            "mcp__gmail__delete_filter"
-        ),
-        "--output-format", "stream-json",
-        "--verbose", "-",
-    ]
+    cmd = _build_claude_command(model=model, mcp_config_path=mcp_config_path)
 
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
@@ -405,7 +604,31 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         with open(worker_log, "a", encoding="utf-8") as lf:
             lf.write(log_header)
 
-            for line in proc.stdout:
+            line_queue: queue.Queue[str | None] = queue.Queue()
+
+            def _read_stdout() -> None:
+                try:
+                    if proc.stdout is not None:
+                        for raw_line in proc.stdout:
+                            line_queue.put(raw_line)
+                finally:
+                    line_queue.put(None)
+
+            reader = threading.Thread(target=_read_stdout, daemon=True)
+            reader.start()
+            deadline = start + config.DEFAULTS["apply_timeout"]
+
+            while True:
+                if time.time() > deadline:
+                    raise subprocess.TimeoutExpired(cmd, config.DEFAULTS["apply_timeout"])
+                try:
+                    line = line_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if proc.poll() is not None and not reader.is_alive():
+                        break
+                    continue
+                if line is None:
+                    break
                 line = line.strip()
                 if not line:
                     continue
@@ -456,12 +679,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                     text_parts.append(line)
                     lf.write(line + "\n")
 
-        proc.wait(timeout=300)
+        proc.wait(timeout=10)
         returncode = proc.returncode
         proc = None
 
         if returncode and returncode < 0:
-            return "skipped", int((time.time() - start) * 1000)
+            return "failed:launcher_terminated", int((time.time() - start) * 1000)
 
         output = "\n".join(text_parts)
         elapsed = int(time.time() - start)
@@ -477,40 +700,15 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             prev_cost = ws.total_cost if ws else 0.0
             update_state(worker_id, total_cost=prev_cost + cost)
 
-        def _clean_reason(s: str) -> str:
-            return re.sub(r'[*`"]+$', '', s).strip()
-
-        for result_status in ["APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
-            if f"RESULT:{result_status}" in output:
-                add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
-                update_state(worker_id, status=result_status.lower(),
-                             last_action=f"{result_status} ({elapsed}s)")
-                return result_status.lower(), duration_ms
-
-        if "RESULT:FAILED" in output:
-            for out_line in output.split("\n"):
-                if "RESULT:FAILED" in out_line:
-                    reason = (
-                        out_line.split("RESULT:FAILED:")[-1].strip()
-                        if ":" in out_line[out_line.index("FAILED") + 6:]
-                        else "unknown"
-                    )
-                    reason = _clean_reason(reason)
-                    PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
-                    if reason in PROMOTE_TO_STATUS:
-                        add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
-                        update_state(worker_id, status=reason,
-                                     last_action=f"{reason.upper()} ({elapsed}s)")
-                        return reason, duration_ms
-                    add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
-                    update_state(worker_id, status="failed",
-                                 last_action=f"FAILED: {reason[:25]}")
-                    return f"failed:{reason}", duration_ms
-            return "failed:unknown", duration_ms
-
-        add_event(f"[W{worker_id}] NO RESULT ({elapsed}s)")
-        update_state(worker_id, status="failed", last_action=f"no result ({elapsed}s)")
-        return "failed:no_result_line", duration_ms
+        result = parse_apply_result(output)
+        if result in {"applied", "expired", "captcha", "login_issue", "dry_run_ready"}:
+            add_event(f"[W{worker_id}] {result.upper()} ({elapsed}s): {job['title'][:30]}")
+            update_state(worker_id, status=result, last_action=f"{result.upper()} ({elapsed}s)")
+        else:
+            reason = result.split(":", 1)[-1] if ":" in result else result
+            add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
+            update_state(worker_id, status="failed", last_action=f"FAILED: {reason[:25]}")
+        return result, duration_ms
 
     except subprocess.TimeoutExpired:
         duration_ms = int((time.time() - start) * 1000)
@@ -535,12 +733,13 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 # ---------------------------------------------------------------------------
 
 PERMANENT_FAILURES: set[str] = {
-    "expired", "captcha", "login_issue",
+    "expired", "captcha", "login_issue", "browser_backend_lost",
     "not_eligible_location", "not_eligible_salary",
     "already_applied", "account_required",
     "not_a_job_application", "unsafe_permissions",
     "unsafe_verification", "sso_required",
     "site_blocked", "cloudflare_blocked", "blocked_by_cloudflare",
+    "manual_review_required", "page_error", "stale_in_progress_orphaned",
 }
 
 PERMANENT_PREFIXES: tuple[str, ...] = ("site_blocked", "cloudflare", "blocked_by")
@@ -554,6 +753,20 @@ def _is_permanent_failure(result: str) -> bool:
         or reason in PERMANENT_FAILURES
         or any(reason.startswith(p) for p in PERMANENT_PREFIXES)
     )
+
+
+def _to_db_state(parsed_result: ApplyResultLike) -> tuple[str, str | None, bool]:
+    """Map parser output to DB status, error, and permanence."""
+    if parsed_result == "applied":
+        return "applied", None, False
+    if parsed_result == "dry_run_ready":
+        return "dry_run_ready", None, False
+    if parsed_result in {"expired", "captcha", "login_issue", "browser_backend_lost"}:
+        return parsed_result, parsed_result, True
+    if parsed_result.startswith("failed:"):
+        reason = _normalize_failure_reason(parsed_result.split(":", 1)[-1])
+        return "failed", reason, _is_permanent_failure(reason) or _is_permanent_failure(parsed_result)
+    return "failed", _normalize_failure_reason(parsed_result), _is_permanent_failure(parsed_result)
 
 
 # ---------------------------------------------------------------------------
@@ -618,39 +831,35 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 
             result, duration_ms = run_job(job, port=port, worker_id=worker_id,
                                             model=model, dry_run=dry_run)
+            db_status, db_reason, db_permanent = _to_db_state(result)
+            if dry_run and db_status == "applied":
+                db_status = "dry_run_ready"
+                db_reason = None
+                db_permanent = False
 
-            if result == "skipped":
-                release_lock(job["url"])
-                add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
-                continue
-            elif dry_run:
-                release_lock(job["url"])
-                if result == "applied":
-                    applied += 1
-                    update_state(worker_id, jobs_applied=applied,
-                                 jobs_done=applied + failed)
+            mark_result(
+                job["url"],
+                db_status,
+                db_reason,
+                permanent=db_permanent,
+                duration_ms=duration_ms,
+            )
+            if db_status in {"applied", "dry_run_ready"}:
+                applied += 1
+                if dry_run and result == "applied":
                     add_event(f"[W{worker_id}] Dry run complete: {job['title'][:30]}")
                 else:
-                    failed += 1
-                    update_state(worker_id, jobs_failed=failed,
-                                 jobs_done=applied + failed)
-                    add_event(f"[W{worker_id}] Dry run result: {result[:40]}")
-            elif result == "applied":
-                mark_result(job["url"], "applied", duration_ms=duration_ms)
-                applied += 1
+                    add_event(f"[W{worker_id}] {result.upper()} ({(duration_ms // 1000)}s): {job['title'][:30]}")
                 update_state(worker_id, jobs_applied=applied,
                              jobs_done=applied + failed)
             else:
-                reason = result.split(":", 1)[-1] if ":" in result else result
-                mark_result(job["url"], "failed", reason,
-                            permanent=_is_permanent_failure(result),
-                            duration_ms=duration_ms)
                 failed += 1
+                add_event(f"[W{worker_id}] result: {result[:40]}")
                 update_state(worker_id, jobs_failed=failed,
                              jobs_done=applied + failed)
 
         except KeyboardInterrupt:
-            release_lock(job["url"])
+            release_lock(job["url"], release_reason="worker_interrupt")
             if _stop_event.is_set():
                 break
             add_event(f"[W{worker_id}] Job skipped (Ctrl+C)")
@@ -658,7 +867,12 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         except Exception as e:
             logger.exception("Worker %d launcher error", worker_id)
             add_event(f"[W{worker_id}] Launcher error: {str(e)[:40]}")
-            release_lock(job["url"])
+            mark_result(
+                job["url"],
+                "failed",
+                _normalize_failure_reason(str(e)[:120]),
+                permanent=False,
+            )
             failed += 1
             update_state(worker_id, jobs_failed=failed)
         finally:
@@ -699,6 +913,7 @@ def main(limit: int = 1, target_url: str | None = None,
     _stop_event.clear()
 
     config.ensure_dirs()
+    stale_count = release_stale_locks(max_age_minutes=60)
     console = Console()
 
     if continuous:
@@ -714,6 +929,8 @@ def main(limit: int = 1, target_url: str | None = None,
 
     worker_label = f"{workers} worker{'s' if workers > 1 else ''}"
     console.print(f"Launching apply pipeline ({mode_label}, {worker_label}, poll every {POLL_INTERVAL}s)...")
+    if stale_count:
+        console.print(f"[yellow]Moved {stale_count} stale in-progress job(s) to manual review.[/yellow]")
     console.print("[dim]Ctrl+C = skip current job(s) | Ctrl+C x2 = stop[/dim]")
 
     # Double Ctrl+C handler

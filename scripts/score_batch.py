@@ -1,14 +1,19 @@
 """Score unscored jobs one at a time, committing after each, with structured logging and retry-safe error handling."""
-import sys, os, time, logging, traceback
+import sys
+import os
+import time
+import logging
+import traceback
+from datetime import datetime, timezone
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
-from applypilot.config import load_env, ensure_dirs, RESUME_PATH
-from applypilot.database import init_db, get_connection
-from applypilot.scoring.scorer import score_job
-from datetime import datetime, timezone
+from applypilot.config import RESUME_PATH, ensure_dirs, load_env  # noqa: E402
+from applypilot.database import get_connection, init_db  # noqa: E402
+from applypilot.scoring.scorer import score_job  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,

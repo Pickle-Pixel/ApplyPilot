@@ -1,8 +1,6 @@
 """Extract plain text from .docx resume files via raw XML — no python-docx dependency."""
-import sys
 import zipfile
 import re
-from xml.etree import ElementTree as ET
 
 def extract_text(docx_path):
     with zipfile.ZipFile(docx_path) as z:

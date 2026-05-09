@@ -11,10 +11,98 @@ normal  -- banned words = warnings only; fabrication/structure = errors (default
 lenient -- banned words ignored; only fabrication and required structure checked
 """
 
+import hashlib
 import re
 import logging
+from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+# ── Duplicate-paragraph detection (Fix H from RESUME_AUDIT_2026-04-27) ──────
+
+def _normalize_paragraph(p: str) -> str:
+    """Lowercase + collapse whitespace + drop trailing punctuation noise.
+
+    Rationale: 19 of 21 prior cover letters shared paragraph 3 verbatim
+    because the lane templates hardcoded body prose. We hash the normalized
+    paragraph so trivial whitespace differences don't hide a leak.
+    """
+    p = p.strip().lower()
+    p = re.sub(r"\s+", " ", p)
+    return p
+
+
+def _paragraph_hash(p: str) -> str:
+    return hashlib.sha256(_normalize_paragraph(p).encode("utf-8")).hexdigest()
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    """Split a cover letter into paragraphs (blank-line separated)."""
+    paragraphs = re.split(r"\n\s*\n", text.strip())
+    return [p.strip() for p in paragraphs if p.strip()]
+
+
+def check_duplicate_paragraphs(
+    text: str,
+    company: str | None,
+    cover_letters_dir: Path | str | None,
+    *,
+    min_chars: int = 80,
+) -> list[str]:
+    """Hash paragraphs 2-N and flag any whose hash collides with a paragraph
+    in an existing cover letter for a DIFFERENT company.
+
+    Returns a list of warning strings. Empty list = no leakage.
+
+    Args:
+        text: The new cover letter text.
+        company: The company name for the new letter (for collision filter).
+        cover_letters_dir: Directory of existing *_CL.txt files to compare
+            against. If None or missing, this check is a no-op.
+        min_chars: Skip paragraphs shorter than this (closing lines, etc.).
+    """
+    warnings: list[str] = []
+    if cover_letters_dir is None:
+        return warnings
+    cover_letters_dir = Path(cover_letters_dir)
+    if not cover_letters_dir.exists():
+        return warnings
+
+    new_paragraphs = _split_paragraphs(text)
+    # Skip the greeting (paragraph 1) — paragraphs 2+ are the body where
+    # leakage matters.
+    body = [p for p in new_paragraphs[1:] if len(p) >= min_chars]
+    if not body:
+        return warnings
+
+    new_hashes = {_paragraph_hash(p): p for p in body}
+    company_lower = (company or "").lower()
+
+    seen: dict[str, list[str]] = {}
+    for cl_path in cover_letters_dir.glob("*_CL.txt"):
+        try:
+            other_text = cl_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        # Heuristic: skip letters whose filename contains the same company.
+        if company_lower and company_lower.replace(" ", "_") in cl_path.stem.lower():
+            continue
+        for p in _split_paragraphs(other_text)[1:]:
+            if len(p) < min_chars:
+                continue
+            h = _paragraph_hash(p)
+            if h in new_hashes:
+                seen.setdefault(h, []).append(cl_path.name)
+
+    for h, files in seen.items():
+        snippet = new_hashes[h][:80].replace("\n", " ")
+        warnings.append(
+            f"Duplicate paragraph reused from {len(files)} prior letter(s) "
+            f"({files[0]}{'...' if len(files) > 1 else ''}): "
+            f"'{snippet}...'"
+        )
+    return warnings
 
 
 # ── Universal Constants (not personal data) ───────────────────────────────
@@ -29,6 +117,15 @@ BANNED_WORDS: list[str] = [
     "synergy", "cross-functional collaboration", "holistic",
     "transformative", "innovative solutions", "paradigm", "ecosystem",
     "proactive", "detail-oriented", "highly motivated",
+    # 2026-04-29: Unicode dash and unhyphenated variants — the original
+    # validator regex missed these.
+    "detail oriented",
+    "detail\u2010oriented",   # hyphen
+    "detail\u2011oriented",   # non-breaking hyphen
+    "detail\u2012oriented",   # figure dash
+    "detail\u2013oriented",   # en dash
+    "detail\u2014oriented",   # em dash
+    "detail\u2015oriented",   # horizontal bar
     "seamless", "full lifecycle",
     "deep understanding", "extensive experience", "comprehensive knowledge",
     "thrives in", "excels at", "adept at", "well-versed in",
@@ -38,6 +135,11 @@ BANNED_WORDS: list[str] = [
     # Cover-letter-specific additions
     "this demonstrates", "this reflects", "i have experience with",
     "furthermore", "additionally", "moreover",
+    # 2026-04-28 dry-run audit additions (per Darrin standing rules)
+    "briefly", "minimize", "minimizing", "minimized",
+    "superpower", "hack", "journey",
+    # Hedge words that signal weakness
+    "might address", "may help", "could potentially",
 ]
 
 LLM_LEAK_PHRASES: list[str] = [
@@ -357,17 +459,93 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
     }
 
 
+# ── Jack Henry verb-attribution check (paragraph-level) ─────────────────
+#
+# Darrin's standing rule: he was Tier 2 Technical Support at Jack Henry,
+# NOT a builder. Cover letters MUST NOT use builder verbs (built / designed /
+# architected / engineered / automated / owned / implemented / developed)
+# in any sentence whose context is the Jack Henry role.
+#
+# Paragraph-level check: a paragraph is "JH-context" if it names Jack Henry
+# OR if it uses JH-only signature tokens (trace-file diagnostics, ATM/POS,
+# EMV, 40+ bank clients, TEKsystems, JH&A). When the LLM lifts the JH bullet
+# without naming JH ("I built knowledge-base guidance...") this still trips
+# because "knowledge-base guidance" + the surrounding context tokens flag it.
+
+JH_FORBIDDEN_VERBS: tuple[str, ...] = (
+    "built", "designed", "architected", "engineered",
+    "automated", "owned", "implemented", "developed",
+)
+
+# Tokens that uniquely signal the Jack Henry role context. Empirically derived
+# from the JH bullets on Darrin's resume — no other employer's bullets contain
+# these exact phrases.
+JH_CONTEXT_TOKENS: tuple[str, ...] = (
+    "jack henry", "jh&a",
+    "trace-file diagnostic", "trace-file diagnostics",
+    "atm/pos", "atm / pos",
+    "emv chip", "emv conversion",
+    "40+ bank client", "40 plus bank client",
+    "teksystems",
+    "knowledge-base guidance",  # lifted from JH bullet by LLM in dry-run #3
+)
+
+
+def jh_verb_attribution_check(text: str) -> tuple[bool, list[str]]:
+    """Paragraph-level JH-verb-attribution check.
+
+    Splits text into paragraphs (blank-line separated). For each paragraph
+    that matches any JH_CONTEXT_TOKENS, scan for any JH_FORBIDDEN_VERBS and
+    flag the violation.
+
+    Returns (passed, list_of_violation_strings).
+    """
+    paragraphs = re.split(r"\n\s*\n", text.strip())
+    violations: list[str] = []
+    for para in paragraphs:
+        low = para.lower()
+        if not any(tok in low for tok in JH_CONTEXT_TOKENS):
+            continue
+        for verb in JH_FORBIDDEN_VERBS:
+            # Word-boundary match
+            if re.search(rf"\b{verb}\b", low):
+                # Find the nearest sentence containing the verb for the snippet
+                sentences = re.split(r"(?<=[.!?])\s+", para)
+                snippet = next(
+                    (s for s in sentences if re.search(rf"\b{verb}\b", s.lower())),
+                    para[:120],
+                )
+                violations.append(
+                    f"Forbidden verb '{verb}' in JH-context paragraph: "
+                    f"'{snippet.strip()[:140]}...'"
+                )
+    return (len(violations) == 0, violations)
+
+
 # ── Cover Letter Validation ──────────────────────────────────────────────
 
-def validate_cover_letter(text: str, mode: str = "normal") -> dict:
+def validate_cover_letter(
+    text: str,
+    mode: str = "normal",
+    *,
+    company: str | None = None,
+    cover_letters_dir: Path | str | None = None,
+) -> dict:
     """Programmatic validation of a cover letter.
 
     Args:
         text: The cover letter text to validate.
-        mode: Validation strictness — "strict", "normal", or "lenient".
-              strict  → banned words are errors (trigger retries); word limit enforced
-              normal  → banned words are warnings; word limit is soft (+25 words)
-              lenient → banned words ignored; word count not checked
+        mode: Validation strictness -- "strict", "normal", or "lenient".
+              strict  -> banned words are errors (trigger retries); word limit enforced
+              normal  -> banned words are warnings; word limit is soft (+25 words)
+              lenient -> banned words ignored; word count not checked
+        company: Optional. If provided alongside cover_letters_dir, enables the
+              duplicate-paragraph check (Fix H, RESUME_AUDIT_2026-04-27).
+        cover_letters_dir: Optional. Directory of existing *_CL.txt files. If
+              given, paragraphs 2+ of the new letter are hashed and compared
+              against paragraphs from prior letters for OTHER companies. Hash
+              collisions become warnings in normal/lenient modes and errors in
+              strict mode.
 
     Returns:
         {"passed": bool, "errors": list[str], "warnings": list[str]}
@@ -413,5 +591,27 @@ def validate_cover_letter(text: str, mode: str = "normal") -> dict:
     # 5. Must start with "Dear" — always checked (preamble should have been stripped)
     if not stripped.lower().startswith("dear"):
         errors.append("Must start with 'Dear Hiring Manager,'")
+
+    # 6. Duplicate paragraphs (Fix H). Only runs when caller provides both
+    # company and cover_letters_dir. Lane templates were archived 2026-04-27
+    # because 19 of 21 generated letters shared paragraph 3 verbatim; this
+    # check ensures the LLM-only path doesn't regress.
+    if cover_letters_dir is not None:
+        dup_msgs = check_duplicate_paragraphs(text, company, cover_letters_dir)
+        if dup_msgs:
+            if mode == "strict":
+                errors.extend(dup_msgs)
+            else:
+                warnings.extend(dup_msgs)
+
+    # 7. Jack Henry verb-attribution (always a hard error regardless of mode).
+    # If the LLM uses a builder verb (built/designed/architected/...) in any
+    # paragraph that mentions Jack Henry directly OR uses JH-only signature
+    # tokens (trace-file diagnostics, ATM/POS, EMV, knowledge-base guidance,
+    # 40+ bank clients, TEKsystems), that's an attribution violation per
+    # Darrin's standing rule. This is a content-truth check; it's not optional.
+    jh_ok, jh_msgs = jh_verb_attribution_check(text)
+    if not jh_ok:
+        errors.extend(jh_msgs)
 
     return {"passed": len(errors) == 0, "errors": errors, "warnings": warnings}

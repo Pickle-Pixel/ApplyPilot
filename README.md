@@ -4,6 +4,8 @@
 
 # ApplyPilot
 
+> Cross-cutting rules: see `..\..\STYLE_RULES.md` for tone/format and `..\..\PATTERNS.md` for review patterns (two-stage review, 3-strike debugging, brainstorm-before-code). Apply both unless this project documents an override.
+
 **Applied to 1,000 jobs in 2 days. Fully autonomous. Open source.**
 
 [![PyPI version](https://img.shields.io/pypi/v/applypilot?color=blue)](https://pypi.org/project/applypilot/)
@@ -33,7 +35,8 @@ applypilot init          # one-time setup: resume, profile, preferences, API key
 applypilot doctor        # verify your setup — shows what's installed and what's missing
 applypilot run           # discover > enrich > score > tailor > cover letters
 applypilot run -w 4      # same but parallel (4 threads for discovery/enrichment)
-applypilot apply         # autonomous browser-driven submission
+applypilot apply         # dry-run/manual-safe browser preparation by default
+applypilot apply --submit --confirm-submit APPLY  # real submission gate
 applypilot apply -w 3    # parallel apply (3 Chrome instances)
 applypilot apply --dry-run  # fill forms without submitting
 ```
@@ -170,9 +173,10 @@ applypilot run --min-score 8            # Override score threshold
 applypilot run --dry-run                # Preview without executing
 applypilot run --validation lenient     # Relax validation (recommended for Gemini free tier)
 applypilot run --validation strict      # Strictest validation (retries on any banned word)
-applypilot apply                        # Launch auto-apply
+applypilot apply                        # Launch dry-run/manual-safe apply prep
 applypilot apply --workers 3            # Parallel browser workers
 applypilot apply --dry-run              # Fill forms without submitting
+applypilot apply --submit --confirm-submit APPLY  # Allow real submission
 applypilot apply --continuous           # Run forever, polling for new jobs
 applypilot apply --headless             # Headless browser mode
 applypilot apply --url URL              # Apply to a specific job

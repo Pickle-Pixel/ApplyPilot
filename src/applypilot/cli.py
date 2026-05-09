@@ -24,6 +24,7 @@ app = typer.Typer(
 )
 console = Console()
 log = logging.getLogger(__name__)
+SUBMIT_CONFIRMATION = "APPLY"
 
 # Valid pipeline stages (in execution order)
 VALID_STAGES = ("discover", "enrich", "score", "tailor", "cover", "pdf")
@@ -47,6 +48,22 @@ def _version_callback(value: bool) -> None:
     if value:
         console.print(f"[bold]applypilot[/bold] {__version__}")
         raise typer.Exit()
+
+
+def _resolve_apply_dry_run(
+    *,
+    dry_run: bool,
+    submit: bool,
+    confirm_submit: str | None,
+) -> bool:
+    """Resolve apply execution mode from safety-gated CLI flags."""
+    if submit:
+        if dry_run:
+            raise ValueError("--submit cannot be combined with --dry-run")
+        if confirm_submit != SUBMIT_CONFIRMATION:
+            raise ValueError(f"--submit requires --confirm-submit {SUBMIT_CONFIRMATION}")
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +177,13 @@ def pack(
     result = export_ready_packs(min_score=min_score, limit=limit, lane=lane)
     console.print(f"[green]Exported:[/green] {result['exported']} pack(s)")
     if result["skipped"]:
-        console.print(f"[yellow]Skipped:[/yellow] {result['skipped']} job(s) with missing/invalid PDFs")
+        console.print(f"[yellow]Skipped:[/yellow] {result['skipped']} job(s)")
+        reason_counts: dict[str, int] = {}
+        for item in result["skips"]:
+            reason = item.get("reason") or "unknown"
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        for reason, count in sorted(reason_counts.items(), key=lambda item: item[0].lower()):
+            console.print(f"[dim]- {count}x {reason}[/dim]")
     console.print(f"[bold]Output:[/bold] {result['output_dir']}")
 
 
@@ -172,6 +195,12 @@ def apply(
     model: str = typer.Option("haiku", "--model", "-m", help="Claude model name."),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
+    submit: bool = typer.Option(False, "--submit", help="Allow real employer submission after confirmation."),
+    confirm_submit: Optional[str] = typer.Option(
+        None,
+        "--confirm-submit",
+        help=f"Required with --submit. Must equal {SUBMIT_CONFIRMATION}.",
+    ),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
     url: Optional[str] = typer.Option(None, "--url", help="Apply to a specific job URL."),
     gen: bool = typer.Option(False, "--gen", help="Generate prompt file for manual debugging instead of running."),
@@ -208,6 +237,16 @@ def apply(
 
     # --- Full apply mode ---
 
+    try:
+        effective_dry_run = _resolve_apply_dry_run(
+            dry_run=dry_run,
+            submit=submit,
+            confirm_submit=confirm_submit,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
     # Check 1: Tier 3 required (Claude Code CLI + Chrome)
     check_tier(3, "auto-apply")
 
@@ -233,7 +272,7 @@ def apply(
             raise typer.Exit(code=1)
 
     if gen:
-        from applypilot.apply.launcher import gen_prompt, BASE_CDP_PORT
+        from applypilot.apply.launcher import gen_prompt
         target = url or ""
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
@@ -244,11 +283,11 @@ def apply(
             raise typer.Exit(code=1)
         mcp_path = _profile_path.parent / ".mcp-apply-0.json"
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
-        console.print(f"\n[bold]Run manually:[/bold]")
+        console.print("\n[bold]Run manually:[/bold]")
         console.print(
             f"  claude --model {model} -p "
             f"--mcp-config {mcp_path} "
-            f"--permission-mode bypassPermissions < {prompt_file}"
+            f"< {prompt_file}"
         )
         return
 
@@ -261,7 +300,9 @@ def apply(
     console.print(f"  Workers:  {workers}")
     console.print(f"  Model:    {model}")
     console.print(f"  Headless: {headless}")
-    console.print(f"  Dry run:  {dry_run}")
+    console.print(f"  Dry run:  {effective_dry_run}")
+    if effective_dry_run:
+        console.print("  Mode:     DRY RUN default; use --submit --confirm-submit APPLY for real submission")
     if url:
         console.print(f"  Target:   {url}")
     console.print()
@@ -272,18 +313,22 @@ def apply(
         min_score=min_score,
         headless=headless,
         model=model,
-        dry_run=dry_run,
+        dry_run=effective_dry_run,
         continuous=continuous,
         workers=workers,
     )
 
 
 @app.command()
-def status() -> None:
+def status(
+    ready: bool = typer.Option(False, "--ready", help="Show apply queue readiness buckets."),
+    lane: str = typer.Option("primary", "--lane", help="Lane scope for apply readiness view."),
+    min_score: int = typer.Option(7, "--min-score", help="Minimum fit score used for apply-ready stats."),
+) -> None:
     """Show pipeline statistics from the database."""
     _bootstrap()
 
-    from applypilot.database import get_stats
+    from applypilot.database import get_stats, get_apply_queue_stats
 
     stats = get_stats()
 
@@ -347,10 +392,40 @@ def status() -> None:
         lane_table.add_column("Lane")
         lane_table.add_column("Count", justify="right")
 
-        for lane, count in stats["by_lane"]:
-            lane_table.add_row(lane, str(count))
+        for lane_name, count in stats["by_lane"]:
+            lane_table.add_row(lane_name, str(count))
 
         console.print(lane_table)
+
+    if ready:
+        if lane not in ("primary", "all"):
+            console.print("[red]Invalid --lane value for readiness view. Use 'primary' or 'all'.[/red]")
+            raise typer.Exit(code=1)
+
+        queue_stats = get_apply_queue_stats(min_score=min_score, lane=lane)
+        queue_table = Table(title=f"\nApply Readiness Buckets ({lane})", show_header=True, header_style="bold cyan")
+        queue_table.add_column("Bucket")
+        queue_table.add_column("Count", justify="right")
+        queue_table.add_column("Details")
+
+        queue_table.add_row("Ready", str(queue_stats["ready_count"]), "apply_status null/empty + valid resume/cover PDFs")
+        queue_table.add_row("Invalid artifacts", str(queue_stats["invalid_artifact_count"]), "DB-ready rows missing valid PDFs")
+        queue_table.add_row("Manual", str(queue_stats["manual_count"]), "site configured as manual ATS or rule hit")
+        queue_table.add_row("Avoid", str(queue_stats["avoid_count"]), "company on AVOID list")
+        queue_table.add_row("Manual Review", str(queue_stats["manual_review_count"]), "manual-review buckets")
+        queue_table.add_row("Failed", str(queue_stats["failed_count"]), "blocked by failed outcomes")
+        queue_table.add_row("In progress", str(queue_stats["in_progress_count"]), "currently claimed by worker")
+        queue_table.add_row("Stale in-progress", str(queue_stats["stale_lock_count"]), "older than 60 minutes")
+        console.print(queue_table)
+
+        reasons = queue_stats.get("failed_reasons", {})
+        if reasons:
+            reason_table = Table(title="\nFailed reason breakdown", show_header=True, header_style="bold red")
+            reason_table.add_column("Reason", style="bold")
+            reason_table.add_column("Count", justify="right")
+            for reason, count in sorted(reasons.items(), key=lambda item: item[0]):
+                reason_table.add_row(reason, str(count))
+            console.print(reason_table)
 
     console.print()
 
@@ -371,7 +446,7 @@ def doctor() -> None:
     import shutil
     from applypilot.config import (
         load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
+        SEARCH_CONFIG_PATH, get_chrome_path,
     )
 
     load_env()
