@@ -260,6 +260,8 @@ def build_html(resume: dict) -> str:
 }}
 body {{
     font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "clig" 0;
     font-size: 10pt;
     line-height: 1.35;
     color: #1a1a1a;
@@ -407,6 +409,8 @@ def build_cover_letter_html(text: str) -> str:
 }}
 body {{
     font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "clig" 0;
     font-size: 11pt;
     line-height: 1.45;
     color: #1f2933;
