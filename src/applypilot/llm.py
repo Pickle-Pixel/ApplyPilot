@@ -118,11 +118,36 @@ class LLMClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         active_model = model or self.model
-        payload = {"model": active_model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        token_limit = max_tokens
         _is_local = any(h in self.base_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
         if _is_local and any(tag in active_model.lower() for tag in ("qwen", "glm")):
-            payload["max_tokens"] = max(payload["max_tokens"], 2048)
-        resp = self._client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
+            token_limit = max(token_limit, 2048)
+
+        # Newer OpenAI models (gpt-4.1+, gpt-5.x, o-series) require
+        # max_completion_tokens instead of the legacy max_tokens parameter.
+        # Sending max_tokens to these models returns HTTP 400.
+        _new_param_models = ("gpt-4.1", "gpt-5", "o1", "o3", "o4")
+        model_name = active_model.split("/", 1)[-1].lower()
+        if any(model_name.startswith(p) for p in _new_param_models):
+            token_param: dict[str, int] = {"max_completion_tokens": token_limit}
+        else:
+            token_param = {"max_tokens": token_limit}
+
+        payload = {
+            "model": active_model,
+            "messages": messages,
+            "temperature": temperature,
+            **token_param,
+        }
+
+        resp = self._client.post(
+            f"{self.base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+
+        # 403 on Gemini compat = model not available on compat layer.
+        # Raise a specific sentinel so chat() can switch to native API.
         if resp.status_code == 403 and self._is_gemini:
             raise _GeminiCompatForbidden(resp)
         resp.raise_for_status()

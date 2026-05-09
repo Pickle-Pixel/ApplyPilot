@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Duplicate PDF filename collisions** (#11) - Appended MD5 hash of the job URL to the filename prefix for tailored resumes and cover letters to prevent overwriting when multiple jobs have identical titles.
+- **OpenAI newer models (gpt-4.1+, gpt-5.x, o-series) rejected with HTTP 400** - these models
+  require `max_completion_tokens` instead of the legacy `max_tokens` parameter. `_chat_compat()`
+  now detects the active model prefix and sends the correct parameter automatically.
 
 ### Dispatch log
 
