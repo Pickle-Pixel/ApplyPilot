@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Greenhouse ATS support** - New discovery source for 129 AI/ML startups and tech companies using Greenhouse (Scale AI, Stripe, Figma, Notion, etc.). Uses official Greenhouse Job Board API (`boards-api.greenhouse.io`) for reliable, structured data.
+- **New module**: `src/applypilot/discovery/greenhouse.py` - API-based fetcher with full job descriptions, parallel execution, location filtering, and query matching.
+- **New config**: `src/applypilot/config/greenhouse.yaml` - 129 verified Greenhouse employers organized by category (Core AI, Infrastructure, Fintech, Healthcare, etc.).
+- **User config override** - Users can extend/modify employers via `~/.applypilot/greenhouse.yaml`.
+- **New CLI commands** - `applypilot greenhouse verify|discover|validate|list-employers|add-job` for managing Greenhouse employers.
+- **Pipeline integration** - Greenhouse fetcher runs automatically during `discover` stage alongside JobSpy, Workday, and SmartExtract.
+
 ### Fixed
 - **Duplicate PDF filename collisions** (#11) - Appended MD5 hash of the job URL to the filename prefix for tailored resumes and cover letters to prevent overwriting when multiple jobs have identical titles.
 - **OpenAI newer models (gpt-4.1+, gpt-5.x, o-series) rejected with HTTP 400** - these models

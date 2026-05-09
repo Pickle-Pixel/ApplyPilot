@@ -1,0 +1,419 @@
+# Greenhouse employer registry for ApplyPilot
+# These companies have been verified to use Greenhouse ATS
+# URL format: https://job-boards.greenhouse.io/{company_slug}
+
+employers:
+  # ── Core AI/LLM Companies ────────────────────────────────────────────────
+  
+  scaleai:
+    name: "Scale AI"
+    
+  # ── Infrastructure/Data ──────────────────────────────────────────────────
+  
+  stripe:
+    name: "Stripe"
+    
+  figma:
+    name: "Figma"
+    
+notionhq:
+  name: "Notion"
+    
+  asana:
+    name: "Asana"
+    
+  mongodb:
+    name: "MongoDB"
+    
+  hashicorp:
+    name: "HashiCorp"
+    
+  confluent:
+    name: "Confluent"
+    
+  datadog:
+    name: "Datadog"
+    
+  cloudflare:
+    name: "Cloudflare"
+    
+  # ── Fintech ──────────────────────────────────────────────────────────────
+  
+  robinhood:
+    name: "Robinhood"
+    
+  coinbase:
+    name: "Coinbase"
+    
+  plaid:
+    name: "Plaid"
+    
+  affirm:
+    name: "Affirm"
+    
+  upstart:
+    name: "Upstart"
+    
+  brex:
+    name: "Brex"
+    
+  mercury:
+    name: "Mercury"
+    
+  # ── Productivity/Enterprise ──────────────────────────────────────────────
+  
+  zapier:
+    name: "Zapier"
+    
+  airtable:
+    name: "Airtable"
+    
+  miro:
+    name: "Miro"
+    
+  clickup:
+    name: "ClickUp"
+    
+  loom:
+    name: "Loom"
+    
+  retool:
+    name: "Retool"
+    
+  monday:
+    name: "monday.com"
+    
+  # ── Security/DevTools ────────────────────────────────────────────────────
+  
+  sentry:
+    name: "Sentry"
+    
+  datadog:
+    name: "Datadog"
+    
+  vercel:
+    name: "Vercel"
+    
+  auth0:
+    name: "Auth0"
+    
+  # ── AI/ML Startups (Verified) ────────────────────────────────────────────
+  
+  sierra:
+    name: "Sierra"
+    
+  moveworks:
+    name: "Moveworks"
+    
+  gong:
+    name: "Gong"
+    
+  amplitude:
+    name: "Amplitude"
+    
+  mixpanel:
+    name: "Mixpanel"
+    
+  # ── Healthcare/Biotech ───────────────────────────────────────────────────
+  
+  tempus:
+    name: "Tempus"
+    
+  guardant:
+    name: "Guardant Health"
+    
+  grail:
+    name: "GRAIL"
+    
+  freenome:
+    name: "Freenome"
+    
+  # ── Enterprise Automation ────────────────────────────────────────────────
+  
+  uipath:
+    name: "UiPath"
+    
+  dataiku:
+    name: "Dataiku"
+    
+  # ── Content/Media ────────────────────────────────────────────────────────
+  
+  canva:
+    name: "Canva"
+    
+  docusign:
+    name: "DocuSign"
+    
+  squarespace:
+    name: "Squarespace"
+    
+  # ── Autonomous Systems ───────────────────────────────────────────────────
+  
+  zoox:
+    name: "Zoox"
+    
+  nuro:
+    name: "Nuro"
+    
+  aurora:
+    name: "Aurora Innovation"
+    
+  anduril:
+    name: "Anduril"
+    
+  # ── Additional Verified Companies ────────────────────────────────────────
+  
+  flexport:
+    name: "Flexport"
+    
+  ginkgo:
+    name: "Ginkgo Bioworks"
+    
+  instacart:
+    name: "Instacart"
+    
+  doordash:
+    name: "DoorDash"
+    
+  snowflake:
+    name: "Snowflake"
+    
+  databricks:
+    name: "Databricks"
+    
+  palantir:
+    name: "Palantir"
+    
+  benchling:
+    name: "Benchling"
+    
+  recursiv:
+    name: "Recursion"
+    
+  23andme:
+    name: "23andMe"
+    
+  flatiron:
+    name: "Flatiron Health"
+    
+  oscar:
+    name: "Oscar Health"
+    
+  lemonade:
+    name: "Lemonade"
+    
+  root:
+    name: "Root Insurance"
+    
+  hippo:
+    name: "Hippo Insurance"
+    
+  nextinsurance:
+    name: "Next Insurance"
+    
+  coalition:
+    name: "Coalition"
+    
+  "23andme":
+    name: "23andMe"
+    
+  determinedai:
+    name: "Determined AI"
+    
+  bananaml:
+    name: "Banana ML"
+    
+  baseten:
+    name: "Baseten"
+    
+  replicate:
+    name: "Replicate"
+    
+  synthesia:
+    name: "Synthesia"
+    
+  runway:
+    name: "Runway"
+    
+  stability:
+    name: "Stability AI"
+    
+  jasper:
+    name: "Jasper"
+    
+  writer:
+    name: "Writer"
+    
+  copyai:
+    name: "Copy.ai"
+    
+  ada:
+    name: "Ada"
+    
+  kustomer:
+    name: "Kustomer"
+    
+  cognigy:
+    name: "Cognigy"
+    
+  forethought:
+    name: "Forethought"
+    
+  koreai:
+    name: "Kore.ai"
+    
+  bigpanda:
+    name: "BigPanda"
+    
+  observe:
+    name: "Observe"
+    
+  cresta:
+    name: "Cresta"
+    
+  darktrace:
+    name: "Darktrace"
+    
+  abnormalsecurity:
+    name: "Abnormal Security"
+    
+  perimeterx:
+    name: "PerimeterX"
+    
+  vadesecure:
+    name: "Vade Secure"
+    
+  clearbit:
+    name: "Clearbit"
+    
+  crunchbase:
+    name: "Crunchbase"
+    
+  zoominfo:
+    name: "ZoomInfo"
+    
+  outreach:
+    name: "Outreach"
+    
+  salesloft:
+    name: "SalesLoft"
+    
+  apolloio:
+    name: "Apollo.io"
+    
+  chorusai:
+    name: "Chorus.ai"
+    
+  workato:
+    name: "Workato"
+    
+  n8n:
+    name: "n8n"
+    
+  make:
+    name: "Make"
+    
+  workfusion:
+    name: "WorkFusion"
+    
+  blueprism:
+    name: "Blue Prism"
+    
+  automationanywhere:
+    name: "Automation Anywhere"
+    
+  instabase:
+    name: "Instabase"
+    
+  hyperscience:
+    name: "Hyperscience"
+    
+  veritone:
+    name: "Veritone"
+    
+  alteryx:
+    name: "Alteryx"
+    
+  domino:
+    name: "Domino Data Lab"
+    
+  neptuneai:
+    name: "Neptune.ai"
+    
+  clearml:
+    name: "ClearML"
+    
+  launchdarkly:
+    name: "LaunchDarkly"
+    
+  weave:
+    name: "Weave"
+    
+  wayve:
+    name: "Wayve"
+    
+  appliedintuition:
+    name: "Applied Intuition"
+    
+  shieldai:
+    name: "Shield AI"
+    
+  samsara:
+    name: "Samsara"
+    
+  astranis:
+    name: "Astranis"
+    
+  planetlabs:
+    name: "Planet Labs"
+    
+  pathai:
+    name: "PathAI"
+    
+  paige:
+    name: "Paige"
+    
+  insitro:
+    name: "Insitro"
+    
+  zebra:
+    name: "Zebra Medical Vision"
+    
+  aidoc:
+    name: "Aidoc"
+    
+  vizai:
+    name: "Viz.ai"
+    
+  infermedica:
+    name: "Infermedica"
+    
+  buoyhealth:
+    name: "Buoy Health"
+    
+  khealth:
+    name: "K Health"
+    
+  adahealth:
+    name: "Ada Health"
+    
+  babylonhealth:
+    name: "Babylon Health"
+    
+  veracyte:
+    name: "Veracyte"
+    
+  foundationmedicine:
+    name: "Foundation Medicine"
+    
+  klarna:
+    name: "Klarna"
+    
+  metromile:
+    name: "Metromile"
+    
+  deserve:
+    name: "Deserve"
+    
+  navi:
+    name: "Navi"

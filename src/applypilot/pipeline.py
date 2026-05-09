@@ -61,7 +61,7 @@ _UPSTREAM: dict[str, str | None] = {
 
 def _run_discover(workers: int = 1) -> dict:
     """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
-    stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    stats: dict = {"jobspy": None, "workday": None, "smartextract": None, "greenhouse": None}
 
     # JobSpy
     console.print("  [cyan]JobSpy full crawl...[/cyan]")
@@ -95,6 +95,17 @@ def _run_discover(workers: int = 1) -> dict:
         log.error("Smart extract failed: %s", e)
         console.print(f"  [red]Smart extract error:[/red] {e}")
         stats["smartextract"] = f"error: {e}"
+
+    # Greenhouse ATS scraper
+    console.print("  [cyan]Greenhouse ATS scraper (AI startups)...[/cyan]")
+    try:
+        from applypilot.discovery.greenhouse import search_all
+        new, existing = search_all("", workers=workers)
+        stats["greenhouse"] = f"ok ({new} new, {existing} existing)"
+    except Exception as e:
+        log.error("Greenhouse scraper failed: %s", e)
+        console.print(f"  [red]Greenhouse error:[/red] {e}")
+        stats["greenhouse"] = f"error: {e}"
 
     return stats
 
