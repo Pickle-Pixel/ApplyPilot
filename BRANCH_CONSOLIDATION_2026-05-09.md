@@ -41,6 +41,46 @@ Preserved but not merged:
 - `preserve/pr-48` - large dispatch/web/analyze branch. Skipped because it adds `litellm` and optional web dependencies plus a large dashboard/server surface.
 - `origin/dev` - online branch with LLM-first wizard and `pypdf` dependency; skipped under production-dependency approval gate.
 
+## Gated Branch Intake Addendum
+
+Live online state checked again on 2026-05-09:
+
+- Direct remote branches: `origin/main`, `origin/dev`
+- GitHub PR heads preserved locally: PRs `7`, `8`, `20`, `23`, `24`, `25`, `28`, `29`, `30`, `31`, `34`, `38`, `41`, `47`, `48`
+- GitHub PRs still open after consolidation: `7`, `8`, `20`, `24`, `25`, `28`, `29`, `31`, `38`, `41`
+- GitHub PRs closed but preserved locally: `23`, `30`, `34`, `47`, `48`
+
+Detailed intake for work not merged:
+
+- `preserve/pr-20` / PR 20, open: large OpenCode apply backend expansion.
+  - Scope: changes apply launcher, apply prompts, CLI/config/wizard surfaces, backend implementation, instrumentation, docs, and tests.
+  - Gate: safety-sensitive apply behavior. The branch references OpenCode MCP flows, including Gmail-related MCP wording, which conflicts with the current manual/offline ApplyPilot posture.
+  - Recommended intake: split into a dedicated safety review. Keep only dry-run instrumentation and clearly local/manual backend abstractions unless Darrin explicitly approves a broader apply backend.
+- `preserve/pr-23` / PR 23, closed: older LiteLLM plus onboarding and resume-parser lineage.
+  - Scope: broad LLM rewrite, onboarding changes, resume parser, and tests.
+  - Gate: adds production dependencies including `litellm` and `pypdf`; overlaps heavily with PR 24, PR 30, and `origin/dev`.
+  - Recommended intake: do not merge directly. Mine only specific tests or parser ideas after choosing a single LLM/onboarding lineage.
+- `preserve/pr-24` / PR 24, open: LiteLLM migration.
+  - Scope: custom endpoint/provider compatibility through LiteLLM.
+  - Gate: adds production dependency `litellm~=1.63.0` and touches core model routing.
+  - Recommended intake: requires explicit dependency/model-routing approval. If approved, review against the current OpenAI token compatibility fix already merged from PR 38.
+- `preserve/pr-30` / PR 30, closed: LLM-first onboarding branch.
+  - Scope: wizard/init flow, resume parser, pytest config, LLM prompt path.
+  - Gate: adds `litellm` and `pypdf` production dependencies and overlaps with PR 23 plus `origin/dev`.
+  - Recommended intake: salvage only the resume-parser/onboarding ideas that can run locally and truthfully without changing live scheduler or application behavior.
+- `preserve/pr-34` / PR 34, closed: Gustaf preset/profile branch.
+  - Scope: adds another person's profile, resume, searches, and profile-specific `.env`.
+  - Gate: privacy and repo hygiene. This does not belong in Darrin's local ApplyPilot runtime without explicit reason.
+  - Recommended intake: keep preserved only. Do not merge into the Darrin-focused branch unless converted into sanitized sample fixtures.
+- `preserve/pr-48` / PR 48, closed: dispatch/web/analyze branch.
+  - Scope: large web dashboard/server surface, analysis tools, Jobright-related files, optional web extras, and LiteLLM dependency.
+  - Gate: large scope plus production and optional web dependencies.
+  - Recommended intake: split into independent slices before any merge: analysis-only tools, web UI/server, provider routing, and data-source integrations.
+- `origin/dev`: online dev branch with LLM-first wizard and resume parser.
+  - Scope: smaller than PR 23/30, mainly `src/applypilot/llm.py`, `src/applypilot/wizard/init.py`, and `src/applypilot/wizard/resume_parser.py`.
+  - Gate: adds `pypdf>=4.0` as a production dependency.
+  - Recommended intake: highest-value candidate for a future narrow salvage because it may improve truthful resume onboarding, but only after dependency approval or after rewriting the parser to degrade gracefully without a new required package.
+
 ## Resume Updates
 
 Updated local ApplyPilot resume/profile surfaces only:
