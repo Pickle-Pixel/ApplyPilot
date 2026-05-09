@@ -32,8 +32,10 @@ that auto-advances on 401/429/5xx/timeout. Both are backwards compatible
 with single-model env vars (no commas).
 """
 
+import atexit
 import logging
 import os
+import threading
 import time
 
 import httpx
@@ -43,6 +45,7 @@ log = logging.getLogger(__name__)
 _GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 _GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
 OLLAMA_CLOUD_BASE = "https://ollama.com/v1"
+
 
 
 def _detect_provider() -> tuple[str, str, str]:
@@ -186,7 +189,7 @@ class LLMClient:
                         try:
                             wait = float(retry_after)
                         except (ValueError, TypeError):
-                            wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+                            wait = _RATE_LIMIT_BASE_WAIT * (2**attempt)
                     else:
                         wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
                     log.warning("LLM rate limited (HTTP %s). Wait %ds (retry %d/%d).", resp.status_code, wait, attempt + 1, _MAX_RETRIES)
@@ -223,9 +226,12 @@ _instance: "LLMClient | None" = None
 def get_client() -> LLMClient:
     global _instance
     if _instance is None:
-        base_url, model, api_key = _detect_provider()
-        log.info("LLM provider: %s  model: %s", base_url, model)
-        _instance = LLMClient(base_url, model, api_key)
+        with _lock:
+            if _instance is None:  # double-check locking
+                base_url, model, api_key = _detect_provider()
+                log.info("LLM provider: %s  model: %s", base_url, model)
+                _instance = LLMClient(base_url, model, api_key)
+                atexit.register(_instance.close)
     return _instance
 
 

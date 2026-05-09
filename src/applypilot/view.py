@@ -39,15 +39,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
     # Stats
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     ready = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE full_description IS NOT NULL AND application_url IS NOT NULL"
+        "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL AND application_url IS NOT NULL"
     ).fetchone()[0]
-    scored = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL"
-    ).fetchone()[0]
-    high_fit = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score >= 7"
-    ).fetchone()[0]
+    scored = conn.execute("SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL").fetchone()[0]
+    high_fit = conn.execute("SELECT COUNT(*) FROM jobs WHERE fit_score >= 7").fetchone()[0]
 
     # Score distribution
     score_dist: dict[int, int] = {}
@@ -81,6 +76,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
         FROM jobs
         WHERE fit_score >= 5
         ORDER BY fit_score DESC, site, title
+        LIMIT 500
     """).fetchall()
 
     # Successfully submitted applications
@@ -116,6 +112,15 @@ def generate_dashboard(output_path: str | None = None) -> str:
         "Dice": "#eb1c26", "Glassdoor": "#0caa41",
     }
 
+    def _site_color(site: str) -> str:
+        if site in _KNOWN_COLORS:
+            return _KNOWN_COLORS[site]
+        h = hash(site) % 360
+        return f"hsl({h}, 60%, 45%)"
+
+    colors = {s: _site_color(s) for s in set(j["site"] or "" for j in jobs)}
+    colors.update(_KNOWN_COLORS)
+
     # Score distribution bar chart
     score_bars = ""
     max_count = max(score_dist.values()) if score_dist else 1
@@ -141,10 +146,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
         site_rows += f"""
         <div class="site-row">
           <div class="site-name" style="color:{color}">{escape(site)}</div>
-          <div class="site-nums">{s['total']} jobs &middot; {s['high_fit']} strong fit &middot; avg score {avg}</div>
+          <div class="site-nums">{s["total"]} jobs &middot; {s["high_fit"]} strong fit &middot; avg score {avg}</div>
           <div class="bar-track">
-            <div class="bar-fill" style="width:{s['high_fit']/max(s['total'],1)*100}%;background:{color}"></div>
-            <div class="bar-fill" style="width:{s['mid_fit']/max(s['total'],1)*100}%;background:{color}66"></div>
+            <div class="bar-fill" style="width:{s["high_fit"] / max(s["total"], 1) * 100}%;background:{color}"></div>
+            <div class="bar-fill" style="width:{s["mid_fit"] / max(s["total"], 1) * 100}%;background:{color}66"></div>
           </div>
         </div>"""
 
@@ -158,8 +163,12 @@ def generate_dashboard(output_path: str | None = None) -> str:
                 job_sections += "</div>"
             score_color = "#10b981" if score >= 7 else "#f59e0b"
             score_label = {
-                10: "Perfect Match", 9: "Excellent Fit", 8: "Strong Fit",
-                7: "Good Fit", 6: "Moderate+", 5: "Moderate",
+                10: "Perfect Match",
+                9: "Excellent Fit",
+                8: "Strong Fit",
+                7: "Good Fit",
+                6: "Moderate+",
+                5: "Moderate",
             }.get(score, f"Score {score}")
             count_at_score = score_dist.get(score, 0)
             job_sections += f"""
@@ -265,12 +274,12 @@ def generate_dashboard(output_path: str | None = None) -> str:
         <div class="job-card{card_extra_class}" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}"{applied_attr}>
           {applied_banner}{failed_banner}
           <div class="card-header">
-            <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
+            <span class="score-pill" style="background:{"#10b981" if score >= 7 else "#f59e0b"}">{score}</span>
             <a href="{url}" class="job-title" target="_blank">{title}</a>
           </div>
           <div class="meta-row">{meta_html}</div>
-          {f'<div class="keywords-row">{escape(keywords)}</div>' if keywords else ''}
-          {f'<div class="reasoning-row">{escape(reasoning)}</div>' if reasoning else ''}
+          {f'<div class="keywords-row">{escape(keywords)}</div>' if keywords else ""}
+          {f'<div class="reasoning-row">{escape(reasoning)}</div>' if reasoning else ""}
           <p class="desc-preview">{desc_preview}...</p>
           {"<details class='full-desc-details'><summary class='expand-btn'>Full Description (" + f'{desc_len:,}' + " chars)</summary><div class='full-desc'>" + full_desc_html + "</div></details>" if j["full_description"] else ""}
           <div class="card-footer">

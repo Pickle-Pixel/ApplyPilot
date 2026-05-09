@@ -28,13 +28,21 @@ from applypilot import config
 from applypilot.database import get_connection
 from applypilot.apply import prompt as prompt_mod
 from applypilot.apply.chrome import (
-    launch_chrome, cleanup_worker, kill_all_chrome,
-    reset_worker_dir, cleanup_on_exit, _kill_process_tree,
+    launch_chrome,
+    cleanup_worker,
+    kill_all_chrome,
+    reset_worker_dir,
+    cleanup_on_exit,
+    _kill_process_tree,
     BASE_CDP_PORT,
 )
 from applypilot.apply.dashboard import (
-    init_worker, update_state, add_event, get_state,
-    render_full, get_totals,
+    init_worker,
+    update_state,
+    add_event,
+    get_state,
+    render_full,
+    get_totals,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,7 +86,9 @@ def _extract_result_token(output: str) -> str | None:
 # Blocked sites loaded from config/sites.yaml
 def _load_blocked():
     from applypilot.config import load_blocked_sites
+
     return load_blocked_sites()
+
 
 # How often to poll the DB when the queue is empty (seconds)
 POLL_INTERVAL = config.DEFAULTS["poll_interval"]
@@ -99,6 +109,7 @@ if platform.system() != "Windows":
 # ---------------------------------------------------------------------------
 # MCP config
 # ---------------------------------------------------------------------------
+
 
 def _make_mcp_config(cdp_port: int) -> dict:
     """Build MCP config dict for a specific CDP port."""
@@ -134,8 +145,8 @@ def _build_claude_command(model: str, mcp_config_path: Path) -> list[str]:
 # Database operations
 # ---------------------------------------------------------------------------
 
-def acquire_job(target_url: str | None = None, min_score: int = 7,
-                worker_id: int = 0) -> dict | None:
+
+def acquire_job(target_url: str | None = None, min_score: int = 7, worker_id: int = 0) -> dict | None:
     """Atomically acquire the next job to apply to.
 
     Args:
@@ -146,6 +157,8 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
     Returns:
         Job dict or None if the queue is empty.
     """
+    import sqlite3 as _sqlite3
+
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -248,41 +261,72 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             return None
 
         now = datetime.now(timezone.utc).isoformat()
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE jobs SET apply_status = 'in_progress',
                            agent_id = ?,
                            last_attempted_at = ?
             WHERE url = ?
-        """, (f"worker-{worker_id}", now, row["url"]))
+        """,
+            (f"worker-{worker_id}", now, row["url"]),
+        )
         conn.commit()
 
         return dict(row)
+    except _sqlite3.OperationalError as e:
+        conn.rollback()
+        if "locked" in str(e).lower():
+            logger.warning("DB locked in acquire_job, retrying after backoff...")
+            time.sleep(2)
+            return acquire_job(target_url, min_score, worker_id)
+        raise
     except Exception:
         conn.rollback()
         raise
 
 
-def mark_result(url: str, status: str, error: str | None = None,
-                permanent: bool = False, duration_ms: int | None = None,
-                task_id: str | None = None) -> None:
+def mark_result(
+    url: str,
+    status: str,
+    error: str | None = None,
+    permanent: bool = False,
+    duration_ms: int | None = None,
+    task_id: str | None = None,
+) -> None:
     """Update a job's apply status in the database."""
     conn = get_connection()
     now = datetime.now(timezone.utc).isoformat()
     if status == "applied":
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE jobs SET apply_status = 'applied', applied_at = ?,
                            apply_error = NULL, agent_id = NULL,
                            apply_duration_ms = ?, apply_task_id = ?
             WHERE url = ?
-        """, (now, duration_ms, task_id, url))
+        """,
+            (now, duration_ms, task_id, url),
+        )
     else:
-        attempts = 99 if permanent else "COALESCE(apply_attempts, 0) + 1"
-        conn.execute(f"""
-            UPDATE jobs SET apply_status = ?, apply_error = ?,
-                           apply_attempts = {attempts}, agent_id = NULL,
-                           apply_duration_ms = ?, apply_task_id = ?
-            WHERE url = ?
-        """, (status, error or "unknown", duration_ms, task_id, url))
+        if permanent:
+            conn.execute(
+                """
+                UPDATE jobs SET apply_status = ?, apply_error = ?,
+                               apply_attempts = 99, agent_id = NULL,
+                               apply_duration_ms = ?, apply_task_id = ?
+                WHERE url = ?
+            """,
+                (status, error or "unknown", duration_ms, task_id, url),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE jobs SET apply_status = ?, apply_error = ?,
+                               apply_attempts = COALESCE(apply_attempts, 0) + 1, agent_id = NULL,
+                               apply_duration_ms = ?, apply_task_id = ?
+                WHERE url = ?
+            """,
+                (status, error or "unknown", duration_ms, task_id, url),
+            )
     conn.commit()
 
 
@@ -350,8 +394,8 @@ def release_stale_locks(
 # Utility modes (--gen, --mark-applied, --mark-failed, --reset-failed)
 # ---------------------------------------------------------------------------
 
-def gen_prompt(target_url: str, min_score: int = 7,
-               model: str = "sonnet", worker_id: int = 0) -> Path | None:
+
+def gen_prompt(target_url: str, min_score: int = 7, model: str = "sonnet", worker_id: int = 0) -> Path | None:
     """Generate a prompt file and print the Claude CLI command for manual debugging.
 
     Returns:
@@ -398,17 +442,23 @@ def mark_job(url: str, status: str, reason: str | None = None) -> None:
     conn = get_connection()
     now = datetime.now(timezone.utc).isoformat()
     if status == "applied":
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE jobs SET apply_status = 'applied', applied_at = ?,
                            apply_error = NULL, agent_id = NULL
             WHERE url = ?
-        """, (now, url))
+        """,
+            (now, url),
+        )
     else:
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE jobs SET apply_status = 'failed', apply_error = ?,
                            apply_attempts = 99, agent_id = NULL
             WHERE url = ?
-        """, (reason or "manual", url))
+        """,
+            (reason or "manual", url),
+        )
     conn.commit()
 
 
@@ -528,8 +578,8 @@ def reset_failed() -> int:
 # Per-job execution
 # ---------------------------------------------------------------------------
 
-def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
+
+def run_job(job: dict, port: int, worker_id: int = 0, model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
     """Spawn a Claude Code session for one job application.
 
     Returns:
@@ -561,11 +611,23 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
+    profile = config.load_profile()
+    pwd = profile.get("personal", {}).get("password", "")
+    if pwd:
+        env["APPLYPILOT_SITE_PASSWORD"] = pwd
+
     worker_dir = reset_worker_dir(worker_id)
 
-    update_state(worker_id, status="applying", job_title=job["title"],
-                 company=job.get("site", ""), score=job.get("fit_score", 0),
-                 start_time=time.time(), actions=0, last_action="starting")
+    update_state(
+        worker_id,
+        status="applying",
+        job_title=job["title"],
+        company=job.get("site", ""),
+        score=job.get("fit_score", 0),
+        start_time=time.time(),
+        actions=0,
+        last_action="starting",
+    )
     add_event(f"[W{worker_id}] Starting: {job['title'][:40]} @ {job.get('site', '')}")
 
     worker_log = config.LOG_DIR / f"worker-{worker_id}.log"
@@ -662,9 +724,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                                 lf.write(f"  >> {desc}\n")
                                 ws = get_state(worker_id)
                                 cur_actions = ws.actions if ws else 0
-                                update_state(worker_id,
-                                             actions=cur_actions + 1,
-                                             last_action=desc[:35])
+                                update_state(worker_id, actions=cur_actions + 1, last_action=desc[:35])
                     elif msg_type == "result":
                         stats = {
                             "input_tokens": msg.get("usage", {}).get("input_tokens", 0),
@@ -773,10 +833,16 @@ def _to_db_state(parsed_result: ApplyResultLike) -> tuple[str, str | None, bool]
 # Worker loop
 # ---------------------------------------------------------------------------
 
-def worker_loop(worker_id: int = 0, limit: int = 1,
-                target_url: str | None = None,
-                min_score: int = 7, headless: bool = False,
-                model: str = "sonnet", dry_run: bool = False) -> tuple[int, int]:
+
+def worker_loop(
+    worker_id: int = 0,
+    limit: int = 1,
+    target_url: str | None = None,
+    min_score: int = 7,
+    headless: bool = False,
+    model: str = "sonnet",
+    dry_run: bool = False,
+) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -802,19 +868,16 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         if not continuous and jobs_done >= limit:
             break
 
-        update_state(worker_id, status="idle", job_title="", company="",
-                     last_action="waiting for job", actions=0)
+        update_state(worker_id, status="idle", job_title="", company="", last_action="waiting for job", actions=0)
 
-        job = acquire_job(target_url=target_url, min_score=min_score,
-                          worker_id=worker_id)
+        job = acquire_job(target_url=target_url, min_score=min_score, worker_id=worker_id)
         if not job:
             if not continuous:
                 add_event(f"[W{worker_id}] Queue empty")
                 update_state(worker_id, status="done", last_action="queue empty")
                 break
             empty_polls += 1
-            update_state(worker_id, status="idle",
-                         last_action=f"polling ({empty_polls})")
+            update_state(worker_id, status="idle", last_action=f"polling ({empty_polls})")
             if empty_polls == 1:
                 add_event(f"[W{worker_id}] Queue empty, polling every {POLL_INTERVAL}s...")
             # Use Event.wait for interruptible sleep
@@ -891,10 +954,18 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 # Main entry point (called from cli.py)
 # ---------------------------------------------------------------------------
 
-def main(limit: int = 1, target_url: str | None = None,
-         min_score: int = 7, headless: bool = False, model: str = "sonnet",
-         dry_run: bool = False, continuous: bool = False,
-         poll_interval: int = 60, workers: int = 1) -> None:
+
+def main(
+    limit: int = 1,
+    target_url: str | None = None,
+    min_score: int = 7,
+    headless: bool = False,
+    model: str = "sonnet",
+    dry_run: bool = False,
+    continuous: bool = False,
+    poll_interval: int = 60,
+    workers: int = 1,
+) -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -987,13 +1058,11 @@ def main(limit: int = 1, target_url: str | None = None,
                 if effective_limit:
                     base = effective_limit // workers
                     extra = effective_limit % workers
-                    limits = [base + (1 if i < extra else 0)
-                              for i in range(workers)]
+                    limits = [base + (1 if i < extra else 0) for i in range(workers)]
                 else:
                     limits = [0] * workers  # continuous mode
 
-                with ThreadPoolExecutor(max_workers=workers,
-                                        thread_name_prefix="apply-worker") as executor:
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="apply-worker") as executor:
                     futures = {
                         executor.submit(
                             worker_loop,
@@ -1025,10 +1094,7 @@ def main(limit: int = 1, target_url: str | None = None,
             live.update(render_full())
 
         totals = get_totals()
-        console.print(
-            f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
-            f"(${totals['cost']:.3f})[/bold]"
-        )
+        console.print(f"\n[bold]Done: {total_applied} applied, {total_failed} failed (${totals['cost']:.3f})[/bold]")
         console.print(f"Logs: {config.LOG_DIR}")
 
     except KeyboardInterrupt:

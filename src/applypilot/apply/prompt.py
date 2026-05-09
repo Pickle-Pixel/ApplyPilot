@@ -74,13 +74,15 @@ def _build_profile_summary(profile: dict) -> str:
     lines.append(f"Available: {avail.get('earliest_start_date', 'Immediately')}")
 
     # Standard responses
-    lines.extend([
-        "Age 18+: Yes",
-        "Background Check: Yes",
-        "Felony: No",
-        "Previously Worked Here: No",
-        "How Heard: Online Job Board",
-    ])
+    lines.extend(
+        [
+            "Age 18+: Yes",
+            "Background Check: Yes",
+            "Felony: No",
+            "Previously Worked Here: No",
+            "How Heard: Online Job Board",
+        ]
+    )
 
     # EEO
     lines.append(f"Gender: {eeo.get('gender', 'Decline to self-identify')}")
@@ -173,7 +175,7 @@ def _build_screening_section(profile: dict) -> str:
     return f"""== SCREENING QUESTIONS (be strategic) ==
 Hard facts -> answer truthfully from the profile. No guessing. This includes:
   - Location/relocation: lives in {city}, cannot relocate
-  - Work authorization: {work_auth.get('legally_authorized_to_work', 'see profile')}
+  - Work authorization: {work_auth.get("legally_authorized_to_work", "see profile")}
   - Citizenship, clearance, licenses, certifications: answer from profile only
   - Criminal/background: answer from profile only
 
@@ -202,9 +204,11 @@ def _build_hard_rules(profile: dict) -> str:
     if permit_type:
         work_auth_rule = f"Work auth: {permit_type}. Sponsorship needed: {sponsorship}."
 
-    name_rule = f'Name: Legal name = {full_name}.'
+    name_rule = f"Name: Legal name = {full_name}."
     if preferred_name and preferred_name != full_name.split()[0]:
-        name_rule += f' Preferred name = {preferred_name}. Use "{display_name}" unless a field specifically says "legal name".'
+        name_rule += (
+            f' Preferred name = {preferred_name}. Use "{display_name}" unless a field specifically says "legal name".'
+        )
 
     return f"""== HARD RULES (never break these) ==
 1. Never lie about: citizenship, work authorization, criminal history, education credentials, security clearance, licenses.
@@ -299,9 +303,7 @@ try audio/image puzzle workarounds. Output RESULT:CAPTCHA immediately so the
 operator can handle the job manually or with a separate approved local helper."""
 
 
-def build_prompt(job: dict, tailored_resume: str,
-                 cover_letter: str | None = None,
-                 dry_run: bool = False) -> str:
+def build_prompt(job: dict, tailored_resume: str, cover_letter: str | None = None, dry_run: bool = False) -> str:
     """Build the full instruction prompt for the apply agent.
 
     Loads the user profile and search config internally. All personal data
@@ -382,6 +384,7 @@ def build_prompt(job: dict, tailored_resume: str,
 
     # SSO domains the agent cannot sign into (loaded from config/sites.yaml)
     from applypilot.config import load_blocked_sso
+
     blocked_sso = load_blocked_sso()
 
     # Dry-run: override mission and submit instruction. Keep this very explicit:
@@ -417,10 +420,10 @@ def build_prompt(job: dict, tailored_resume: str,
     prompt = f"""You are an autonomous job application agent. Your ONE mission: get this candidate an interview. You have all the information and tools. Think strategically. Act decisively. {mission_instruction}
 
 == JOB ==
-URL: {job.get('application_url') or job['url']}
-Title: {job['title']}
-Company: {job.get('site', 'Unknown')}
-Fit Score: {job.get('fit_score', 'N/A')}/10
+URL: {job.get("application_url") or job["url"]}
+Title: {job["title"]}
+Company: {job.get("site", "Unknown")}
+Fit Score: {job.get("fit_score", "N/A")}/10
 
 == FILES ==
 Resume PDF (upload this): {pdf_path}
@@ -524,7 +527,7 @@ If the posting does NOT match the AI-trainer lane:
    - Do not send email from this agent. Output RESULT:FAILED:email_application_manual_approval_required.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, output RESULT:CAPTCHA.
 5. Login wall?
-   5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
+   5a. FIRST: check the URL. If you landed on {", ".join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
    5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
    5c. Regular login form (employer's own site)? Do not use or expose stored passwords. If already signed in, continue. If credentials are required, output RESULT:LOGIN_ISSUE.
    5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, output RESULT:CAPTCHA.
@@ -567,7 +570,7 @@ RESULT:FAILED:reason -- any other failure (brief reason)
 - Dropdown won't fill? browser_click to open it, then browser_click the option.
 - Checkbox won't check via fill_form? Use browser_click on it instead. Snapshot to verify.
 - Phone field with country prefix: just type digits {phone_digits}
-- Date fields: {datetime.now().strftime('%m/%d/%Y')}
+- Date fields: {datetime.now().strftime("%m/%d/%Y")}
 - Validation errors after submit? Take BOTH snapshot AND screenshot. Snapshot shows text errors, screenshot shows red-highlighted fields. Fix all, retry.
 - Honeypot fields (hidden, "leave blank"): skip them.
 - Format-sensitive fields: read the placeholder text, match it exactly.

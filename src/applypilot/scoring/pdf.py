@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 # ── Resume Parser ────────────────────────────────────────────────────────
 
+
 def parse_resume(text: str) -> dict:
     """Parse a structured text resume into sections.
 
@@ -127,9 +128,7 @@ def parse_entries(text: str) -> list[dict]:
             if current:
                 current["bullets"].append(stripped[2:].strip())
         elif current is None or (
-            not stripped.startswith("-")
-            and not stripped.startswith("\u2022")
-            and len(current.get("bullets", [])) > 0
+            not stripped.startswith("-") and not stripped.startswith("\u2022") and len(current.get("bullets", [])) > 0
         ):
             # New entry
             if current:
@@ -352,8 +351,8 @@ li {{
 </head>
 <body>
 <div class="header">
-    <div class="name">{resume['name']}</div>
-    <div class="title">{resume['title']}</div>
+    <div class="name">{resume["name"]}</div>
+    <div class="title">{resume["title"]}</div>
     {location_html}
     <div class="contact">{contact_html}</div>
 </div>
@@ -368,6 +367,7 @@ li {{
 
 
 # ── PDF Renderer ─────────────────────────────────────────────────────────
+
 
 def render_pdf(html: str, output_path: str) -> None:
     """Render HTML to PDF using Playwright's headless Chromium.
@@ -429,9 +429,8 @@ p {{
 
 # ── Public API ───────────────────────────────────────────────────────────
 
-def convert_to_pdf(
-    text_path: Path, output_path: Path | None = None, html_only: bool = False
-) -> Path:
+
+def convert_to_pdf(text_path: Path, output_path: Path | None = None, html_only: bool = False) -> Path:
     """Convert a text resume/cover letter to PDF.
 
     Args:
