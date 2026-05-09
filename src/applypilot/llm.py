@@ -9,14 +9,27 @@ Auto-detects provider from environment:
 
 LLM_MODEL env var overrides the model name for the default provider.
 
-Per-stage model routing (preferred for the pipeline):
+Per-stage model routing with fallback chains (preferred for the pipeline):
   APPLYPILOT_MODEL_TAILOR
   APPLYPILOT_MODEL_COVER_LETTER
   APPLYPILOT_MODEL_ENRICH
-  APPLYPILOT_MODEL_SCORE_FALLBACK
-Resolved by get_stage_client(stage). Models containing ":cloud" auto-route
-to Ollama Cloud when OLLAMA_API_KEY is set; otherwise the default client
-is used. Use client.chat(messages, model=<id>) to override per call.
+  APPLYPILOT_MODEL_SCORE
+  APPLYPILOT_MODEL_SCORE_FALLBACK  (legacy alias, still honored)
+
+Each value may be a single model id OR a comma-separated chain of fallback
+tiers. Chain entries use a provider prefix to pick the client:
+  - bare id or '*:cloud'           -> Ollama Cloud         (OLLAMA_API_KEY)
+  - 'nvidia/<model>'               -> NVIDIA cloud         (NVIDIA_API_KEY)
+  - 'cerebras/<model>'             -> Cerebras             (CEREBRAS_API_KEY
+                                                            or LLM_API_KEY)
+  - 'ollama:<model>'               -> local Ollama         (OLLAMA_HOST or
+                                                            localhost:11434)
+  - 'groq/<model>'                 -> Groq cloud (reserved, GROQ_API_KEY)
+
+Use get_stage_client(stage, skip=N) to walk the chain (skip past first N
+tiers), or chat_with_fallback(stage, messages, ...) for stage-aware retry
+that auto-advances on 401/429/5xx/timeout. Both are backwards compatible
+with single-model env vars (no commas).
 """
 
 import logging
@@ -61,7 +74,9 @@ def _detect_provider() -> tuple[str, str, str]:
 
 
 _MAX_RETRIES = 5
-_TIMEOUT = 120
+# 2026-04-28: bumped from 120 -> 300 because Kimi K2.6 with max_tokens=6144
+# can take 90-180s on a long cover-letter prompt (reasoning model).
+_TIMEOUT = 300
 _RATE_LIMIT_BASE_WAIT = 10
 
 
@@ -189,46 +204,285 @@ def get_client() -> LLMClient:
     return _instance
 
 
-_ollama_cloud_client: "LLMClient | None" = None
+# ── Provider abstraction (multi-tier fallback) ────────────────────────────
+#
+# Each chain entry like 'nvidia/llama-3.1-405b-instruct' or 'ollama:llama3.1:8b'
+# is parsed into (provider, model_name). The provider determines which OpenAI-
+# compatible base URL and API key env var to use. Auth is checked at resolve
+# time so unconfigured tiers are skipped silently — the actual API call only
+# happens when a caller invokes .chat() on the returned client.
+
+NVIDIA_CLOUD_BASE = "https://integrate.api.nvidia.com/v1"
+CEREBRAS_CLOUD_BASE = "https://api.cerebras.ai/v1"
+GROQ_CLOUD_BASE = "https://api.groq.com/openai/v1"
+OLLAMA_LOCAL_DEFAULT = "http://localhost:11434/v1"
 
 
-def _get_ollama_cloud_client(model: str) -> LLMClient:
-    global _ollama_cloud_client
-    api_key = os.environ.get("OLLAMA_API_KEY", "")
-    if not api_key:
-        raise RuntimeError(
-            "OLLAMA_API_KEY is not set. It is persisted as a Windows user-scope "
-            "env var on this machine; new shells inherit it. If running from an "
-            "IDE, restart the integrated terminal."
-        )
-    if _ollama_cloud_client is None:
-        log.info("LLM provider: %s (Ollama Cloud) initial model: %s", OLLAMA_CLOUD_BASE, model)
-        _ollama_cloud_client = LLMClient(OLLAMA_CLOUD_BASE, model, api_key)
-    return _ollama_cloud_client
+def _parse_model_id(model_id: str) -> tuple[str, str]:
+    """Return (provider, model_name) for a chain entry.
+
+    Provider is one of: 'ollama_cloud', 'nvidia', 'cerebras', 'ollama_local',
+    'groq', or 'default' (route through the auto-detected get_client()).
+    """
+    mid = model_id.strip()
+    if "/" in mid:
+        prefix, rest = mid.split("/", 1)
+        if prefix == "nvidia":
+            return ("nvidia", rest)
+        if prefix == "cerebras":
+            return ("cerebras", rest)
+        if prefix == "groq":
+            return ("groq", rest)
+    if mid.startswith("ollama:"):
+        return ("ollama_local", mid[len("ollama:"):])
+    # 2026-04-28: explicit prefix for Ollama Cloud catalog slugs that don't
+    # carry a ':cloud' suffix (e.g. 'deepseek-v4-pro', 'kimi-k2:1t').
+    if mid.startswith("ocloud:"):
+        return ("ollama_cloud", mid[len("ocloud:"):])
+    if ":cloud" in mid:
+        return ("ollama_cloud", mid)
+    return ("default", mid)
 
 
-def get_stage_client(stage: str):
-    """Return (client, model) for a pipeline stage.
+# Per-(base_url, api_key) client cache — reused across stages so we don't
+# rebuild httpx connection pools on every resolve.
+_client_cache: "dict[tuple[str, str], LLMClient]" = {}
 
-    Resolution order for the model id:
-      1. APPLYPILOT_MODEL_<STAGE> (e.g. APPLYPILOT_MODEL_TAILOR)
-      2. APPLYPILOT_MODEL (global override)
-      3. LLM_MODEL (legacy global)
-      4. The default client's bound model
 
-    If the resolved model contains ':cloud' and OLLAMA_API_KEY is set,
-    routes to Ollama Cloud. Otherwise routes to the default client.
+def _get_or_make_client(base_url: str, api_key: str, placeholder_model: str) -> LLMClient:
+    """Fetch (or build) the LLMClient bound to (base_url, api_key)."""
+    key = (base_url, api_key)
+    client = _client_cache.get(key)
+    if client is None:
+        log.info("LLM client init: %s (model placeholder: %s)", base_url, placeholder_model)
+        client = LLMClient(base_url, placeholder_model, api_key)
+        _client_cache[key] = client
+    return client
+
+
+def _resolve_provider_client(provider: str, model: str) -> "LLMClient | None":
+    """Build the LLMClient for a tier, or return None if its auth is missing.
+
+    Never makes an outbound API call — this is a config check only. The actual
+    API call is the caller's responsibility (which is when failures surface).
+    """
+    if provider == "ollama_cloud":
+        api_key = os.environ.get("OLLAMA_API_KEY", "")
+        if not api_key:
+            return None
+        return _get_or_make_client(OLLAMA_CLOUD_BASE, api_key, model)
+
+    if provider == "nvidia":
+        api_key = os.environ.get("NVIDIA_API_KEY", "")
+        if not api_key:
+            return None
+        return _get_or_make_client(NVIDIA_CLOUD_BASE, api_key, model)
+
+    if provider == "cerebras":
+        # CEREBRAS_API_KEY is preferred; fall back to legacy LLM_API_KEY
+        # since Darrin's existing .env binds Cerebras under that name.
+        api_key = os.environ.get("CEREBRAS_API_KEY") or os.environ.get("LLM_API_KEY", "")
+        if not api_key:
+            return None
+        return _get_or_make_client(CEREBRAS_CLOUD_BASE, api_key, model)
+
+    if provider == "groq":
+        # Reserved tier — parser is wired but no live integration yet.
+        api_key = os.environ.get("GROQ_API_KEY", "")
+        if not api_key:
+            return None
+        return _get_or_make_client(GROQ_CLOUD_BASE, api_key, model)
+
+    if provider == "ollama_local":
+        host = os.environ.get("OLLAMA_HOST", OLLAMA_LOCAL_DEFAULT).rstrip("/")
+        if not host.endswith("/v1"):
+            host = host + "/v1"
+        # Local Ollama needs no auth; key in cache is "" so all local-Ollama
+        # tiers across stages share the same client.
+        return _get_or_make_client(host, "", model)
+
+    if provider == "default":
+        # Auto-detected provider (Cerebras / Gemini / OpenAI / Ollama Cloud
+        # depending on env). Raises if nothing is configured.
+        try:
+            return get_client()
+        except RuntimeError:
+            return None
+
+    return None
+
+
+def get_stage_client(stage: str, skip: int = 0) -> tuple["LLMClient", str]:
+    """Return (client, model_id) for a pipeline stage, walking the chain.
+
+    APPLYPILOT_MODEL_<STAGE> is the primary source. It may be a single
+    model id or a comma-separated fallback chain. `skip=N` advances past
+    the first N tiers (use after a tier fails at call time).
+
+    Resolution order for the env value:
+      1. APPLYPILOT_MODEL_<STAGE>
+      2. APPLYPILOT_MODEL_<STAGE>_FALLBACK (legacy alias)
+      3. APPLYPILOT_MODEL (global override)
+      4. LLM_MODEL (legacy global)
+      5. Auto-detected default client + its bound model
+
+    Tiers whose auth is missing are skipped silently (logged at DEBUG).
+    Raises RuntimeError if every reachable tier is unconfigured AND no
+    default client is available.
     """
     stage_env = f"APPLYPILOT_MODEL_{stage.upper()}"
-    model = (
+    legacy_env = f"APPLYPILOT_MODEL_{stage.upper()}_FALLBACK"
+    raw = (
         os.environ.get(stage_env)
+        or os.environ.get(legacy_env)
         or os.environ.get("APPLYPILOT_MODEL")
         or os.environ.get("LLM_MODEL")
         or ""
-    )
-    client = get_client()
-    if model and ":cloud" in model:
-        if os.environ.get("OLLAMA_API_KEY"):
-            return _get_ollama_cloud_client(model), model
+    ).strip()
+
+    if not raw:
+        # No stage env at all — fall straight back to the auto-detected client.
+        if skip > 0:
+            raise RuntimeError(
+                f"Stage {stage}: no fallback tiers configured (skip={skip})."
+            )
+        client = get_client()
         return client, client.model
-    return client, (model or client.model)
+
+    tiers = [m.strip() for m in raw.split(",") if m.strip()]
+
+    for idx in range(skip, len(tiers)):
+        model_id = tiers[idx]
+        provider, model_name = _parse_model_id(model_id)
+        client = _resolve_provider_client(provider, model_name)
+        if client is not None:
+            return client, model_name
+        log.debug(
+            "Stage %s: tier %d (%s) skipped — provider %s unconfigured.",
+            stage, idx, model_id, provider,
+        )
+
+    # All explicit tiers were unresolvable. For backwards-compat with the
+    # prior single-':cloud'-model-without-OLLAMA_API_KEY behavior, fall back
+    # to the auto-detected default client on first attempt only. A skip > 0
+    # caller is in cross-tier retry mode and must not silently re-use a
+    # provider that already failed.
+    if skip == 0:
+        try:
+            client = get_client()
+            log.warning(
+                "Stage %s: all explicit tiers unconfigured; using default client (%s @ %s).",
+                stage, client.model, client.base_url,
+            )
+            return client, client.model
+        except RuntimeError:
+            pass
+
+    raise RuntimeError(
+        f"Stage {stage}: all fallback tiers exhausted "
+        f"(skip={skip}, total={len(tiers)})."
+    )
+
+
+# ── Stage-aware fallback chat helper ──────────────────────────────────────
+#
+# Wraps client.chat() with cross-tier retry. On any HTTPStatusError or
+# TimeoutException, advances `skip` and re-resolves to the next tier.
+# Total attempts capped at _FALLBACK_MAX_ATTEMPTS to bound the blast radius
+# when every tier is dark.
+
+_FALLBACK_MAX_ATTEMPTS = 3
+
+
+def chat_with_fallback(
+    stage: str,
+    messages: list,
+    *,
+    temperature: float = 0.0,
+    max_tokens: int = 4096,
+    max_attempts: int = _FALLBACK_MAX_ATTEMPTS,
+) -> str:
+    """Stage-aware chat with cross-tier fallback on transient/auth failures.
+
+    The underlying LLMClient.chat() already retries 429/503 internally with
+    backoff; this wrapper handles the next layer up — when chat() exhausts
+    its retries (or hits 401/4xx/5xx that don't retry), we advance to the
+    next tier in APPLYPILOT_MODEL_<STAGE> and try again.
+
+    Each attempt is logged on a stage-specific logger
+    (`applypilot.llm.stage.<stage>`) with which tier was used and elapsed
+    time, so it is easy to tell which provider actually served a given run.
+
+    Args:
+        stage:        Stage name (e.g. 'TAILOR', 'COVER_LETTER', 'ENRICH', 'SCORE').
+        messages:     Chat-format message list passed straight to .chat().
+        temperature:  Sampling temperature (passed through).
+        max_tokens:   Token budget (passed through).
+        max_attempts: Hard cap on total tries across all tiers (default 3).
+
+    Returns:
+        The string response from the first tier that succeeds.
+
+    Raises:
+        RuntimeError: If every tier within max_attempts failed.
+    """
+    stage_log = logging.getLogger(f"applypilot.llm.stage.{stage.lower()}")
+    last_exc: Exception | None = None
+
+    for attempt in range(max_attempts):
+        try:
+            client, model = get_stage_client(stage, skip=attempt)
+        except RuntimeError as exc:
+            last_exc = exc
+            stage_log.warning(
+                "Stage %s: no more tiers at skip=%d — %s", stage, attempt, exc,
+            )
+            break
+
+        t0 = time.time()
+        try:
+            resp = client.chat(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                model=model,
+            )
+            elapsed = time.time() - t0
+            stage_log.info(
+                "Stage %s tier=%d OK model=%s base=%s elapsed=%.1fs",
+                stage, attempt, model, client.base_url, elapsed,
+            )
+            return resp
+        except httpx.HTTPStatusError as exc:
+            elapsed = time.time() - t0
+            last_exc = exc
+            status = exc.response.status_code
+            stage_log.warning(
+                "Stage %s tier=%d FAIL model=%s base=%s status=%s elapsed=%.1fs",
+                stage, attempt, model, client.base_url, status, elapsed,
+            )
+            continue
+        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            elapsed = time.time() - t0
+            last_exc = exc
+            stage_log.warning(
+                "Stage %s tier=%d FAIL model=%s base=%s err=%s elapsed=%.1fs",
+                stage, attempt, model, client.base_url,
+                type(exc).__name__, elapsed,
+            )
+            continue
+        except RuntimeError as exc:
+            # LLMClient.chat raises RuntimeError once internal retries are
+            # exhausted; treat that as a tier failure and advance.
+            elapsed = time.time() - t0
+            last_exc = exc
+            stage_log.warning(
+                "Stage %s tier=%d FAIL model=%s base=%s err=RuntimeError elapsed=%.1fs",
+                stage, attempt, model, client.base_url, elapsed,
+            )
+            continue
+
+    raise RuntimeError(
+        f"Stage {stage}: all fallback tiers failed within "
+        f"{max_attempts} attempts."
+    ) from last_exc

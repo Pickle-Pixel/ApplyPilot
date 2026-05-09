@@ -6,7 +6,6 @@ personal data is loaded from the user's profile -- nothing is hardcoded.
 """
 
 import logging
-import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -196,7 +195,6 @@ def _build_hard_rules(profile: dict) -> str:
     display_name = f"{preferred_name} {preferred_last}".strip() if preferred_last else preferred_name
 
     # Build work auth rule dynamically
-    auth_info = work_auth.get("legally_authorized_to_work", "")
     sponsorship = work_auth.get("require_sponsorship", "")
     permit_type = work_auth.get("work_permit_type", "")
 
@@ -215,24 +213,21 @@ def _build_hard_rules(profile: dict) -> str:
 
 
 def _build_captcha_section() -> str:
-    """Build the CAPTCHA detection and solving instructions.
+    """Build CAPTCHA detection and manual-handoff instructions.
 
-    Reads the CapSolver API key from environment. The CAPTCHA section
-    contains no personal data -- it's the same for every user.
+    Never expose CAPTCHA provider secrets in prompts or browser scripts.
     """
     config.load_env()
-    capsolver_key = os.environ.get("CAPSOLVER_API_KEY", "")
+    capsolver_status = "configured" if config.os.environ.get("CAPSOLVER_API_KEY") else "not configured"
 
     return f"""== CAPTCHA ==
-You solve CAPTCHAs via the CapSolver REST API. No browser extension. You control the entire flow.
-API key: {capsolver_key or 'NOT CONFIGURED — skip to MANUAL FALLBACK for all CAPTCHAs'}
+CAPTCHA provider status: {capsolver_status}.
+Provider key: withheld from prompt.
 API base: https://api.capsolver.com
 
-CRITICAL RULE: When ANY CAPTCHA appears (hCaptcha, reCAPTCHA, Turnstile -- regardless of what it looks like visually), you MUST:
-1. Run CAPTCHA DETECT to get the type and sitekey
-2. Run CAPTCHA SOLVE (createTask -> poll -> inject) with the CapSolver API
-3. ONLY go to MANUAL FALLBACK if CapSolver returns errorId > 0
-Do NOT skip the API call based on what the CAPTCHA looks like. CapSolver solves CAPTCHAs server-side -- it does NOT need to see or interact with images, puzzles, or games. Even "drag the pipe" or "click all traffic lights" hCaptchas are solved via API token, not visually. ALWAYS try the API first.
+CRITICAL RULE: When ANY CAPTCHA appears, run CAPTCHA DETECT only. Do not call
+external CAPTCHA APIs or expose secrets in page scripts. Output RESULT:CAPTCHA
+so the operator can handle it manually or with a local helper outside this prompt.
 
 --- CAPTCHA DETECT ---
 Run this browser_evaluate after every navigation, Apply/Submit/Login click, or when a page feels stuck.
@@ -295,126 +290,13 @@ browser_evaluate function: () => {{{{
 Result actions:
 - null -> no CAPTCHA. Continue normally.
 - "turnstile_script_only" -> browser_wait_for time: 3, re-run detect.
-- Any other type -> proceed to CAPTCHA SOLVE below.
+- Any other type -> output RESULT:CAPTCHA.
 
---- CAPTCHA SOLVE ---
-Three steps: createTask -> poll -> inject. Do each as a separate browser_evaluate call.
-
-STEP 1 -- CREATE TASK (copy this exactly, fill in the 3 placeholders):
-browser_evaluate function: async () => {{{{
-  const r = await fetch('https://api.capsolver.com/createTask', {{{{
-    method: 'POST',
-    headers: {{{{'Content-Type': 'application/json'}}}},
-    body: JSON.stringify({{{{
-      clientKey: '{capsolver_key}',
-      task: {{{{
-        type: 'TASK_TYPE',
-        websiteURL: 'PAGE_URL',
-        websiteKey: 'SITE_KEY'
-      }}}}
-    }}}})
-  }}}});
-  return await r.json();
-}}}}
-
-TASK_TYPE values (use EXACTLY these strings):
-  hcaptcha     -> HCaptchaTaskProxyLess
-  recaptchav2  -> ReCaptchaV2TaskProxyLess
-  recaptchav3  -> ReCaptchaV3TaskProxyLess
-  turnstile    -> AntiTurnstileTaskProxyLess
-  funcaptcha   -> FunCaptchaTaskProxyLess
-
-PAGE_URL = the url from detect result. SITE_KEY = the sitekey from detect result.
-For recaptchav3: add "pageAction": "submit" to the task object (or the actual action found in page scripts).
-For turnstile: add "metadata": {{"action": "...", "cdata": "..."}} if those were in detect result.
-
-Response: {{"errorId": 0, "taskId": "abc123"}} on success.
-If errorId > 0 -> CAPTCHA SOLVE failed. Go to MANUAL FALLBACK.
-
-STEP 2 -- POLL (replace TASK_ID with the taskId from step 1):
-Loop: browser_wait_for time: 3, then run:
-browser_evaluate function: async () => {{{{
-  const r = await fetch('https://api.capsolver.com/getTaskResult', {{{{
-    method: 'POST',
-    headers: {{{{'Content-Type': 'application/json'}}}},
-    body: JSON.stringify({{{{
-      clientKey: '{capsolver_key}',
-      taskId: 'TASK_ID'
-    }}}})
-  }}}});
-  return await r.json();
-}}}}
-
-- status "processing" -> wait 3s, poll again. Max 10 polls (30s).
-- status "ready" -> extract token:
-    reCAPTCHA: solution.gRecaptchaResponse
-    hCaptcha:  solution.gRecaptchaResponse
-    Turnstile: solution.token
-- errorId > 0 or 30s timeout -> MANUAL FALLBACK.
-
-STEP 3 -- INJECT TOKEN (replace THE_TOKEN with actual token string):
-
-For reCAPTCHA v2/v3:
-browser_evaluate function: () => {{{{
-  const token = 'THE_TOKEN';
-  document.querySelectorAll('[name="g-recaptcha-response"]').forEach(el => {{{{ el.value = token; el.style.display = 'block'; }}}});
-  if (window.___grecaptcha_cfg) {{{{
-    const clients = window.___grecaptcha_cfg.clients;
-    for (const key in clients) {{{{
-      const walk = (obj, d) => {{{{
-        if (d > 4 || !obj) return;
-        for (const k in obj) {{{{
-          if (typeof obj[k] === 'function' && k.length < 3) try {{{{ obj[k](token); }}}} catch(e) {{{{}}}}
-          else if (typeof obj[k] === 'object') walk(obj[k], d+1);
-        }}}}
-      }}}};
-      walk(clients[key], 0);
-    }}}}
-  }}}}
-  return 'injected';
-}}}}
-
-For hCaptcha:
-browser_evaluate function: () => {{{{
-  const token = 'THE_TOKEN';
-  const ta = document.querySelector('[name="h-captcha-response"], textarea[name*="hcaptcha"]');
-  if (ta) ta.value = token;
-  document.querySelectorAll('iframe[data-hcaptcha-response]').forEach(f => f.setAttribute('data-hcaptcha-response', token));
-  const cb = document.querySelector('[data-hcaptcha-widget-id]');
-  if (cb && window.hcaptcha) try {{{{ window.hcaptcha.getResponse(cb.dataset.hcaptchaWidgetId); }}}} catch(e) {{{{}}}}
-  return 'injected';
-}}}}
-
-For Turnstile:
-browser_evaluate function: () => {{{{
-  const token = 'THE_TOKEN';
-  const inp = document.querySelector('[name="cf-turnstile-response"], input[name*="turnstile"]');
-  if (inp) inp.value = token;
-  if (window.turnstile) try {{{{ const w = document.querySelector('.cf-turnstile'); if (w) window.turnstile.getResponse(w); }}}} catch(e) {{{{}}}}
-  return 'injected';
-}}}}
-
-For FunCaptcha:
-browser_evaluate function: () => {{{{
-  const token = 'THE_TOKEN';
-  const inp = document.querySelector('#FunCaptcha-Token, input[name="fc-token"]');
-  if (inp) inp.value = token;
-  if (window.ArkoseEnforcement) try {{{{ window.ArkoseEnforcement.setConfig({{{{data: {{{{blob: token}}}}}}}}) }}}} catch(e) {{{{}}}}
-  return 'injected';
-}}}}
-
-After injecting: browser_wait_for time: 2, then snapshot.
-- Widget gone or green check -> success. Click Submit if needed.
-- No change -> click Submit/Verify/Continue button (some sites need it).
-- Still stuck -> token may have expired (~2 min lifetime). Re-run from STEP 1.
-
---- MANUAL FALLBACK ---
-You should ONLY be here if CapSolver createTask returned errorId > 0. If you haven't tried CapSolver yet, GO BACK and try it first.
-If CapSolver genuinely failed (errorId > 0):
-1. Audio challenge: Look for "audio" or "accessibility" button -> click it for an easier challenge.
-2. Text/logic puzzles: Solve them yourself. Think step by step. Common tricks: "All but 9 die" = 9 left. "3 sisters and 4 brothers, how many siblings?" = 7.
-3. Simple text captchas ("What is 3+7?", "Type the word") -> solve them.
-4. All else fails -> Output RESULT:CAPTCHA."""
+--- MANUAL HANDOFF ---
+Do not solve CAPTCHAs from this prompt. Do not call provider APIs, do not paste
+provider keys into browser_evaluate, do not inject CAPTCHA tokens, and do not
+try audio/image puzzle workarounds. Output RESULT:CAPTCHA immediately so the
+operator can handle the job manually or with a separate approved local helper."""
 
 
 def build_prompt(job: dict, tailored_resume: str,
@@ -502,18 +384,37 @@ def build_prompt(job: dict, tailored_resume: str,
     from applypilot.config import load_blocked_sso
     blocked_sso = load_blocked_sso()
 
-    # Preferred display name
-    preferred_name = personal.get("preferred_name", full_name.split()[0])
-    last_name = full_name.split()[-1] if " " in full_name else ""
-    display_name = f"{preferred_name} {last_name}".strip()
-
-    # Dry-run: override submit instruction
+    # Dry-run: override mission and submit instruction. Keep this very explicit:
+    # weaker wording previously let an agent click the final submit button.
     if dry_run:
-        submit_instruction = "IMPORTANT: Do NOT click the final Submit/Apply button. Review the form, verify all fields, then output RESULT:APPLIED with a note that this was a dry run."
+        mission_instruction = (
+            "DRY RUN MODE. Your mission is to navigate, validate eligibility, "
+            "fill safe fields, upload files if needed, and stop before any final "
+            "submission. Do NOT submit the application."
+        )
+        autonomy_instruction = (
+            "If something unexpected happens, continue only while no final "
+            "submission is possible. NEVER click a final Submit/Apply/Send/"
+            "Finish/Complete Application button in dry-run mode."
+        )
+        submit_instruction = (
+            "DRY RUN STOP POINT: Do NOT click the final Submit/Apply/Send/"
+            "Finish/Complete Application button. Do not click any button that "
+            "would transmit the application to the employer. Review the form, "
+            "verify all fields, then output RESULT:DRY_RUN_READY. If the only "
+            "next action is submit, stop there."
+        )
+        post_submit_instruction = (
+            "After stopping before final submit, output RESULT:DRY_RUN_READY. "
+            "Do not run post-submit CAPTCHA steps because there must be no submit."
+        )
     else:
+        mission_instruction = "Submit a complete, accurate application."
+        autonomy_instruction = "If something unexpected happens and these instructions don't cover it, figure it out yourself. You are autonomous. Navigate pages, read content, try buttons, explore the site. The goal is always the same: submit the application. Do whatever it takes to reach that goal."
         submit_instruction = "BEFORE clicking Submit/Apply, take a snapshot and review EVERY field on the page. Verify all data matches the APPLICANT PROFILE and TAILORED RESUME -- name, email, phone, location, work auth, resume uploaded, cover letter if applicable. If anything is wrong or missing, fix it FIRST. Only click Submit after confirming everything is correct."
+        post_submit_instruction = "After submit: browser_snapshot. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, output RESULT:CAPTCHA for manual handoff. Then check for new tabs (browser_tabs action: \"list\"). Switch to newest, close old. Snapshot to confirm submission. Look for \"thank you\" or \"application received\"."
 
-    prompt = f"""You are an autonomous job application agent. Your ONE mission: get this candidate an interview. You have all the information and tools. Think strategically. Act decisively. Submit the application.
+    prompt = f"""You are an autonomous job application agent. Your ONE mission: get this candidate an interview. You have all the information and tools. Think strategically. Act decisively. {mission_instruction}
 
 == JOB ==
 URL: {job.get('application_url') or job['url']}
@@ -535,17 +436,75 @@ Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
 {profile_summary}
 
 == YOUR MISSION ==
-Submit a complete, accurate application. Use the profile and resume as source data -- adapt to fit each form's format.
+{mission_instruction} Use the profile and resume as source data -- adapt to fit each form's format.
 
-If something unexpected happens and these instructions don't cover it, figure it out yourself. You are autonomous. Navigate pages, read content, try buttons, explore the site. The goal is always the same: submit the application. Do whatever it takes to reach that goal.
+{autonomy_instruction}
 
 {hard_rules}
 
 == NEVER DO THESE (immediate RESULT:FAILED if encountered) ==
 - NEVER grant camera, microphone, screen sharing, or location permissions. If a site requests them -> RESULT:FAILED:unsafe_permissions
 - NEVER do video/audio verification, selfie capture, ID photo upload, or biometric anything -> RESULT:FAILED:unsafe_verification
-- NEVER set up a freelancing profile (Mercor, Toptal, Upwork, Fiverr, Turing, etc.). These are contractor marketplaces, not job applications -> RESULT:FAILED:not_a_job_application
-- NEVER agree to hourly/contract rates, availability calendars, or "set your rate" flows. You are applying for FULL-TIME salaried positions only.
+- NEVER set up a generic talent profile / skills marketplace signup that is NOT tied to a specific job posting (e.g. "build your Toptal profile", "create your Upwork bidding account", "join our talent network"). Those are profile builders, not job applications -> RESULT:FAILED:not_a_job_application
+
+== AI TRAINER LANE (CONTRACT WORK ALLOWED) ==
+The candidate WANTS contract / hourly / project-based AI-training work when the
+posting is on a known AI-training platform OR matches AI-training JD signals.
+For roles in this lane, contract / hourly / per-project / "set your rate" pay IS
+acceptable. Do NOT emit RESULT:FAILED:contractor_not_full_time_salaried for them.
+Proceed normally through eligibility, fields, uploads, and review.
+
+Known AI-training platforms (allow contract terms):
+- micro1.ai, jobs.micro1.ai
+- mercor.com, work.mercor.com (specific job URL like /jobs/list_* is a real job)
+- outlier.ai
+- scale.com, remotasks (incl. taskus.com remotasks pools)
+- surge.io, surgehq.ai
+- dataannotation.tech
+- invisible.email, agency.invisible.com, invisible.co
+- handshake.com (incl. aitrainer.work)
+- prolific.com, prolific.co
+- centific.com
+- welocalize.com
+- toloka.ai
+- rws.com, rwsmoravia.com
+- dataforce.com
+- transperfect.com (DataForce TransPerfect)
+- labelbox.com
+- sama.com
+- alignerr.com
+- swooped, prism data, rex.zone
+
+JD-keyword bypass (allow contract terms even on other domains):
+- "AI training" / "AI trainer"
+- "model evaluation" / "LLM evaluator" / "LLM rater" / "AI rater"
+- "data labeling" / "data annotation" / "annotator" / "annotation specialist"
+- "RLHF" / "SFT" / "DPO" / "model feedback"
+- "subject matter expert" / "SME" combined with "AI"
+- "domain expert" combined with "AI" / "model" / "LLM"
+- "search quality rater" / "ads quality rater"
+- "prompt engineer contractor" / "prompt evaluator"
+
+If the posting matches a platform OR a JD keyword above:
+- Hourly pay, contract, freelance, project-based, "set your rate" are FINE.
+- Do not abort on employment-type grounds.
+- Continue the application as you would any other, respecting dry-run and submit gates.
+
+If the posting does NOT match the AI-trainer lane:
+- Standard rule applies: must be FULL-TIME salaried (W-2). If it is contract /
+  hourly / freelance and is NOT in the AI-trainer lane -> RESULT:FAILED:contractor_not_full_time_salaried.
+- NEVER agree to hourly/contract rates, availability calendars, or "set your rate"
+  flows OUTSIDE the AI-trainer lane.
+
+== STILL HARD-BLOCKED (regardless of lane) ==
+- Pure 1099 commission-only / "no base / commission only" / "uncapped commission"
+  with no salary -> RESULT:FAILED:commission_only_disqualifier
+- Phone-heavy roles: "inbound calls" / "outbound calls" / "high call volume" /
+  "call center agent" / "phone-primary" -> RESULT:FAILED:phone_heavy_disqualifier
+- On-call rotation requirements: "on-call rotation" / "24/7 on-call" /
+  "weekend on-call" -> RESULT:FAILED:on_call_disqualifier
+- Generic talent-profile / skill-marketplace signup that is NOT a specific job
+  posting -> RESULT:FAILED:not_a_job_application
 - NEVER install browser extensions, download executables, or run assessment software.
 - NEVER enter payment info, bank details, or SSN/SIN.
 - NEVER click "Allow" on any browser permission popup. Always deny/block.
@@ -559,19 +518,18 @@ If something unexpected happens and these instructions don't cover it, figure it
 
 == STEP-BY-STEP ==
 1. browser_navigate to the job URL.
-2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
+2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, output RESULT:CAPTCHA.
 3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
 4. Find and click the Apply button. If email-only (page says "email resume to X"):
-   - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
-   - Output RESULT:APPLIED. Done.
-   After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
+   - Do not send email from this agent. Output RESULT:FAILED:email_application_manual_approval_required.
+   After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, output RESULT:CAPTCHA.
 5. Login wall?
    5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
    5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
-   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
-   5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
-   5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
+   5c. Regular login form (employer's own site)? Do not use or expose stored passwords. If already signed in, continue. If credentials are required, output RESULT:LOGIN_ISSUE.
+   5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, output RESULT:CAPTCHA.
+   5e. Sign in failed? Output RESULT:LOGIN_ISSUE. Do not create accounts without approval.
+   5f. Need email verification? Output RESULT:FAILED:email_verification_required. Do not read mailbox contents from this agent.
    5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
    5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
 6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
@@ -581,10 +539,11 @@ If something unexpected happens and these instructions don't cover it, figure it
    - Compare every other field to the APPLICANT PROFILE. Fix mismatches. Fill empty fields.
 9. Answer screening questions using the rules above.
 10. {submit_instruction}
-11. After submit: browser_snapshot. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, solve it (the form will auto-submit once the token clears, or you may need to click Submit again). Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
+11. {post_submit_instruction}
 12. Output your result.
 
 == RESULT CODES (output EXACTLY one) ==
+RESULT:DRY_RUN_READY -- dry run reached the final review/submit point without submitting
 RESULT:APPLIED -- submitted successfully
 RESULT:EXPIRED -- job closed or no longer accepting applications
 RESULT:CAPTCHA -- blocked by unsolvable captcha

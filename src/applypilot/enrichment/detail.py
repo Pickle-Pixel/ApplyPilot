@@ -22,10 +22,8 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-from applypilot import config
-from applypilot.config import DB_PATH
-from applypilot.database import get_connection, init_db, ensure_columns
-from applypilot.llm import get_stage_client
+from applypilot.database import init_db
+from applypilot.llm import chat_with_fallback
 
 log = logging.getLogger(__name__)
 
@@ -463,13 +461,12 @@ def extract_with_llm(page, url: str) -> dict:
     )
 
     try:
-        client, _enrich_model = get_stage_client("ENRICH")
         t0 = time.time()
-        raw = client.chat(
+        raw = chat_with_fallback(
+            "ENRICH",
             [{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=4096,
-            model=_enrich_model,
         )
         elapsed = time.time() - t0
         log.info("LLM: %d chars in, %.1fs", len(prompt), elapsed)

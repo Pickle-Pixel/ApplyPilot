@@ -13,6 +13,13 @@ from applypilot.config import APPLICATION_PACK_DIR, load_avoid_companies, is_avo
 from applypilot.database import get_connection
 
 MIN_PDF_BYTES = 1024
+EXCLUDED_APPLY_STATUSES = {
+    "manual",
+    "avoid",
+    "manual_review",
+    "in_progress",
+    "stale_in_progress_orphaned",
+}
 
 
 def _slug(text: str, fallback: str = "job") -> str:
@@ -28,6 +35,24 @@ def _pdf_for(text_path: str | None) -> Path | None:
 
 def _valid_pdf(path: Path | None) -> bool:
     return bool(path and path.is_file() and path.stat().st_size >= MIN_PDF_BYTES)
+
+
+def _blocker_reason_for_status(job: dict) -> str | None:
+    raw_status = (job.get("apply_status") or "").strip().lower()
+    if not raw_status:
+        return None
+    if raw_status == "failed" or raw_status.startswith("failed:"):
+        reason = (job.get("apply_error") or "").strip()
+        if reason:
+            return f"already failed: {reason}"
+        return "already failed"
+    if raw_status in EXCLUDED_APPLY_STATUSES:
+        return f"blocked status: {raw_status}"
+    return f"blocked status: {raw_status}"
+
+
+def _is_ready_status(raw_status: str | None) -> bool:
+    return not (raw_status or "").strip()
 
 
 def _write_next_steps(pack_dir: Path, job: dict, apply_url: str) -> None:
@@ -99,7 +124,8 @@ def export_ready_packs(
     rows = conn.execute(
         f"""
         SELECT title, site, company, fit_score, job_lane, url, application_url,
-               tailored_resume_path, cover_letter_path, apply_status, apply_attempts
+               tailored_resume_path, cover_letter_path, apply_status, apply_attempts,
+               apply_error
         FROM jobs
         WHERE fit_score >= ?
           AND tailored_resume_path IS NOT NULL AND tailored_resume_path <> ''
@@ -133,6 +159,12 @@ def export_ready_packs(
         jobs = filtered
 
     for job in jobs:
+        blocker_reason = None
+        if not _is_ready_status(job.get("apply_status")):
+            blocker_reason = _blocker_reason_for_status(job)
+        if blocker_reason:
+            skips.append({"title": job["title"], "url": job["url"], "reason": blocker_reason})
+            continue
         resume_pdf = _pdf_for(job.get("tailored_resume_path"))
         cover_pdf = _pdf_for(job.get("cover_letter_path"))
         missing = []

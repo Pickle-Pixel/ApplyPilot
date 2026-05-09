@@ -12,6 +12,16 @@ from pathlib import Path
 
 from applypilot.config import DB_PATH
 
+MIN_READY_PDF_BYTES = 1024
+
+
+def _valid_pdf_for_text_path(text_path: str | None) -> bool:
+    """Return true when a text artifact has a non-empty sibling PDF."""
+    if not text_path:
+        return False
+    pdf_path = Path(text_path).with_suffix(".pdf")
+    return pdf_path.is_file() and pdf_path.stat().st_size >= MIN_READY_PDF_BYTES
+
 # Thread-local connection storage — each thread gets its own connection
 # (required for SQLite thread safety with parallel workers)
 _local = threading.local()
@@ -331,6 +341,7 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
         "WHERE tailored_resume_path IS NOT NULL "
         "AND cover_letter_path IS NOT NULL "
         "AND applied_at IS NULL "
+        "AND (apply_status IS NULL OR apply_status = '') "
         "AND url IS NOT NULL "
         "AND COALESCE(job_lane, 'primary') = 'primary'"
     ).fetchone()[0]
@@ -342,6 +353,114 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
     ).fetchone()[0]
 
     return stats
+
+
+def get_apply_queue_stats(
+    conn: sqlite3.Connection | None = None,
+    *,
+    min_score: int = 7,
+    lane: str = "primary",
+) -> dict:
+    """Return structured apply-readiness stats for queue hygiene checks."""
+    conn = conn or get_connection()
+
+    where_clause = [
+        "fit_score >= ?",
+        "tailored_resume_path IS NOT NULL AND tailored_resume_path <> ''",
+        "cover_letter_path IS NOT NULL AND cover_letter_path <> ''",
+        "applied_at IS NULL",
+    ]
+    params: list[object] = [min_score]
+    if lane != "all":
+        where_clause.append("COALESCE(job_lane, 'primary') = ?")
+        params.append(lane)
+
+    base_where = " AND ".join(where_clause)
+
+    def _count(query_suffix: str = "", extra: list[object] | None = None) -> int:
+        tail = f" AND {query_suffix}" if query_suffix else ""
+        q = f"SELECT COUNT(*) FROM jobs WHERE {base_where}{tail}"
+        return conn.execute(q, params + (extra or [])).fetchone()[0]
+
+    def _scan(query_suffix: str, extra: list[object] | None = None):
+        tail = f" AND {query_suffix}" if query_suffix else ""
+        q = f"SELECT apply_error FROM jobs WHERE {base_where}{tail}"
+        return conn.execute(q, params + (extra or [])).fetchall()
+
+    def _ready_artifact_rows():
+        q = (
+            "SELECT tailored_resume_path, cover_letter_path "
+            f"FROM jobs WHERE {base_where} "
+            "AND (apply_status IS NULL OR apply_status = '')"
+        )
+        return conn.execute(q, params).fetchall()
+
+    db_ready_candidates = _count(" (apply_status IS NULL OR apply_status = '')")
+    invalid_artifacts = sum(
+        1
+        for row in _ready_artifact_rows()
+        if not (
+            _valid_pdf_for_text_path(row["tailored_resume_path"])
+            and _valid_pdf_for_text_path(row["cover_letter_path"])
+        )
+    )
+
+    stats = {
+        "ready_count": max(0, db_ready_candidates - invalid_artifacts),
+        "db_ready_candidate_count": db_ready_candidates,
+        "invalid_artifact_count": invalid_artifacts,
+        "manual_count": _count(" apply_status = 'manual'"),
+        "avoid_count": _count(" apply_status = 'avoid'"),
+        "manual_review_count": _count(" apply_status = 'manual_review'"),
+        "in_progress_count": _count(" apply_status = 'in_progress'"),
+        "failed_count": _count(" (apply_status = 'failed' OR apply_status LIKE 'failed:%')"),
+        "stale_lock_count": _count(
+            " apply_status = 'in_progress' AND datetime(last_attempted_at) < datetime('now', '-60 minutes')",
+        ),
+        "blocked_by_status": {
+            "failed": 0,
+            "manual": 0,
+            "avoid": 0,
+            "manual_review": 0,
+            "stale_in_progress_orphaned": 0,
+            "in_progress": 0,
+        },
+        "failed_reasons": {},
+    }
+    stats["blocked_by_status"]["failed"] = stats["failed_count"]
+    stats["blocked_by_status"]["manual"] = stats["manual_count"]
+    stats["blocked_by_status"]["avoid"] = stats["avoid_count"]
+    stats["blocked_by_status"]["manual_review"] = stats["manual_review_count"]
+    stats["blocked_by_status"]["in_progress"] = stats["in_progress_count"]
+    stats["blocked_by_status"]["stale_in_progress_orphaned"] = _count(
+        " apply_status = 'stale_in_progress_orphaned'",
+    )
+
+    for row in _scan(" (apply_status = 'failed' OR apply_status LIKE 'failed:%') AND apply_error IS NOT NULL AND apply_error <> ''"):
+        reason = row[0] or "unknown"
+        stats["failed_reasons"][reason] = stats["failed_reasons"].get(reason, 0) + 1
+
+    return stats
+
+
+def get_ready_to_apply_by_blocker_reason(
+    conn: sqlite3.Connection | None = None,
+    *,
+    min_score: int = 7,
+    lane: str = "primary",
+) -> dict:
+    """Convenience alias for apply-readiness reporting."""
+    return get_apply_queue_stats(conn, min_score=min_score, lane=lane)
+
+
+def get_stale_lock_count(
+    conn: sqlite3.Connection | None = None,
+    *,
+    min_score: int = 7,
+    lane: str = "primary",
+) -> int:
+    """Return count of stale in-progress locks for current lane."""
+    return get_apply_queue_stats(conn, min_score=min_score, lane=lane)["stale_lock_count"]
 
 
 def store_jobs(conn: sqlite3.Connection, jobs: list[dict],

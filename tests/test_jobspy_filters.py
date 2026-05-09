@@ -1,8 +1,14 @@
 import unittest
 
-from applypilot.discovery import jobspy
+try:
+    from applypilot.discovery import jobspy
+    _HAS_JOBSPY = True
+except ModuleNotFoundError:
+    jobspy = None
+    _HAS_JOBSPY = False
 
 
+@unittest.skipIf(not _HAS_JOBSPY, "jobspy dependency is not installed")
 class JobSpyFilterTests(unittest.TestCase):
     def test_load_location_config_supports_nested_location_block(self):
         cfg = {

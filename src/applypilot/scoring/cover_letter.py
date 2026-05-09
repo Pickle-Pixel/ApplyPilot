@@ -5,15 +5,14 @@ postings. All personal data (name, skills, achievements) comes from the user's
 profile at runtime. No hardcoded personal information.
 """
 
-import json
 import logging
 import re
 import time
 from datetime import datetime, timezone
 
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
-from applypilot.database import get_connection, get_jobs_by_stage
-from applypilot.llm import get_stage_client
+from applypilot.database import get_connection
+from applypilot.llm import chat_with_fallback
 from applypilot.scoring.role_signals import (
     filter_role_sensitive_metrics,
     job_targets_insurance_domain,
@@ -86,7 +85,13 @@ STRUCTURE: 3 short paragraphs. Under 250 words. Every sentence must earn its pla
 
 PARAGRAPH 1 (2-3 sentences): Open with a specific thing YOU built that solves THEIR problem. Not "I'm excited about this role." Not "This role aligns with my experience." Start with the work.
 
-PARAGRAPH 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to THIS job. Use ONLY numbers that already appear in the resume or in the approved real-metrics list — NEVER invent a percentage, dollar figure, or count. Frame as solving their problem, not listing your accomplishments. NEVER attribute a bullet from one employer to a different employer (no swapping who did what).{projects_hint}{metrics_hint}
+PARAGRAPH 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to THIS job. Use ONLY numbers that already appear in the resume or in the approved real-metrics list. NEVER invent a percentage, dollar figure, or count. Frame as solving their problem, not listing your accomplishments. NEVER attribute a bullet from one employer to a different employer (no swapping who did what). Echo at least 2 specific keywords or phrases from the job description (tools, certifications, role-specific terms) so the letter mirrors the requirement language; do not paraphrase them away.{projects_hint}{metrics_hint}
+
+JACK HENRY VERB GUARDRAIL (hard rule):
+When discussing Jack Henry & Associates, the role was Tier 2 Technical Support Engineer, NOT a builder/owner role.
+NEVER use these verbs tied to Jack Henry: "built", "designed", "architected", "engineered", "automated", "owned", "implemented", "developed".
+INSTEAD use: "supported", "troubleshot", "queried", "diagnosed", "researched", "documented", "helped implement", "investigated", "resolved", "escalated".
+Same applies to ANY other Tier 2 support role on the resume.
 
 PARAGRAPH 3 (1-2 sentences): One specific thing about the company from the job description (a product, a technical challenge, a team structure). Then close. "Happy to walk through any of this in more detail." or "Let's discuss." Nothing else.
 
@@ -181,7 +186,6 @@ def generate_cover_letter(
 
     avoid_notes: list[str] = []
     letter = ""
-    client, model = get_stage_client("COVER_LETTER")
     cl_prompt_base = _build_cover_letter_prompt(profile, job)
 
     for attempt in range(max_retries + 1):
@@ -201,7 +205,14 @@ def generate_cover_letter(
             )},
         ]
 
-        letter = client.chat(messages, max_tokens=1024, temperature=0.7, model=model)
+        # 2048 is enough headroom for the deepseek-v4-pro tier 0 (non-reasoning).
+        # If a reasoning model serves a request via the chain (Kimi K2.6
+        # later in the chain), the reasoning trace may eat the budget; the
+        # validator will see an empty letter and the chain advances. That's
+        # acceptable failure isolation.
+        letter = chat_with_fallback(
+            "COVER_LETTER", messages, max_tokens=2048, temperature=0.7,
+        )
         letter = sanitize_text(letter)  # auto-fix em dashes, smart quotes
         letter = _strip_preamble(letter)  # remove any "Here is the letter:" prefix
 

@@ -25,9 +25,19 @@ CLEANUP_REPORT.md
 cleanup_db.py
 generate_application_pack.py
 application_packs/
+applications_log/
+drafts/
+leads/
+council/
+loop_journal/
+interview_prep/
+.claw_*
+applier_insight_audit_scan.json
+APPLYPILOT_FILE_AUDIT_MANIFEST_*.json
 .worktrees/
 _archive/
 .fuse_hidden*
+*.bak-2026-*
 
 # MCP configs (per-machine)
 .mcp*.json

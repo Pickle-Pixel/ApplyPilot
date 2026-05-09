@@ -1,4 +1,3 @@
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -166,3 +165,76 @@ class ApplicationPackTests(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("https://www.linkedin.com/jobs/view/123", next_steps)
+
+    def test_does_not_export_failed_or_blocked_jobs_as_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "jobs.db"
+            conn = init_db(db_path)
+
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            resume_txt = artifact_dir / "resume.txt"
+            cover_txt = artifact_dir / "cover.txt"
+            resume_pdf = artifact_dir / "resume.pdf"
+            cover_pdf = artifact_dir / "cover.pdf"
+            resume_txt.write_text("resume", encoding="utf-8")
+            cover_txt.write_text("cover", encoding="utf-8")
+            resume_pdf.write_bytes(b"%PDF-1.4\n" + b"x" * 2048)
+            cover_pdf.write_bytes(b"%PDF-1.4\n" + b"x" * 2048)
+
+            rows = [
+                ("https://example.com/clean", "Clean Ready Job", None, None),
+                ("https://example.com/failed", "Failed Old Job", "failed", "already_applied"),
+                ("https://example.com/avoid", "Avoided Job", "avoid", None),
+                ("https://example.com/manual", "Manual Job", "manual", None),
+                ("https://example.com/manual_review", "Manual Review Job", "manual_review", None),
+                ("https://example.com/stale", "Stale Orphan Job", "stale_in_progress_orphaned", None),
+            ]
+            for url, title, apply_status, apply_error in rows:
+                conn.execute(
+                    """
+                    INSERT INTO jobs (
+                        url, title, site, application_url, fit_score, full_description,
+                        tailored_resume_path, cover_letter_path, job_lane, apply_status, apply_error
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        url,
+                        title,
+                        "Direct Employer",
+                        url + "/apply",
+                        9,
+                        "Remote role.",
+                        str(resume_txt),
+                        str(cover_txt),
+                        "primary",
+                        apply_status,
+                        apply_error,
+                    ),
+                )
+            conn.commit()
+
+            result = export_ready_packs(
+                conn=conn,
+                output_root=root / "application_packs",
+                batch_name="ready_primary_test",
+                min_score=7,
+                limit=10,
+            )
+
+            conn.close()
+
+            self.assertEqual(result["exported"], 1)
+            self.assertEqual(result["packs"][0]["title"], "Clean Ready Job")
+            skip_reasons = {item["title"]: item["reason"] for item in result["skips"]}
+            self.assertIn("Failed Old Job", skip_reasons)
+            self.assertIn("already failed: already_applied", skip_reasons["Failed Old Job"])
+            self.assertIn("Avoided Job", skip_reasons)
+            self.assertIn("blocked status: avoid", skip_reasons["Avoided Job"])
+            self.assertIn("Manual Job", skip_reasons)
+            self.assertIn("blocked status: manual", skip_reasons["Manual Job"])
+            self.assertIn("Manual Review Job", skip_reasons)
+            self.assertIn("blocked status: manual_review", skip_reasons["Manual Review Job"])
+            self.assertIn("Stale Orphan Job", skip_reasons)
+            self.assertIn("blocked status: stale_in_progress_orphaned", skip_reasons["Stale Orphan Job"])

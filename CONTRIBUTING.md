@@ -45,7 +45,7 @@ Workday employer portals are configured in `config/employers.yaml`. To add a new
   url: "https://company.wd5.myworkdaysite.com/en-US/recruiting"
 ```
 
-4. Test discovery: `applypilot discover --employer "Company Name"`
+4. Test discovery through the run command, for example `applypilot run discover --dry-run`.
 5. Submit a PR with the new entry
 
 ### Adding New Career Sites
@@ -66,7 +66,7 @@ Direct career site scrapers are configured in `config/sites.yaml`. To add a new 
     description: ".job-description"
 ```
 
-3. Test: `applypilot discover --site "Company Name"`
+3. Test through the run command, for example `applypilot run discover --dry-run`.
 4. Submit a PR
 
 ### Bug Fixes and Features
@@ -86,7 +86,7 @@ Direct career site scrapers are configured in `config/sites.yaml`. To add a new 
 pytest tests/ -v
 
 # Run a specific test file
-pytest tests/test_scoring.py -v
+pytest tests/test_scorer_quick_filters.py -v
 
 # Run with coverage
 pytest tests/ --cov=src/applypilot --cov-report=term-missing
@@ -98,13 +98,13 @@ ApplyPilot uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting.
 
 ```bash
 # Check for issues
-ruff check src/
+ruff check src tests scripts
 
 # Auto-fix what can be fixed
-ruff check src/ --fix
+ruff check src tests scripts --fix
 
 # Format code
-ruff format src/
+ruff format src tests scripts
 ```
 
 ### Code Style Guidelines
@@ -113,7 +113,7 @@ ruff format src/
 - **Docstrings**: All public functions and classes must have docstrings (Google style)
 - **Naming**: snake_case for functions and variables, PascalCase for classes
 - **Imports**: Sorted by Ruff (isort-compatible)
-- **Line length**: 100 characters maximum
+- **Line length**: 120 characters maximum, matching `pyproject.toml`
 
 ## PR Guidelines
 
@@ -129,18 +129,17 @@ ruff format src/
 ```
 ApplyPilot/
 ├── src/applypilot/       # Main package
-│   ├── __init__.py
 │   ├── cli.py            # CLI entry points
-│   ├── discover/         # Stage 1: job discovery scrapers
-│   ├── enrich/           # Stage 2: description extraction
-│   ├── score/            # Stage 3: AI scoring
-│   ├── tailor/           # Stage 4: resume tailoring
-│   ├── cover/            # Stage 5: cover letter generation
-│   ├── apply/            # Stage 6: browser automation
-│   └── utils/            # Shared utilities
-├── config/               # Default configuration files
+│   ├── pipeline.py       # Stage orchestration
+│   ├── discovery/        # Stage 1: job discovery scrapers
+│   ├── enrichment/       # Stage 2: description extraction
+│   ├── scoring/          # Stages 3-5: score, tailor, cover, PDF validation
+│   ├── apply/            # Stage 6: browser automation and manual-safe apply flow
+│   └── config/           # Default package configuration files
 ├── tests/                # Test suite
 ├── docs/                 # Documentation
+├── templates/            # Resume, cover-letter, and pack quality templates
+├── scripts/              # Utility scripts
 └── pyproject.toml        # Package configuration
 ```
 

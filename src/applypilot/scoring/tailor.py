@@ -14,7 +14,6 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
@@ -25,15 +24,73 @@ from applypilot.scoring.role_signals import (
 )
 from applypilot.scoring.validator import (
     BANNED_WORDS,
-    FABRICATION_WATCHLIST,
     sanitize_text,
     validate_json_fields,
-    validate_tailored_resume,
 )
 
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5  # max cross-run retries before giving up
+
+# Divergence guard: a tailored resume that comes back word-for-word identical
+# to the base (or near-identical) means the LLM bailed and just echoed the input
+# back. That is silent base-copy submission, which the project explicitly forbids
+# per Darrin's standing rule (honest failure beats silent base-copy fallback).
+# Threshold is on normalized character overlap: anything >= this means we treat
+# the tailoring as a no-op and refuse to ship it.
+_DIVERGENCE_OVERLAP_THRESHOLD = 0.95
+_DIVERGENCE_MIN_TAILORED_CHARS = 200
+
+
+def _normalize_for_diff(text: str) -> str:
+    """Collapse whitespace + lowercase + drop non-alphanumeric for similarity."""
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _content_overlap_ratio(a: str, b: str) -> float:
+    """Cheap shingle-based overlap. Returns 0.0..1.0.
+
+    Splits both into 5-word shingles and returns |intersection| / |smaller set|.
+    Intentionally not difflib.SequenceMatcher because we want fast on long inputs
+    and we care about content reuse, not edit distance.
+    """
+    aw = _normalize_for_diff(a).split()
+    bw = _normalize_for_diff(b).split()
+    if len(aw) < 5 or len(bw) < 5:
+        return 1.0 if _normalize_for_diff(a) == _normalize_for_diff(b) else 0.0
+
+    def shingles(words: list[str], n: int = 5) -> set[tuple[str, ...]]:
+        return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+    sa = shingles(aw)
+    sb = shingles(bw)
+    if not sa or not sb:
+        return 0.0
+    inter = sa & sb
+    return len(inter) / min(len(sa), len(sb))
+
+
+def _check_tailoring_diverged(tailored: str, base: str) -> tuple[bool, str]:
+    """Refuse silent base-copy fallback.
+
+    Returns (passed, reason). passed=False means the tailoring is effectively
+    a no-op and must NOT be shipped. Caller should mark needs-tailoring and
+    skip submission rather than submit a generic resume.
+    """
+    if not tailored or not tailored.strip():
+        return False, "empty_tailored_output"
+    if len(tailored.strip()) < _DIVERGENCE_MIN_TAILORED_CHARS:
+        return False, f"tailored_too_short ({len(tailored.strip())} chars)"
+    if _normalize_for_diff(tailored) == _normalize_for_diff(base):
+        return False, "tailored_identical_to_base"
+    overlap = _content_overlap_ratio(tailored, base)
+    if overlap >= _DIVERGENCE_OVERLAP_THRESHOLD:
+        return False, f"tailored_overlap_{overlap:.2f}_above_threshold_{_DIVERGENCE_OVERLAP_THRESHOLD}"
+    return True, ""
+
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
@@ -57,7 +114,6 @@ def _build_tailor_prompt(profile: dict, job: dict | None = None) -> str:
 
     # Preserved entities
     companies = resume_facts.get("preserved_companies", [])
-    projects = resume_facts.get("preserved_projects", [])
     school = resume_facts.get("preserved_school", "")
     insurance_role = job_targets_insurance_domain(job)
     real_metrics = filter_role_sensitive_metrics(
@@ -66,7 +122,6 @@ def _build_tailor_prompt(profile: dict, job: dict | None = None) -> str:
     )
 
     companies_str = ", ".join(companies) if companies else "N/A"
-    projects_str = ", ".join(projects) if projects else "N/A"
     metrics_str = ", ".join(real_metrics) if real_metrics else "N/A"
     companies_requirement = (
         "EXPERIENCE: Include every preserved company exactly as listed in an "
@@ -253,6 +308,41 @@ def extract_json(raw: str) -> dict:
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
+_CHRONO_PRESENT_TOKENS = ("present", "current", "now", "ongoing")
+_CHRONO_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10,
+    "november": 11, "december": 12,
+}
+
+
+def _experience_sort_key(entry: dict) -> tuple:
+    """Reverse-chronological sort key for an experience entry.
+
+    2026-04-29 chronology fix. Pulls the END date from subtitle. Returns
+    (year, month) where Present/Current is pinned to (9999, 12).
+    Parsing failures fall to (0, 0).
+    """
+    subtitle = (entry.get("subtitle") or "").lower()
+    if not subtitle:
+        return (0, 0)
+    date_part = subtitle.split("|")[-1]
+    for tok in _CHRONO_PRESENT_TOKENS:
+        if tok in date_part:
+            return (9999, 12)
+    years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", date_part)]
+    if not years:
+        return (0, 0)
+    end_year = max(years)
+    end_month = 12
+    for tok, mn in _CHRONO_MONTHS.items():
+        if re.search(r"\b" + tok + r"\b", date_part):
+            end_month = mn
+    return (end_year, end_month)
+
+
 def assemble_resume_text(data: dict, profile: dict) -> str:
     """Convert JSON resume data to formatted plain text.
 
@@ -303,9 +393,14 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
             lines.append(f"{cat}: {sanitize_text(str(val))}")
     lines.append("")
 
-    # Experience
+    # Experience -- enforce reverse-chronological order by end date.
+    # 2026-04-29 fix: linkedin_Real_-_Time_Analyst.txt had NCO 2009-14 ahead
+    # of 2024-25 work and Aegis 2007 mid-list. Force sort by end date desc,
+    # with current/Present roles pinned to the top.
     lines.append("EXPERIENCE")
-    for entry in data.get("experience", []):
+    experience_entries = list(data.get("experience", []))
+    experience_entries.sort(key=_experience_sort_key, reverse=True)
+    for entry in experience_entries:
         lines.append(sanitize_text(entry.get("header", "")))
         if entry.get("subtitle"):
             lines.append(sanitize_text(entry["subtitle"]))
@@ -313,15 +408,19 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
             lines.append(f"- {sanitize_text(b)}")
         lines.append("")
 
-    # Projects
-    lines.append("PROJECTS")
-    for entry in data.get("projects", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            lines.append(f"- {sanitize_text(b)}")
-        lines.append("")
+    # Projects -- only render the heading if there is actual content.
+    # 2026-04-29 fix: empty projects list was producing a bare "PROJECTS"
+    # header with no body, which audit flagged as a quality bug.
+    project_entries = [e for e in (data.get("projects") or []) if e]
+    if project_entries:
+        lines.append("PROJECTS")
+        for entry in project_entries:
+            lines.append(sanitize_text(entry.get("header", "")))
+            if entry.get("subtitle"):
+                lines.append(sanitize_text(entry["subtitle"]))
+            for b in entry.get("bullets", []):
+                lines.append(f"- {sanitize_text(b)}")
+            lines.append("")
 
     # Education
     lines.append("EDUCATION")
@@ -459,6 +558,23 @@ def tailor_resume(
 
         # Assemble text (header injected by code, em dashes auto-fixed)
         tailored = assemble_resume_text(data, profile)
+
+        # Layer 1.5: divergence guard - refuse silent base-copy fallback.
+        # 2026-04-28: Sharecare ROI dry-run came back with empty content; this
+        # guard catches that case AND the case where the LLM echoes the input
+        # back word-for-word. Honest failure beats silent base-copy submission.
+        diverged_ok, diverged_reason = _check_tailoring_diverged(tailored, resume_text)
+        report["divergence"] = {"passed": diverged_ok, "reason": diverged_reason}
+        if not diverged_ok:
+            avoid_notes.append(
+                f"Tailored output failed divergence guard ({diverged_reason}). "
+                "Rewrite substantially - change wording, reorder bullets, surface "
+                "different metrics. Do not return the original resume verbatim."
+            )
+            if attempt < max_retries:
+                continue
+            report["status"] = "failed_divergence_guard"
+            return tailored, report
 
         # Layer 2: LLM judge (catches subtle fabrication) — skipped in lenient mode
         if validation_mode == "lenient":

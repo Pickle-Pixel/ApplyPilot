@@ -17,15 +17,14 @@ SCORING PHILOSOPHY (Darrin-specific):
          signal, NOT a qualification for Software Engineer roles.
 """
 
-import json
 import logging
 import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import RESUME_PATH, load_profile
+from applypilot.config import RESUME_PATH
 from applypilot.database import get_connection, get_jobs_by_stage
-from applypilot.llm import get_client
+from applypilot.llm import chat_with_fallback
 from applypilot.scoring.job_lanes import classify_job_lane
 
 log = logging.getLogger(__name__)
@@ -284,11 +283,11 @@ def _apply_contextual_caps(
     if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in PROGRAMMER_ROLE_PATTERNS):
         caps.append((5, "programming-heavy analyst role"))
 
-    has_annotation_keywords = any(keyword in text for keyword in ANNOTATION_KEYWORDS)
-    has_annotation_cues = any(keyword in text for keyword in ANNOTATION_SUPPORT_CUES)
-    has_countersignals = any(keyword in text for keyword in ANNOTATION_COUNTERSIGNALS)
-    if has_annotation_keywords and (has_annotation_cues or not has_countersignals):
-        caps.append((7, "annotation-first AI data role"))
+    has_annotation = any(keyword in text for keyword in ANNOTATION_KEYWORDS)
+    has_annotation_support = any(keyword in text for keyword in ANNOTATION_SUPPORT_CUES)
+    has_annotation_countersignal = any(keyword in text for keyword in ANNOTATION_COUNTERSIGNALS)
+    if has_annotation and has_annotation_support and not has_annotation_countersignal:
+        caps.append((7, "annotation-first role below top-tier fit"))
 
     is_social_media_manager = any(
         re.search(pattern, text, flags=re.IGNORECASE) for pattern in SOCIAL_MEDIA_TITLE_PATTERNS
@@ -369,8 +368,12 @@ IMPORTANT:
 - Plain "Data Analyst" titles are not automatically top-tier fits. Reserve
   8-10 for roles with clear reporting, operations, fraud/payments, QA,
   healthcare, or workforce overlap.
-- Internships, student-only roles, non-US hiring markets, and annotation-only
-  typing/writing roles should be scored conservatively, usually below 8.
+- Internships, student-only roles, and non-US hiring markets should be scored
+  conservatively, usually below 7.
+- AI rater / LLM evaluator / data annotator / annotation specialist / RLHF
+  rater / model feedback / prompt engineer contractor roles are WANTED lanes.
+  Score them 7+ baseline if remote and non-phone; only drop below 7 for
+  phone-heavy, on-call, or 1099-commission-only structures.
 
 RESPOND IN EXACTLY THIS FORMAT (no other text):
 SCORE: [1-10]
@@ -457,8 +460,9 @@ def score_job(resume_text: str, job: dict) -> dict:
     ]
 
     try:
-        client = get_client()
-        response = client.chat(messages, max_tokens=512, temperature=0.2)
+        response = chat_with_fallback(
+            "SCORE", messages, max_tokens=512, temperature=0.2,
+        )
         parsed = _parse_score_response(response)
         raw_score = parsed["score"]
         adjusted_score, cap_note = _apply_contextual_caps(

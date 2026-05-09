@@ -8,7 +8,7 @@ import logging
 from html import escape
 from pathlib import Path
 
-from applypilot.config import TAILORED_DIR
+from applypilot.config import COVER_LETTER_DIR, TAILORED_DIR
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +149,20 @@ def parse_entries(text: str) -> list[dict]:
 
 # ── HTML Template ────────────────────────────────────────────────────────
 
+def _find_section(sections: dict, *needles: str) -> str | None:
+    """Return the first section value whose key contains any of the needles.
+
+    Resume txt files use heading variants ("PROFESSIONAL EXPERIENCE",
+    "WORK EXPERIENCE", "EXPERIENCE"); this helper makes the renderer
+    forgiving instead of exact-key matching.
+    """
+    for needle in needles:
+        for key, val in sections.items():
+            if needle in key:
+                return val
+    return None
+
+
 def build_html(resume: dict) -> str:
     """Build professional resume HTML from parsed data.
 
@@ -162,8 +176,9 @@ def build_html(resume: dict) -> str:
 
     # Skills
     skills_html = ""
-    if "TECHNICAL SKILLS" in sections:
-        skills = parse_skills(sections["TECHNICAL SKILLS"])
+    skills_text = _find_section(sections, "TECHNICAL SKILLS", "SKILLS")
+    if skills_text:
+        skills = parse_skills(skills_text)
         rows = ""
         for cat, val in skills:
             rows += f'<div class="skill-row"><span class="skill-cat">{cat}:</span> {val}</div>\n'
@@ -171,8 +186,9 @@ def build_html(resume: dict) -> str:
 
     # Experience
     exp_html = ""
-    if "EXPERIENCE" in sections:
-        entries = parse_entries(sections["EXPERIENCE"])
+    exp_text = _find_section(sections, "EXPERIENCE")
+    if exp_text:
+        entries = parse_entries(exp_text)
         items = ""
         for e in entries:
             bullets = "".join(f"<li>{b}</li>" for b in e["bullets"])
@@ -182,8 +198,9 @@ def build_html(resume: dict) -> str:
 
     # Projects
     proj_html = ""
-    if "PROJECTS" in sections:
-        entries = parse_entries(sections["PROJECTS"])
+    proj_text = _find_section(sections, "PROJECTS")
+    if proj_text:
+        entries = parse_entries(proj_text)
         items = ""
         for e in entries:
             bullets = "".join(f"<li>{b}</li>" for b in e["bullets"])
@@ -193,14 +210,31 @@ def build_html(resume: dict) -> str:
 
     # Education
     edu_html = ""
-    if "EDUCATION" in sections:
-        edu_text = sections["EDUCATION"].strip()
+    edu_text_raw = _find_section(sections, "EDUCATION")
+    if edu_text_raw:
+        edu_text = edu_text_raw.strip()
         edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
 
     # Summary
     summary_html = ""
-    if "SUMMARY" in sections:
-        summary_html = f'<div class="section"><div class="section-title">Summary</div><div class="summary">{sections["SUMMARY"].strip()}</div></div>'
+    summary_text = _find_section(sections, "SUMMARY")
+    if summary_text:
+        summary_html = f'<div class="section"><div class="section-title">Summary</div><div class="summary">{summary_text.strip()}</div></div>'
+
+    # Professional Highlights (rendered as a bullet list)
+    highlights_html = ""
+    highlights_text = _find_section(sections, "HIGHLIGHTS")
+    if highlights_text:
+        bullets = []
+        for line in highlights_text.strip().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- ") or stripped.startswith("\u2022 "):
+                bullets.append(stripped[2:].strip())
+            elif stripped:
+                bullets.append(stripped)
+        if bullets:
+            items = "".join(f"<li>{b}</li>" for b in bullets)
+            highlights_html = f'<div class="section"><div class="section-title">Professional Highlights</div><ul>{items}</ul></div>'
 
     # Contact line parsing
     contact = resume["contact"]
@@ -324,6 +358,7 @@ li {{
     <div class="contact">{contact_html}</div>
 </div>
 {summary_html}
+{highlights_html}
 {skills_html}
 {exp_html}
 {proj_html}
@@ -454,10 +489,44 @@ def convert_cover_letter_to_pdf(
     return out
 
 
-def batch_convert(limit: int = 50) -> int:
-    """Convert .txt files in TAILORED_DIR that don't have corresponding PDFs.
+def _convert_missing_pdfs(
+    *,
+    source_dir: Path,
+    candidates: list[Path],
+    converter,
+    limit: int,
+    label: str,
+) -> int:
+    """Convert a bounded list of text files that do not have PDFs yet."""
+    to_convert: list[Path] = []
+    for f in candidates:
+        pdf_path = f.with_suffix(".pdf")
+        if not pdf_path.exists():
+            to_convert.append(f)
+        if len(to_convert) >= limit:
+            break
 
-    Scans for .txt files (excluding _JOB.txt and _REPORT.json), checks if a
+    if not to_convert:
+        log.info("All %s text files already have PDFs.", label)
+        return 0
+
+    log.info("Converting %d %s file(s) to PDF...", len(to_convert), label)
+    converted = 0
+    for f in to_convert:
+        try:
+            converter(f)
+            converted += 1
+        except Exception as e:
+            log.error("Failed to convert %s: %s", f.name, e)
+
+    log.info("Done: %d/%d PDFs generated in %s", converted, len(to_convert), source_dir)
+    return converted
+
+
+def batch_convert(limit: int = 50) -> int:
+    """Convert generated resumes and cover letters that lack PDFs.
+
+    Scans generated tailored resumes and generated cover letters, checks if a
     .pdf with the same stem already exists, and converts any that are missing.
 
     Args:
@@ -470,35 +539,32 @@ def batch_convert(limit: int = 50) -> int:
         log.warning("Tailored directory does not exist: %s", TAILORED_DIR)
         return 0
 
-    txt_files = sorted(TAILORED_DIR.glob("*.txt"))
-    # Exclude _JOB.txt and _CL.txt files from resume conversion
-    # (they get their own conversion calls)
-    candidates = [
-        f for f in txt_files
-        if not f.name.endswith("_JOB.txt")
+    resume_txt_files = sorted(TAILORED_DIR.glob("*.txt"))
+    # Exclude job-description sidecars and cover-letter files from resume conversion.
+    resume_candidates = [
+        f for f in resume_txt_files
+        if not f.name.endswith(("_JOB.txt", "_CL.txt"))
     ]
 
-    # Filter to those without a corresponding PDF
-    to_convert: list[Path] = []
-    for f in candidates:
-        pdf_path = f.with_suffix(".pdf")
-        if not pdf_path.exists():
-            to_convert.append(f)
-        if len(to_convert) >= limit:
-            break
+    converted = _convert_missing_pdfs(
+        source_dir=TAILORED_DIR,
+        candidates=resume_candidates,
+        converter=convert_to_pdf,
+        limit=limit,
+        label="resume",
+    )
 
-    if not to_convert:
-        log.info("All text files already have PDFs.")
-        return 0
+    remaining_limit = max(limit - converted, 0)
+    if remaining_limit and COVER_LETTER_DIR.exists():
+        cover_candidates = sorted(COVER_LETTER_DIR.glob("*_CL.txt"))
+        converted += _convert_missing_pdfs(
+            source_dir=COVER_LETTER_DIR,
+            candidates=cover_candidates,
+            converter=convert_cover_letter_to_pdf,
+            limit=remaining_limit,
+            label="cover letter",
+        )
+    elif not COVER_LETTER_DIR.exists():
+        log.warning("Cover letter directory does not exist: %s", COVER_LETTER_DIR)
 
-    log.info("Converting %d files to PDF...", len(to_convert))
-    converted = 0
-    for f in to_convert:
-        try:
-            convert_to_pdf(f)
-            converted += 1
-        except Exception as e:
-            log.error("Failed to convert %s: %s", f.name, e)
-
-    log.info("Done: %d/%d PDFs generated in %s", converted, len(to_convert), TAILORED_DIR)
     return converted
