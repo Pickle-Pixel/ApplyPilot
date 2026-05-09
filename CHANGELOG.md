@@ -5,6 +5,11 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Duplicate PDF filename collisions** (#11) - Appended MD5 hash of the job URL to the filename prefix for tailored resumes and cover letters to prevent overwriting when multiple jobs have identical titles.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added

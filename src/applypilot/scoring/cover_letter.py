@@ -275,10 +275,12 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             if not validation["passed"]:
                 raise ValueError("Invalid cover letter: " + "; ".join(validation["errors"]))
 
-            # Build safe filename prefix
+            # Build safe filename prefix with job_id to prevent overwrites
+            import hashlib
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
             safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            job_id = hashlib.md5(job["url"].encode("utf-8")).hexdigest()[:6]
+            prefix = f"{safe_site}_{safe_title}_{job_id}"
 
             COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
