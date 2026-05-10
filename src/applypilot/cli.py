@@ -101,6 +101,11 @@ def run(
         help=(f"Pipeline stages to run. Valid: {', '.join(VALID_STAGES)}, all. Defaults to 'all' if omitted."),
     ),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for tailor/cover stages."),
+    lane: str = typer.Option(
+        "primary",
+        "--lane",
+        help="Job lane for tailor/cover stages: primary or all.",
+    ),
     workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discovery/enrichment stages."),
     stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
@@ -140,10 +145,14 @@ def run(
     if validation not in valid_modes:
         console.print(f"[red]Invalid --validation value:[/red] '{validation}'. Choose from: {', '.join(valid_modes)}")
         raise typer.Exit(code=1)
+    if lane not in ("primary", "all"):
+        console.print("[red]Invalid --lane value.[/red] Use 'primary' or 'all'.")
+        raise typer.Exit(code=1)
 
     result = run_pipeline(
         stages=stage_list,
         min_score=min_score,
+        lane=lane,
         dry_run=dry_run,
         stream=stream,
         workers=workers,

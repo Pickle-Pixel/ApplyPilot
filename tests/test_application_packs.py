@@ -238,3 +238,62 @@ class ApplicationPackTests(unittest.TestCase):
             self.assertIn("blocked status: manual_review", skip_reasons["Manual Review Job"])
             self.assertIn("Stale Orphan Job", skip_reasons)
             self.assertIn("blocked status: stale_in_progress_orphaned", skip_reasons["Stale Orphan Job"])
+
+    def test_blocked_jobs_do_not_consume_export_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "jobs.db"
+            conn = init_db(db_path)
+
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            resume_txt = artifact_dir / "resume.txt"
+            cover_txt = artifact_dir / "cover.txt"
+            resume_pdf = artifact_dir / "resume.pdf"
+            cover_pdf = artifact_dir / "cover.pdf"
+            resume_txt.write_text("resume", encoding="utf-8")
+            cover_txt.write_text("cover", encoding="utf-8")
+            resume_pdf.write_bytes(b"%PDF-1.4\n" + b"x" * 2048)
+            cover_pdf.write_bytes(b"%PDF-1.4\n" + b"x" * 2048)
+
+            rows = [
+                ("https://example.com/blocked-a", "Blocked A", 10, "failed"),
+                ("https://example.com/blocked-b", "Blocked B", 9, "manual"),
+                ("https://example.com/clean-a", "Clean A", 8, None),
+                ("https://example.com/clean-b", "Clean B", 7, None),
+            ]
+            for url, title, fit_score, apply_status in rows:
+                conn.execute(
+                    """
+                    INSERT INTO jobs (
+                        url, title, site, application_url, fit_score, full_description,
+                        tailored_resume_path, cover_letter_path, job_lane, apply_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        url,
+                        title,
+                        "Direct Employer",
+                        url + "/apply",
+                        fit_score,
+                        "Remote role.",
+                        str(resume_txt),
+                        str(cover_txt),
+                        "primary",
+                        apply_status,
+                    ),
+                )
+            conn.commit()
+
+            result = export_ready_packs(
+                conn=conn,
+                output_root=root / "application_packs",
+                batch_name="ready_primary_test",
+                min_score=7,
+                limit=2,
+            )
+
+            conn.close()
+
+            self.assertEqual(result["exported"], 2)
+            self.assertEqual([item["title"] for item in result["packs"]], ["Clean A", "Clean B"])

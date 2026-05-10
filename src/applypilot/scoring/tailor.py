@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
-from applypilot.llm import get_stage_client
+from applypilot.llm import chat_with_fallback
 from applypilot.scoring.role_signals import (
     filter_role_sensitive_metrics,
     job_targets_insurance_domain,
@@ -460,9 +460,9 @@ def judge_tailored_resume(original_text: str, tailored_text: str, job_title: str
         },
     ]
 
-    # The judge runs on the same model class as tailoring (it judges that work).
-    client, model = get_stage_client("TAILOR")
-    response = client.chat(messages, max_tokens=512, temperature=0.1, model=model)
+    # The judge runs on the same stage routing as tailoring so provider
+    # fallback behavior is identical for both generation and review.
+    response = chat_with_fallback("TAILOR", messages, max_tokens=512, temperature=0.1)
 
     passed = "VERDICT: PASS" in response.upper()
     issues = "none"
@@ -525,7 +525,6 @@ def tailor_resume(
     }
     avoid_notes: list[str] = []
     tailored = ""
-    client, model = get_stage_client("TAILOR")
     tailor_prompt_base = _build_tailor_prompt(profile, job)
 
     for attempt in range(max_retries + 1):
@@ -546,7 +545,7 @@ def tailor_resume(
             },
         ]
 
-        raw = client.chat(messages, max_tokens=2048, temperature=0.4, model=model)
+        raw = chat_with_fallback("TAILOR", messages, max_tokens=2048, temperature=0.4)
 
         # Parse JSON from response
         try:
@@ -619,13 +618,19 @@ def tailor_resume(
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
 
-def run_tailoring(min_score: int = 7, limit: int = 20, validation_mode: str = "normal") -> dict:
+def run_tailoring(
+    min_score: int = 7,
+    limit: int = 20,
+    validation_mode: str = "normal",
+    lane: str | None = None,
+) -> dict:
     """Generate tailored resumes for high-scoring jobs.
 
     Args:
         min_score:       Minimum fit_score to tailor for.
         limit:           Maximum jobs to process.
         validation_mode: "strict", "normal", or "lenient".
+        lane:            Optional job lane filter. Use "all" or None for no lane filter.
 
     Returns:
         {"approved": int, "failed": int, "errors": int, "elapsed": float}
@@ -637,7 +642,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20, validation_mode: str = "n
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
 
-    jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=min_score, limit=limit)
+    jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=min_score, limit=limit, lane=lane)
 
     if not jobs:
         log.info("No untailored jobs with score >= %d.", min_score)

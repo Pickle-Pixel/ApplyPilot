@@ -4,6 +4,7 @@ from pathlib import Path
 
 from applypilot.database import (
     get_apply_queue_stats,
+    get_jobs_by_stage,
     get_ready_to_apply_by_blocker_reason,
     get_stale_lock_count,
     get_stats,
@@ -50,6 +51,50 @@ class DatabaseStatsTests(unittest.TestCase):
             conn.close()
 
             self.assertEqual(stats["ready_to_apply"], 1)
+
+    def test_pending_tailor_skips_blocked_apply_statuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = init_db(Path(tmp) / "jobs.db")
+            rows = [
+                ("https://example.com/blocked", "Blocked Job", "direct", 9, "Remote role.", "failed"),
+                ("https://example.com/clean", "Clean Job", "direct", 8, "Remote role.", None),
+            ]
+            conn.executemany(
+                """
+                INSERT INTO jobs (
+                    url, title, site, fit_score, full_description, apply_status
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+
+            jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=7, limit=10)
+            conn.close()
+
+            self.assertEqual([job["url"] for job in jobs], ["https://example.com/clean"])
+
+    def test_pending_tailor_can_filter_to_primary_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = init_db(Path(tmp) / "jobs.db")
+            rows = [
+                ("https://example.com/flex", "Flex Job", "direct", 10, "Remote role.", "flex"),
+                ("https://example.com/primary", "Primary Job", "direct", 8, "Remote role.", "primary"),
+            ]
+            conn.executemany(
+                """
+                INSERT INTO jobs (
+                    url, title, site, fit_score, full_description, job_lane
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+
+            jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=7, limit=10, lane="primary")
+            conn.close()
+
+            self.assertEqual([job["url"] for job in jobs], ["https://example.com/primary"])
 
     def test_apply_queue_stats_exposes_ready_and_blocker_buckets(self):
         with tempfile.TemporaryDirectory() as tmp:

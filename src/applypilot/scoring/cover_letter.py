@@ -237,13 +237,19 @@ def generate_cover_letter(
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
 
-def run_cover_letters(min_score: int = 7, limit: int = 20, validation_mode: str = "normal") -> dict:
+def run_cover_letters(
+    min_score: int = 7,
+    limit: int = 20,
+    validation_mode: str = "normal",
+    lane: str | None = None,
+) -> dict:
     """Generate cover letters for high-scoring jobs that have tailored resumes.
 
     Args:
         min_score:       Minimum fit_score threshold.
         limit:           Maximum jobs to process.
         validation_mode: "strict", "normal", or "lenient".
+        lane:            Optional job lane filter. Use "all" or None for no lane filter.
 
     Returns:
         {"generated": int, "errors": int, "elapsed": float}
@@ -256,14 +262,21 @@ def run_cover_letters(min_score: int = 7, limit: int = 20, validation_mode: str 
     conn = get_connection()
 
     # Fetch jobs that have tailored resumes but no cover letter yet
+    lane_clause = "" if not lane or lane == "all" else "AND COALESCE(job_lane, 'primary') = ? "
+    params: list[object] = [min_score, MAX_ATTEMPTS]
+    if lane_clause:
+        params.append(lane)
+    params.append(limit)
     jobs = conn.execute(
         "SELECT * FROM jobs "
         "WHERE fit_score >= ? AND tailored_resume_path IS NOT NULL "
         "AND full_description IS NOT NULL "
         "AND (cover_letter_path IS NULL OR cover_letter_path = '') "
         "AND COALESCE(cover_attempts, 0) < ? "
+        "AND (apply_status IS NULL OR apply_status = '') "
+        f"{lane_clause}"
         "ORDER BY fit_score DESC LIMIT ?",
-        (min_score, MAX_ATTEMPTS, limit),
+        params,
     ).fetchall()
 
     if not jobs:

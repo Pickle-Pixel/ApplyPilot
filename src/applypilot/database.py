@@ -510,7 +510,11 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
 
 
 def get_jobs_by_stage(
-    conn: sqlite3.Connection | None = None, stage: str = "discovered", min_score: int | None = None, limit: int = 100
+    conn: sqlite3.Connection | None = None,
+    stage: str = "discovered",
+    min_score: int | None = None,
+    limit: int = 100,
+    lane: str | None = None,
 ) -> list[dict]:
     """Fetch jobs filtered by pipeline stage.
 
@@ -519,6 +523,7 @@ def get_jobs_by_stage(
         stage: One of "discovered", "enriched", "scored", "tailored", "applied".
         min_score: Minimum fit_score filter (only relevant for scored+ stages).
         limit: Maximum number of rows to return.
+        lane: Optional job lane filter. Use "all" or None for no lane filter.
 
     Returns:
         List of job dicts.
@@ -534,7 +539,8 @@ def get_jobs_by_stage(
         "scored": "fit_score IS NOT NULL",
         "pending_tailor": (
             "fit_score >= ? AND full_description IS NOT NULL "
-            "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5"
+            "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5 "
+            "AND (apply_status IS NULL OR apply_status = '')"
         ),
         "tailored": "tailored_resume_path IS NOT NULL",
         "pending_apply": ("tailored_resume_path IS NOT NULL AND applied_at IS NULL AND application_url IS NOT NULL"),
@@ -552,6 +558,9 @@ def get_jobs_by_stage(
     if min_score is not None and "fit_score" not in where and stage in ("scored", "tailored", "applied"):
         where += " AND fit_score >= ?"
         params.append(min_score)
+    if lane and lane != "all":
+        where += " AND COALESCE(job_lane, 'primary') = ?"
+        params.append(lane)
 
     query = f"SELECT * FROM jobs WHERE {where} ORDER BY fit_score DESC NULLS LAST, discovered_at DESC"
     if limit > 0:

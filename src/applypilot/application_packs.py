@@ -119,7 +119,6 @@ def export_ready_packs(
     params: list[object] = [min_score]
     if lane != "all":
         params.append(lane)
-    params.append(limit)
 
     rows = conn.execute(
         f"""
@@ -133,7 +132,6 @@ def export_ready_packs(
           AND applied_at IS NULL
           {lane_clause}
         ORDER BY fit_score DESC, title
-        LIMIT ?
         """,
         params,
     ).fetchall()
@@ -159,6 +157,8 @@ def export_ready_packs(
         jobs = filtered
 
     for job in jobs:
+        if len(exported) >= limit:
+            break
         blocker_reason = None
         if not _is_ready_status(job.get("apply_status")):
             blocker_reason = _blocker_reason_for_status(job)
