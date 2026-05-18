@@ -114,46 +114,72 @@ def _setup_profile() -> dict:
 
     # -- Compensation --
     console.print("\n[bold cyan]Compensation[/bold cyan]")
-    salary = Prompt.ask("Expected annual salary (number)", default="")
-    salary_currency = Prompt.ask("Currency", default="USD")
-    salary_range = Prompt.ask("Acceptable range (e.g. 80000-120000)", default="")
+    console.print("[dim]Warehouse roles are typically quoted hourly (e.g. 22 CAD/hour).[/dim]")
+    salary = Prompt.ask("Expected wage (hourly rate, number only)", default="22")
+    salary_currency = Prompt.ask("Currency", default="CAD")
+    salary_unit = Prompt.ask("Unit", choices=["hour", "year"], default="hour")
+    salary_range = Prompt.ask("Acceptable range (e.g. 20-28)", default="")
     range_parts = salary_range.split("-") if "-" in salary_range else [salary, salary]
     profile["compensation"] = {
         "salary_expectation": salary,
         "salary_currency": salary_currency,
+        "salary_unit": salary_unit,
         "salary_range_min": range_parts[0].strip(),
         "salary_range_max": range_parts[1].strip() if len(range_parts) > 1 else range_parts[0].strip(),
     }
 
     # -- Experience --
     console.print("\n[bold cyan]Experience[/bold cyan]")
-    current_title = Prompt.ask("Current/most recent job title", default="")
-    target_role = Prompt.ask("Target role (what you're applying for, e.g. 'Senior Backend Engineer')", default=current_title)
+    current_title = Prompt.ask("Current/most recent job title", default="Warehouse Associate")
+    target_role = Prompt.ask(
+        "Target role (what you're applying for, e.g. 'Order Picker', 'Warehouse Worker')",
+        default=current_title,
+    )
     profile["experience"] = {
-        "years_of_experience_total": Prompt.ask("Years of professional experience", default=""),
-        "education_level": Prompt.ask("Highest education (e.g. Bachelor's, Master's, PhD, Self-taught)", default=""),
+        "years_of_experience_total": Prompt.ask("Years of warehouse/logistics experience", default="0"),
+        "education_level": Prompt.ask("Highest education (e.g. High School Diploma, GED, College)", default="High School Diploma"),
         "current_title": current_title,
         "target_role": target_role,
     }
 
     # -- Skills Boundary --
     console.print("\n[bold cyan]Skills[/bold cyan] (comma-separated)")
-    langs = Prompt.ask("Programming languages", default="")
-    frameworks = Prompt.ask("Frameworks & libraries", default="")
-    tools = Prompt.ask("Tools & platforms (e.g. Docker, AWS, Git)", default="")
+    equipment = Prompt.ask(
+        "Equipment you can operate (e.g. pallet jack, RF scanner, forklift, reach truck)",
+        default="",
+    )
+    certifications = Prompt.ask(
+        "Certifications (e.g. Forklift, WHMIS 2015, First Aid, OFA Level 1)",
+        default="",
+    )
+    systems = Prompt.ask(
+        "Warehouse systems you've used (e.g. SAP WM, Manhattan WMS, Oracle WMS)",
+        default="",
+    )
+    physical = Prompt.ask(
+        "Physical capabilities (e.g. lift 50 lbs, stand full shift, cooler/freezer work)",
+        default="",
+    )
     profile["skills_boundary"] = {
-        "programming_languages": [s.strip() for s in langs.split(",") if s.strip()],
-        "frameworks": [s.strip() for s in frameworks.split(",") if s.strip()],
-        "tools": [s.strip() for s in tools.split(",") if s.strip()],
+        "equipment": [s.strip() for s in equipment.split(",") if s.strip()],
+        "certifications": [s.strip() for s in certifications.split(",") if s.strip()],
+        "systems": [s.strip() for s in systems.split(",") if s.strip()],
+        "physical": [s.strip() for s in physical.split(",") if s.strip()],
     }
 
     # -- Resume Facts (preserved truths for tailoring) --
     console.print("\n[bold cyan]Resume Facts[/bold cyan]")
     console.print("[dim]These are preserved exactly during resume tailoring — the AI will never change them.[/dim]")
-    companies = Prompt.ask("Companies to always keep (comma-separated)", default="")
-    projects = Prompt.ask("Projects to always keep (comma-separated)", default="")
+    companies = Prompt.ask("Past employers to always keep (comma-separated)", default="")
+    projects = Prompt.ask(
+        "Notable achievements to always keep (e.g. 'Led night-shift pick team of 6')",
+        default="",
+    )
     school = Prompt.ask("School name(s) to preserve", default="")
-    metrics = Prompt.ask("Real metrics to preserve (e.g. '99.9% uptime, 50k users')", default="")
+    metrics = Prompt.ask(
+        "Real metrics to preserve (e.g. '150 orders/shift, 99% pick accuracy, zero safety incidents')",
+        default="",
+    )
     profile["resume_facts"] = {
         "preserved_companies": [s.strip() for s in companies.split(",") if s.strip()],
         "preserved_projects": [s.strip() for s in projects.split(",") if s.strip()],
@@ -188,42 +214,126 @@ def _setup_searches() -> None:
     """Generate a searches.yaml from user input."""
     console.print(Panel("[bold]Step 3: Job Search Config[/bold]\nDefine what you're looking for."))
 
-    location = Prompt.ask("Target location (e.g. 'Remote', 'Canada', 'New York, NY')", default="Remote")
-    distance_str = Prompt.ask("Search radius in miles (0 for remote-only)", default="0")
+    location = Prompt.ask(
+        "Target location (e.g. 'Vancouver, BC', 'Surrey, BC', 'Burnaby, BC')",
+        default="Vancouver, BC",
+    )
+    distance_str = Prompt.ask("Search radius in km (e.g. 25 for Metro Vancouver)", default="25")
     try:
         distance = int(distance_str)
     except ValueError:
-        distance = 0
+        distance = 25
 
     roles_raw = Prompt.ask(
-        "Target job titles (comma-separated, e.g. 'Backend Engineer, Full Stack Developer')"
+        "Target job titles (comma-separated, e.g. 'Warehouse Associate, Order Picker, Warehouse Worker')",
+        default="Warehouse Associate, Order Picker, Warehouse Worker, Order Selector, Warehouse Operator, Warehouse Assistant, Warehouse Person, Warehouse Stocker, Packager",
     )
     roles = [r.strip() for r in roles_raw.split(",") if r.strip()]
 
     if not roles:
-        console.print("[yellow]No roles provided. Using a default set.[/yellow]")
-        roles = ["Software Engineer"]
+        console.print("[yellow]No roles provided. Using the default warehouse set.[/yellow]")
+        roles = [
+            "Warehouse Associate",
+            "Order Picker",
+            "Warehouse Worker",
+            "Order Selector",
+            "Warehouse Operator",
+            "Warehouse Assistant",
+            "Warehouse Person",
+            "Warehouse Stocker",
+            "Packager",
+        ]
+
+    # Greater Vancouver municipalities — used for both the locations list
+    # and the accept_patterns. Warehouse jobs are on-site, so we hit every
+    # Metro Vancouver city directly rather than relying on a single radius
+    # search (boards inconsistently honour distance for hourly roles).
+    gvrd_locations = [
+        "Vancouver, BC",
+        "Burnaby, BC",
+        "Richmond, BC",
+        "Surrey, BC",
+        "Delta, BC",
+        "Langley, BC",
+        "Coquitlam, BC",
+        "Port Coquitlam, BC",
+        "New Westminster, BC",
+        "North Vancouver, BC",
+        "Port Moody, BC",
+        "Pitt Meadows, BC",
+        "Maple Ridge, BC",
+    ]
+    # Make sure the user's chosen location appears first (and only once).
+    locations_list = [location] + [c for c in gvrd_locations if c != location]
+
+    accept_patterns = [
+        "Vancouver", "Burnaby", "Richmond", "Surrey", "Delta", "Tsawwassen",
+        "Ladner", "Langley", "Cloverdale", "Coquitlam", "Port Coquitlam",
+        "Port Moody", "New Westminster", "North Vancouver", "West Vancouver",
+        "Pitt Meadows", "Maple Ridge", "White Rock", "Greater Vancouver",
+        "Metro Vancouver", "Lower Mainland", "GVRD", "BC", "British Columbia",
+    ]
+    reject_patterns = [
+        "Toronto", "Ontario", "Alberta", "Calgary", "Edmonton", "Quebec",
+        "Montreal", "Halifax", "United States", "USA", "Remote",
+        "Victoria, BC", "Nanaimo", "Kelowna", "Kamloops", "Abbotsford",
+        "Chilliwack", "Mission, BC", "Squamish", "Whistler",
+    ]
+    exclude_titles = [
+        "manager", "supervisor", "lead ", "team lead", "director", "VP",
+        "vice president", "chief", "coordinator", "planner", "analyst",
+        "specialist", "engineer", "developer", "buyer", "merchandiser",
+        "category", "sales", "account", "marketing", "controller",
+        "accountant", "Class 1 driver", "Class 3 driver", "truck driver",
+        "delivery driver", "owner operator", "millwright", "electrician",
+        "mechanic", "technician", "machinist", "welder", "intern",
+        "internship", "co-op", "student",
+    ]
 
     # Build YAML content
-    lines = [
-        "# ApplyPilot search configuration",
+    lines: list[str] = [
+        "# ApplyPilot search configuration — Warehousing & Logistics, Greater Vancouver",
         "# Edit this file to refine your job search queries.",
+        "",
+        "country: \"Canada\"",
         "",
         "defaults:",
         f'  location: "{location}"',
         f"  distance: {distance}",
-        "  hours_old: 72",
-        "  results_per_site: 50",
+        "  hours_old: 168",
+        "  results_per_site: 100",
+        "",
+        "boards:",
+        "  - indeed",
+        "  - linkedin",
+        "  - zip_recruiter",
+        "  - google",
         "",
         "locations:",
-        f'  - location: "{location}"',
-        f"    remote: {str(distance == 0).lower()}",
-        "",
-        "queries:",
     ]
+    for loc in locations_list:
+        lines.append(f'  - location: "{loc}"')
+        lines.append("    remote: false")
+
+    lines.append("")
+    lines.append("queries:")
     for i, role in enumerate(roles):
         lines.append(f'  - query: "{role}"')
         lines.append(f"    tier: {min(i + 1, 3)}")
+
+    lines.append("")
+    lines.append("location:")
+    lines.append("  accept_patterns:")
+    for p in accept_patterns:
+        lines.append(f'    - "{p}"')
+    lines.append("  reject_patterns:")
+    for p in reject_patterns:
+        lines.append(f'    - "{p}"')
+
+    lines.append("")
+    lines.append("exclude_titles:")
+    for t in exclude_titles:
+        lines.append(f'  - "{t}"')
 
     SEARCH_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     console.print(f"[green]Search config saved to {SEARCH_CONFIG_PATH}[/green]")

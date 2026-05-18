@@ -168,7 +168,7 @@ def _build_screening_section(profile: dict) -> str:
     exp = profile.get("experience", {})
     city = personal.get("city", "their city")
     years = exp.get("years_of_experience_total", "multiple")
-    target_role = exp.get("target_role", personal.get("current_job_title", "software engineer"))
+    target_role = exp.get("target_role", personal.get("current_job_title", "warehouse associate"))
     work_auth = profile["work_authorization"]
 
     return f"""== SCREENING QUESTIONS (be strategic) ==
@@ -178,7 +178,7 @@ Hard facts -> answer truthfully from the profile. No guessing. This includes:
   - Citizenship, clearance, licenses, certifications: answer from profile only
   - Criminal/background: answer from profile only
 
-Skills and tools -> be confident. This candidate is a {target_role} with {years} years experience. If the question asks "Do you have experience with [tool]?" and it's in the same domain (DevOps, backend, ML, cloud, automation), answer YES. Software engineers learn tools fast. Don't sell short.
+Skills and tools -> be confident. This candidate is a {target_role} with {years} years experience. If the question asks "Do you have experience with [equipment/system]?" and it's in the same domain (pallet jacks, RF scanners, WMS systems, basic forklifts, picking/packing, receiving), answer YES if the profile lists comparable equipment. Warehouse workers learn site-specific tools fast. Don't sell short — but never claim a certification (forklift, WHMIS, OFA, Class 1/3) that isn't in the profile.
 
 Open-ended questions ("Why do you want this role?", "Tell us about yourself", "What interests you?") -> Write 2-3 sentences. Be specific to THIS job. Reference something from the job description. Connect it to a real achievement from the resume. No generic fluff. No "I am passionate about..." -- sound like a real person.
 

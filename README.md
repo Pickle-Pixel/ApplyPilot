@@ -2,9 +2,27 @@
 
 > **⚠️ ApplyPilot** is the original open-source project, created by [Pickle-Pixel](https://github.com/Pickle-Pixel) and first published on GitHub on **February 17, 2026**. We are **not affiliated** with applypilot.app, useapplypilot.com, or any other product using the "ApplyPilot" name. These sites are **not associated with this project** and may misrepresent what they offer. If you're looking for the autonomous, open-source job application agent — you're in the right place.
 
-# ApplyPilot
+# ApplyPilot — Warehousing & Logistics Edition (Greater Vancouver)
 
-**Applied to 1,000 jobs in 2 days. Fully autonomous. Open source.**
+**Autonomous warehouse job applications across Metro Vancouver. Open source.**
+
+This fork is tuned for warehouse, order-picker, packager, and material-handler
+roles in the Greater Vancouver Regional District. The discovery, scoring, and
+auto-apply pipeline targets:
+
+- **Roles:** Warehouse Associate, Order Picker, Warehouse Worker, Order
+  Selector, Warehouse Operator, Warehouse Assistant, Warehouse Person,
+  Warehouse Stocker, Packager (plus wider-net terms like Shipper-Receiver,
+  Material Handler, Forklift Operator, Fulfillment Associate).
+- **Locations:** Vancouver, Burnaby, Richmond, Surrey, Delta, Langley,
+  Coquitlam, Port Coquitlam, New Westminster, North Vancouver, Port Moody,
+  Pitt Meadows, Maple Ridge, White Rock, Tsawwassen.
+- **Boards & employers:** Job Bank Canada, WorkBC, Indeed CA, LinkedIn,
+  ZipRecruiter, Eluta, Talent.com, CareerJet CA, Jooble CA, Randstad,
+  Adecco, Aerotek, Drake, plus direct career sites for Amazon (YVR4/YVR7),
+  Loblaw, Save-On-Foods/Pattison, Walmart Canada, Sysco, Costco, IKEA,
+  Home Depot Canada, UPS, Purolator, FedEx, Gordon Food Service, DHL,
+  18 Wheels, Stryder, Radius, Day & Ross, and more.
 
 [![PyPI version](https://img.shields.io/pypi/v/applypilot?color=blue)](https://pypi.org/project/applypilot/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
@@ -22,7 +40,7 @@ https://github.com/user-attachments/assets/7ee3417f-43d4-4245-9952-35df1e77f2df
 
 ## What It Does
 
-ApplyPilot is a 6-stage autonomous job application pipeline. It discovers jobs across 5+ boards, scores them against your resume with AI, tailors your resume per job, writes cover letters, and **submits applications for you**. It navigates forms, uploads documents, answers screening questions, all hands-free.
+ApplyPilot is a 6-stage autonomous job application pipeline. It discovers warehouse jobs across Canadian boards and direct employer career sites, scores them against your resume with AI, tailors your resume per job, writes cover letters, and **submits applications for you**. It navigates forms, uploads documents, answers screening questions, all hands-free.
 
 Three commands. That's it.
 
@@ -60,10 +78,10 @@ Runs stages 1-5: discovers jobs, scores them, tailors your resume, generates cov
 
 | Stage | What Happens |
 |-------|-------------|
-| **1. Discover** | Scrapes 5 job boards (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs) + 48 Workday employer portals + 30 direct career sites |
+| **1. Discover** | Scrapes 4 job boards (Indeed, LinkedIn, ZipRecruiter, Google Jobs) + the Canadian warehouse employer registry on Workday + ~20 direct career sites (Amazon, Costco, IKEA, UPS, Purolator, Gordon Food Service, etc.) + staffing agencies (Randstad, Adecco, Aerotek, Drake) |
 | **2. Enrich** | Fetches full job descriptions via JSON-LD, CSS selectors, or AI-powered extraction |
-| **3. Score** | AI rates every job 1-10 based on your resume and preferences. Only high-fit jobs proceed |
-| **4. Tailor** | AI rewrites your resume per job: reorganizes, emphasizes relevant experience, adds keywords. Never fabricates |
+| **3. Score** | AI rates every job 1-10 based on your resume, equipment certifications (forklift, WHMIS), and shift availability. Only high-fit jobs proceed |
+| **4. Tailor** | AI rewrites your resume per job: reorganizes, emphasizes relevant warehouse/material-handling experience, adds keywords. Never fabricates certifications |
 | **5. Cover Letter** | AI generates a targeted cover letter per job |
 | **6. Auto-Apply** | Claude Code navigates application forms, fills fields, uploads documents, answers questions, and submits |
 
@@ -73,13 +91,13 @@ Each stage is independent. Run them all or pick what you need.
 
 ## ApplyPilot vs The Alternatives
 
-| Feature | ApplyPilot | AIHawk | Manual |
+| Feature | ApplyPilot (Warehouse / Vancouver) | AIHawk | Manual |
 |---------|-----------|--------|--------|
-| Job discovery | 5 boards + Workday + direct sites | LinkedIn only | One board at a time |
-| AI scoring | 1-10 fit score per job | Basic filtering | Your gut feeling |
-| Resume tailoring | Per-job AI rewrite | Template-based | Hours per application |
+| Job discovery | 4 boards + Canadian warehouse Workday tenants + ~20 direct sites + 4 staffing agencies | LinkedIn only | One board at a time |
+| AI scoring | 1-10 fit score per job, weighted for warehouse certs & shift availability | Basic filtering | Your gut feeling |
+| Resume tailoring | Per-job AI rewrite, never fabricates certifications | Template-based | Hours per application |
 | Auto-apply | Full form navigation + submission | LinkedIn Easy Apply only | Click, type, repeat |
-| Supported sites | Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs, 46 Workday portals, 28 direct sites | LinkedIn | Whatever you open |
+| Supported sites | Indeed CA, LinkedIn, ZipRecruiter, Google Jobs, Job Bank, WorkBC, Eluta, Talent.com, CareerJet, Jooble + Amazon, Loblaw, Save-On-Foods, Walmart, Sysco, Costco, IKEA, Home Depot, UPS, Purolator, FedEx, GFS, DHL, 18 Wheels, Day & Ross, Stryder, Radius | LinkedIn | Whatever you open |
 | License | AGPL-3.0 | MIT | N/A |
 
 ---
@@ -120,25 +138,25 @@ Job search queries, target titles, locations, boards. Run multiple searches with
 API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` (optional).
 
 ### Package configs (shipped with ApplyPilot)
-- `config/employers.yaml` - Workday employer registry (48 preconfigured)
-- `config/sites.yaml` - Direct career sites (30+), blocked sites, base URLs, manual ATS domains
-- `config/searches.example.yaml` - Example search configuration
+- `config/employers.yaml` - Workday employer registry — Canadian warehouse / logistics / grocery distribution (Loblaw DCs, Save-On-Foods/Pattison, Walmart Canada, Sysco, Home Depot Canada, FedEx Canada, McKesson, DHL, Day & Ross, Magna, Canadian Tire)
+- `config/sites.yaml` - Direct career sites, staffing agencies, Canadian job boards, blocked sites, base URLs, manual ATS domains — all tuned for Metro Vancouver warehouse roles
+- `config/searches.example.yaml` - Example search configuration with the 9 target warehouse titles, every Greater Vancouver municipality, and warehouse-specific exclude filters
 
 ---
 
 ## How Stages Work
 
 ### Discover
-Queries Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs via JobSpy. Scrapes 48 Workday employer portals (configurable in `employers.yaml`). Hits 30 direct career sites with custom extractors. Deduplicates by URL.
+Queries Indeed CA, LinkedIn, ZipRecruiter, Google Jobs via JobSpy with `country: "Canada"`. Scrapes the Canadian warehouse Workday tenants in `employers.yaml` (Loblaw, Save-On-Foods, Walmart Canada, Sysco, etc.). Hits direct career sites (Amazon Jobs, Costco, IKEA, UPS, Purolator, Gordon Food Service, etc.) plus Canadian boards (Job Bank, WorkBC, Eluta, Talent.com, Jooble, CareerJet) and staffing agencies (Randstad, Adecco, Aerotek, Drake). Deduplicates by URL. Glassdoor is intentionally blocked — its bot detection makes scraping unreliable.
 
 ### Enrich
 Visits each job URL and extracts the full description. 3-tier cascade: JSON-LD structured data, then CSS selector patterns, then AI-powered extraction for unknown layouts.
 
 ### Score
-AI scores every job 1-10 against your profile. 9-10 = strong match, 7-8 = good, 5-6 = moderate, 1-4 = skip. Only jobs above your threshold proceed to tailoring.
+AI scores every job 1-10 against your profile, weighting forklift / WHMIS / First Aid certifications, RF-scanner & WMS experience, shift availability, and physical capability. 9-10 = strong match, 7-8 = good, 5-6 = moderate, 1-4 = skip. Jobs outside Greater Vancouver are heavily downweighted. Only jobs above your threshold proceed to tailoring.
 
 ### Tailor
-Generates a custom resume per job: reorders experience, emphasizes relevant skills, incorporates keywords from the job description. Your `resume_facts` (companies, projects, metrics) are preserved exactly. The AI reorganizes but never fabricates.
+Generates a custom resume per job: reorders experience, emphasizes relevant warehouse / material-handling / equipment skills, incorporates keywords from the job description. Your `resume_facts` (past employers, achievements, real metrics) are preserved exactly. The AI reorganizes but never fabricates — it will never claim a forklift cert, WHMIS, or other credential that isn't in your profile.
 
 ### Cover Letter
 Writes a targeted cover letter per job referencing the specific company, role, and how your experience maps to their requirements.

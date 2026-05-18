@@ -1,305 +1,140 @@
-# Workday employer registry for ApplyPilot
+# Workday employer registry for ApplyPilot — Warehousing & Logistics, Greater Vancouver
 # Users can add their own employers by following this pattern.
 # Find your employer's Workday URL at: https://[company].wd[N].myworkdayjobs.com
+#
+# This registry focuses on employers operating warehouses, distribution
+# centres, or fulfillment sites in Metro Vancouver. Many also run national
+# sites on the same Workday tenant — the discovery pipeline filters by the
+# location patterns in searches.yaml.
 
 employers:
 
-  # ── Canadian Banks & Financial ──────────────────────────────────────────
+  # ── Grocery & Food Retail Distribution ──────────────────────────────────
 
-  td:
-    name: "TD Bank"
-    tenant: "td"
-    site_id: "TD_Bank_Careers"
-    base_url: "https://td.wd3.myworkdayjobs.com"
+  # Loblaw Companies — operates the Marine Drive Distribution Centre in
+  # Vancouver and is one of the largest DC employers in BC. The DC postings
+  # live on a separate Workday tenant (`myview`) from corporate retail.
+  loblaw_dc:
+    name: "Loblaw Distribution Centres"
+    tenant: "myview"
+    site_id: "loblaw_DC_jobs"
+    base_url: "https://myview.wd3.myworkdayjobs.com"
 
-  cibc:
-    name: "CIBC"
-    tenant: "cibc"
-    site_id: "search"
-    base_url: "https://cibc.wd3.myworkdayjobs.com"
+  loblaw_retail:
+    name: "Loblaw Retail"
+    tenant: "myview"
+    site_id: "loblaw_retail"
+    base_url: "https://myview.wd3.myworkdayjobs.com"
 
-  rbc:
-    name: "RBC"
-    tenant: "rbc"
-    site_id: "RBCGLOBAL1"
-    base_url: "https://rbc.wd3.myworkdayjobs.com"
+  # Pattison Food Group — parent of Save-On-Foods, Western Canada's largest
+  # grocery retailer. HQ and distribution operations are in Langley, BC.
+  save_on_foods:
+    name: "Save-On-Foods (Pattison Food Group)"
+    tenant: "pfg"
+    site_id: "SaveonfoodsCareers"
+    base_url: "https://pfg.wd3.myworkdayjobs.com"
 
-  bmo:
-    name: "BMO"
-    tenant: "bmo"
-    site_id: "External"
-    base_url: "https://bmo.wd3.myworkdayjobs.com"
+  # Walmart Canada — operates a major distribution centre in Surrey, BC
+  # (8889 165 St / 192 St) plus the smaller Mississauga & Calgary networks.
+  walmart_canada:
+    name: "Walmart Canada"
+    tenant: "walmart"
+    site_id: "WalmartExternal"
+    base_url: "https://walmart.wd5.myworkdayjobs.com"
 
-  manulife:
-    name: "Manulife"
-    tenant: "manulife"
-    site_id: "MFCJH_Jobs"
-    base_url: "https://manulife.wd3.myworkdayjobs.com"
+  # Sysco — foodservice distribution. Sysco BC operates a Port Coquitlam
+  # facility and ships across the province.
+  sysco:
+    name: "Sysco"
+    tenant: "sysco"
+    site_id: "syscocareers"
+    base_url: "https://sysco.wd5.myworkdayjobs.com"
 
-  sunlife:
-    name: "Sun Life"
-    tenant: "sunlife"
-    site_id: "Experienced-Jobs"
-    base_url: "https://sunlife.wd3.myworkdayjobs.com"
+  # ── Big Box & General Merchandise ───────────────────────────────────────
 
-  desjardins:
-    name: "Desjardins"
-    tenant: "desjardins"
-    site_id: "Desjardins"
-    base_url: "https://desjardins.wd10.myworkdayjobs.com"
+  # Home Depot Canada — DC + store warehouse roles. Canadian career portal
+  # is a separate site_id from the US.
+  home_depot_canada:
+    name: "Home Depot Canada"
+    tenant: "homedepot"
+    site_id: "CareerDepotCanada"
+    base_url: "https://homedepot.wd5.myworkdayjobs.com"
 
-  intact:
-    name: "Intact Financial"
-    tenant: "intactfc"
-    site_id: "intactfc"
-    base_url: "https://intactfc.wd3.myworkdayjobs.com"
-
-  aviva:
-    name: "Aviva Canada"
-    tenant: "aviva"
-    site_id: "External"
-    base_url: "https://aviva.wd1.myworkdayjobs.com"
-
-  tmx:
-    name: "TMX Group"
-    tenant: "tmx"
-    site_id: "TMX_Careers"
-    base_url: "https://tmx.wd3.myworkdayjobs.com"
-
-  brookfield:
-    name: "Brookfield"
-    tenant: "brookfield"
-    site_id: "brookfield"
-    base_url: "https://brookfield.wd5.myworkdayjobs.com"
-
-  fis:
-    name: "FIS Global"
-    tenant: "fis"
-    site_id: "SearchJobs"
-    base_url: "https://fis.wd5.myworkdayjobs.com"
-
-  mastercard:
-    name: "Mastercard"
-    tenant: "mastercard"
-    site_id: "CorporateCareers"
-    base_url: "https://mastercard.wd1.myworkdayjobs.com"
-
-  paypal:
-    name: "PayPal"
-    tenant: "paypal"
-    site_id: "jobs"
-    base_url: "https://paypal.wd1.myworkdayjobs.com"
-
-  # ── Canadian Pension Funds ──────────────────────────────────────────────
-
-  cppib:
-    name: "CPP Investments"
-    tenant: "cppib"
-    site_id: "cppinvestments"
-    base_url: "https://cppib.wd10.myworkdayjobs.com"
-
-  omers:
-    name: "OMERS"
-    tenant: "omers"
-    site_id: "OMERS_External"
-    base_url: "https://omers.wd3.myworkdayjobs.com"
-
-  otpp:
-    name: "Ontario Teachers"
-    tenant: "otppb"
-    site_id: "OntarioTeachers_Careers"
-    base_url: "https://otppb.wd3.myworkdayjobs.com"
-
-  psp:
-    name: "PSP Investments"
-    tenant: "investpsp"
-    site_id: "psp_careers"
-    base_url: "https://investpsp.wd3.myworkdayjobs.com"
-
-  cdpq:
-    name: "CDPQ"
-    tenant: "cdpq"
-    site_id: "CDPQ"
-    base_url: "https://cdpq.wd10.myworkdayjobs.com"
-
-  hoopp:
-    name: "HOOPP"
-    tenant: "hoopp"
-    site_id: "HOOPP"
-    base_url: "https://hoopp.wd10.myworkdayjobs.com"
-
-  aimco:
-    name: "AIMCo"
-    tenant: "aimco"
-    site_id: "AIMCoCareers"
-    base_url: "https://aimco.wd10.myworkdayjobs.com"
-
-  # ── Tech Companies ──────────────────────────────────────────────────────
-
-  blackberry:
-    name: "BlackBerry"
-    tenant: "bb"
-    site_id: "BlackBerry"
-    base_url: "https://bb.wd3.myworkdayjobs.com"
-
-  ciena:
-    name: "Ciena"
-    tenant: "ciena"
-    site_id: "Careers"
-    base_url: "https://ciena.wd5.myworkdayjobs.com"
-
-  workday:
-    name: "Workday"
-    tenant: "workday"
-    site_id: "Workday"
-    base_url: "https://workday.wd5.myworkdayjobs.com"
-
-  salesforce:
-    name: "Salesforce"
-    tenant: "salesforce"
-    site_id: "External_Career_Site"
-    base_url: "https://salesforce.wd12.myworkdayjobs.com"
-
-  nvidia:
-    name: "NVIDIA"
-    tenant: "nvidia"
-    site_id: "NVIDIAExternalCareerSite"
-    base_url: "https://nvidia.wd5.myworkdayjobs.com"
-
-  netflix:
-    name: "Netflix"
-    tenant: "netflix"
-    site_id: "Netflix"
-    base_url: "https://netflix.wd1.myworkdayjobs.com"
-
-  cisco:
-    name: "Cisco"
-    tenant: "cisco"
-    site_id: "Cisco_Careers"
-    base_url: "https://cisco.wd5.myworkdayjobs.com"
-
-  intel:
-    name: "Intel"
-    tenant: "intel"
-    site_id: "External"
-    base_url: "https://intel.wd1.myworkdayjobs.com"
-
-  adobe:
-    name: "Adobe"
-    tenant: "adobe"
-    site_id: "external_experienced"
-    base_url: "https://adobe.wd5.myworkdayjobs.com"
-
-  motorola:
-    name: "Motorola Solutions"
-    tenant: "motorolasolutions"
-    site_id: "Careers"
-    base_url: "https://motorolasolutions.wd5.myworkdayjobs.com"
-
-  thomson_reuters:
-    name: "Thomson Reuters"
-    tenant: "thomsonreuters"
-    site_id: "External_Career_Site"
-    base_url: "https://thomsonreuters.wd5.myworkdayjobs.com"
-
-  moderna:
-    name: "Moderna"
-    tenant: "modernatx"
-    site_id: "M_tx"
-    base_url: "https://modernatx.wd1.myworkdayjobs.com"
-
-  servicenow:
-    name: "ServiceNow"
-    tenant: "servicenow"
-    site_id: "ServiceNowCareers"
-    base_url: "https://servicenow.wd1.myworkdayjobs.com"
-
-  docusign:
-    name: "DocuSign"
-    tenant: "docusign"
-    site_id: "External"
-    base_url: "https://docusign.wd5.myworkdayjobs.com"
-
-  uber:
-    name: "Uber"
-    tenant: "uber"
-    site_id: "uberCareers"
-    base_url: "https://uber.wd5.myworkdayjobs.com"
-
-  # ── Consulting ──────────────────────────────────────────────────────────
-
-  pwc:
-    name: "PwC"
-    tenant: "pwc"
-    site_id: "Global_Experienced_Careers"
-    base_url: "https://pwc.wd3.myworkdayjobs.com"
-
-  bdo:
-    name: "BDO"
-    tenant: "bdo"
-    site_id: "BDO"
-    base_url: "https://bdo.wd3.myworkdayjobs.com"
-
-  # ── Telecom ─────────────────────────────────────────────────────────────
-
-  telus:
-    name: "TELUS International"
-    tenant: "telusinternational"
-    site_id: "External"
-    base_url: "https://telusinternational.wd3.myworkdayjobs.com"
-
-  telus_health:
-    name: "TELUS Health"
-    tenant: "lifeworks"
-    site_id: "External"
-    base_url: "https://lifeworks.wd3.myworkdayjobs.com"
-
-  # ── Canadian Corporate ──────────────────────────────────────────────────
-
+  # Canadian Tire — runs distribution centres feeding stores across Canada.
   canadian_tire:
     name: "Canadian Tire"
     tenant: "canadiantirecorporation"
     site_id: "Enterprise_External_Careers_Site"
     base_url: "https://canadiantirecorporation.wd3.myworkdayjobs.com"
 
-  pc_financial:
-    name: "PC Financial"
-    tenant: "myview"
-    site_id: "pc_financial"
-    base_url: "https://myview.wd3.myworkdayjobs.com"
+  # ── Parcel, Courier & Last-Mile ─────────────────────────────────────────
 
-  cae:
-    name: "CAE"
-    tenant: "cae"
-    site_id: "career"
-    base_url: "https://cae.wd3.myworkdayjobs.com"
+  # FedEx Canada — package handler and warehouse roles at sort centres in
+  # Richmond and elsewhere.
+  fedex_canada:
+    name: "FedEx Canada"
+    tenant: "fedex"
+    site_id: "FXE-Canada_External_Career_Site"
+    base_url: "https://fedex.wd1.myworkdayjobs.com"
 
+  # FedEx Ground / Express US site — some Canadian roles cross-post here.
+  fedex:
+    name: "FedEx"
+    tenant: "fedex"
+    site_id: "FXE"
+    base_url: "https://fedex.wd1.myworkdayjobs.com"
+
+  # ── Healthcare & Pharma Logistics ───────────────────────────────────────
+
+  # McKesson Canada — pharma distribution centres; runs a BC operation.
+  mckesson:
+    name: "McKesson"
+    tenant: "mckesson"
+    site_id: "External_Careers"
+    base_url: "https://mckesson.wd3.myworkdayjobs.com"
+
+  # ── 3PL & Supply Chain ──────────────────────────────────────────────────
+
+  # DHL Supply Chain has warehouses in Burnaby and Richmond serving
+  # major Canadian retail clients.
+  dhl:
+    name: "DHL"
+    tenant: "dhl"
+    site_id: "DHL"
+    base_url: "https://dhl.wd3.myworkdayjobs.com"
+
+  # Day & Ross — Canadian LTL carrier with terminals in Surrey.
+  day_ross:
+    name: "Day & Ross"
+    tenant: "dayross"
+    site_id: "External"
+    base_url: "https://dayross.wd3.myworkdayjobs.com"
+
+  # ── Manufacturing & Industrial ──────────────────────────────────────────
+
+  # Magna — auto-parts manufacturer with warehousing/material-handler roles.
   magna:
     name: "Magna International"
     tenant: "magna"
     site_id: "Magna"
     base_url: "https://magna.wd3.myworkdayjobs.com"
 
-  mlse:
-    name: "MLSE"
-    tenant: "mlse"
-    site_id: "MLSE"
-    base_url: "https://mlse.wd3.myworkdayjobs.com"
-
-  olg:
-    name: "OLG"
-    tenant: "olg"
-    site_id: "Careers"
-    base_url: "https://olg.wd3.myworkdayjobs.com"
-
-  enbridge:
-    name: "Enbridge"
-    tenant: "enbridge"
-    site_id: "enbridge_careers"
-    base_url: "https://enbridge.wd3.myworkdayjobs.com"
-
-  canadian_solar:
-    name: "Canadian Solar"
-    tenant: "canadiansolar"
-    site_id: "CanadianSolar"
-    base_url: "https://canadiansolar.wd5.myworkdayjobs.com"
+  # ── Direct Career Sites (non-Workday) ───────────────────────────────────
+  # Several major warehouse employers in Metro Vancouver do NOT use Workday
+  # and are therefore handled through the JobSpy/direct-site scrapers
+  # configured in sites.yaml. These include:
+  #
+  #   - Amazon (amazon.jobs)              — YVR4 Delta, YVR7 Burnaby, plus delivery
+  #   - Costco (costco.com/jobs.html)     — Burnaby & Langley warehouses
+  #   - IKEA (ikea.com/ca/en/jobs)        — Coquitlam & Richmond stores + DC
+  #   - UPS (jobs-ups.com)                — Richmond hub
+  #   - Purolator (careers.purolator.com) — Richmond sort facility
+  #   - Gordon Food Service (gfs.ca)      — Delta distribution centre
+  #   - 18 Wheels Logistics               — Burnaby / Richmond / Aldergrove
+  #   - Stryder Canada                    — Richmond beverage centre
+  #   - 7 Mountain Logistics              — Metro Vancouver cold storage
+  #   - Radius Logistics                  — Surrey 3PL
+  #   - XPO Logistics                     — Surrey terminal
+  #
+  # If you find Workday tenants for any of these, contribute them back via
+  # the GitHub repo.

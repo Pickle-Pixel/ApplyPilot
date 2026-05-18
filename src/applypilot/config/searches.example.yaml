@@ -1,112 +1,207 @@
-# ApplyPilot search configuration
+# ApplyPilot search configuration — Warehousing & Logistics, Greater Vancouver
 # Copy to ~/.applypilot/searches.yaml and customize for your job search.
 # The wizard (applypilot init) generates a basic version automatically.
 
-# Search queries -- each has a query string and priority tier.
+# Search queries — each has a query string and priority tier.
 # Tier 1: High-priority exact matches (searched first, highest precision)
 # Tier 2: Strong matches, broader scope
 # Tier 3: Wide net, high volume, lower precision
 queries:
-  - query: "software engineer"
+  - query: "Warehouse Associate"
     tier: 1
-  - query: "backend engineer"
+  - query: "Order Picker"
     tier: 1
-  - query: "backend developer"
+  - query: "Warehouse Worker"
     tier: 1
-  - query: "full stack developer"
+  - query: "Order Selector"
+    tier: 1
+  - query: "Warehouse Operator"
+    tier: 1
+  - query: "Warehouse Assistant"
     tier: 2
-  - query: "full stack engineer"
+  - query: "Warehouse Person"
     tier: 2
-  - query: "python developer"
+  - query: "Warehouse Stocker"
     tier: 2
-  - query: "python engineer"
+  - query: "Packager"
     tier: 2
-  - query: "DevOps engineer"
-    tier: 2
-  - query: "site reliability engineer"
-    tier: 2
-  - query: "platform engineer"
-    tier: 2
-  - query: "cloud engineer"
-    tier: 2
-  - query: "data engineer"
-    tier: 2
-  - query: "infrastructure engineer"
-    tier: 2
-  - query: "software developer"
+  # Broader wide-net warehouse/logistics terms to catch postings that
+  # don't use the exact target titles above
+  - query: "Shipper Receiver"
     tier: 3
-  - query: "developer"
+  - query: "Material Handler"
     tier: 3
-  - query: "systems engineer"
+  - query: "Forklift Operator"
     tier: 3
-  - query: "automation engineer"
+  - query: "General Labourer warehouse"
     tier: 3
-  - query: "solutions engineer"
+  - query: "Distribution Centre Worker"
     tier: 3
-  - query: "integration engineer"
-    tier: 3
-  - query: "ML engineer"
-    tier: 3
-  - query: "machine learning engineer"
-    tier: 3
-  - query: "AI engineer"
-    tier: 3
-  - query: "security engineer"
+  - query: "Fulfillment Associate"
     tier: 3
 
-# Locations to search
+# Locations to search — every major municipality in the Greater Vancouver
+# Regional District (Metro Vancouver) so we don't miss postings tagged by
+# the specific suburb where the warehouse sits.
 locations:
-  - location: "San Francisco, CA"
+  - location: "Vancouver, BC"
     remote: false
-  - location: "Remote"
-    remote: true
+  - location: "Burnaby, BC"
+    remote: false
+  - location: "Richmond, BC"
+    remote: false
+  - location: "Surrey, BC"
+    remote: false
+  - location: "Delta, BC"
+    remote: false
+  - location: "Langley, BC"
+    remote: false
+  - location: "Coquitlam, BC"
+    remote: false
+  - location: "Port Coquitlam, BC"
+    remote: false
+  - location: "New Westminster, BC"
+    remote: false
+  - location: "North Vancouver, BC"
+    remote: false
+  - location: "Port Moody, BC"
+    remote: false
+  - location: "Pitt Meadows, BC"
+    remote: false
+  - location: "Maple Ridge, BC"
+    remote: false
+  - location: "White Rock, BC"
+    remote: false
+  - location: "Tsawwassen, BC"
+    remote: false
 
-# Location filtering -- accept/reject patterns for job location text
+# Location filtering — accept/reject patterns for job location text.
+# Warehouse work is on-site by definition, so we reject anything outside
+# Metro Vancouver. Accept patterns cover every common spelling/abbreviation
+# postings use for the region.
 location:
   accept_patterns:
-    - "San Francisco"
-    - "Bay Area"
-    - "SF"
-    - "California"
-    - "CA"
-    - "Remote"
-    - "Anywhere"
-    - "United States"
-    - "US"
-    - "USA"
+    - "Vancouver"
+    - "Burnaby"
+    - "Richmond"
+    - "Surrey"
+    - "Delta"
+    - "Tsawwassen"
+    - "Ladner"
+    - "Langley"
+    - "Cloverdale"
+    - "Coquitlam"
+    - "Port Coquitlam"
+    - "Port Moody"
+    - "New Westminster"
+    - "North Vancouver"
+    - "West Vancouver"
+    - "Pitt Meadows"
+    - "Maple Ridge"
+    - "White Rock"
+    - "Annacis Island"
+    - "Mitchell Island"
+    - "Tilbury"
+    - "Riverbend"
+    - "Campbell Heights"
+    - "Bridgeport"
+    - "Greater Vancouver"
+    - "Metro Vancouver"
+    - "Lower Mainland"
+    - "GVRD"
+    - "BC"
+    - "British Columbia"
   reject_patterns:
-    - "New York only"
-    - "Seattle only"
-    - "onsite only"
-    - "London, UK"
-    - "India"
-    - "Philippines"
+    - "Toronto"
+    - "Ontario"
+    - "Alberta"
+    - "Calgary"
+    - "Edmonton"
+    - "Winnipeg"
+    - "Manitoba"
+    - "Saskatchewan"
+    - "Quebec"
+    - "Montreal"
+    - "Halifax"
+    - "Nova Scotia"
+    - "United States"
+    - "USA"
+    - "Remote"
+    - "Work from home"
+    - "Anywhere"
+    - "Victoria, BC"     # On Vancouver Island, not GVRD
+    - "Nanaimo"
+    - "Kelowna"
+    - "Kamloops"
+    - "Prince George"
+    - "Abbotsford"        # Fraser Valley, outside Metro Vancouver
+    - "Chilliwack"
+    - "Mission, BC"
+    - "Squamish"
+    - "Whistler"
 
 # Country for Indeed/LinkedIn/Google Jobs searches
-country: "USA"
+country: "Canada"
 
 # JobSpy source boards (all available options shown)
+# Glassdoor is intentionally omitted — see sites.yaml `blocked` list.
 boards:
   - indeed
   - linkedin
-  - glassdoor
   - zip_recruiter
   - google
 
 # Search defaults
 defaults:
   results_per_site: 100  # Max results per board per query
-  hours_old: 72          # Only jobs posted within this many hours
+  hours_old: 168         # 1 week — warehouse postings turn over fast but
+                         # not as fast as tech, so a wider window catches more
+  distance: 25           # km radius around each location (Indeed/LinkedIn)
 
-# Negative keywords -- skip jobs with these in the title (case-insensitive)
+# Negative keywords — skip jobs with these in the title (case-insensitive).
+# Warehouse-specific exclusions: management, specialized trades, and roles
+# that share keywords with our targets but aren't entry-level warehouse work.
 exclude_titles:
-  - "senior director"
-  - "VP "
+  - "manager"
+  - "supervisor"
+  - "lead "
+  - "team lead"
+  - "director"
+  - "VP"
   - "vice president"
   - "chief"
+  - "coordinator"
+  - "planner"
+  - "analyst"
+  - "specialist"
+  - "engineer"
+  - "developer"
+  - "designer"
+  - "buyer"
+  - "merchandiser"
+  - "category"
+  - "sales"
+  - "account"
+  - "marketing"
+  - "controller"
+  - "accountant"
+  - "AZ driver"           # Class 1 commercial driver — different role
+  - "Class 1 driver"
+  - "Class 3 driver"
+  - "AZ/DZ"
+  - "truck driver"
+  - "delivery driver"
+  - "owner operator"
+  - "millwright"
+  - "electrician"
+  - "mechanic"
+  - "technician"
+  - "machinist"
+  - "welder"
   - "intern"
   - "internship"
   - "co-op"
-  - "clearance required"
-  - "TS/SCI"
-  - "principal scientist"
+  - "co op"
+  - "student"
+  - "executive"
+  - "head of"

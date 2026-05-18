@@ -4,53 +4,91 @@
     "preferred_name": "YOUR_PREFERRED_NAME",
     "email": "your.email@example.com",
     "password": "YOUR_JOB_SITE_PASSWORD",
-    "phone": "555-123-4567",
-    "address": "123 Main St",
-    "city": "Your City",
-    "province_state": "Your State/Province",
-    "country": "Your Country",
-    "postal_code": "A1B 2C3",
+    "phone": "604-555-0123",
+    "address": "123 Example St",
+    "city": "Burnaby",
+    "province_state": "British Columbia",
+    "country": "Canada",
+    "postal_code": "V5H 0A1",
     "linkedin_url": "https://www.linkedin.com/in/yourprofile",
-    "github_url": "https://github.com/yourusername",
+    "github_url": "",
     "portfolio_url": "",
     "website_url": ""
   },
   "work_authorization": {
     "legally_authorized_to_work": "Yes",
     "require_sponsorship": "No",
-    "work_permit_type": ""
+    "work_permit_type": "Canadian Citizen"
   },
   "availability": {
     "earliest_start_date": "Immediately",
     "available_for_full_time": "Yes",
-    "available_for_contract": "No"
+    "available_for_part_time": "Yes",
+    "available_for_contract": "Yes",
+    "available_shifts": ["Day", "Afternoon", "Night", "Weekend"],
+    "overtime_ok": "Yes"
   },
   "compensation": {
-    "salary_expectation": "85000",
-    "salary_currency": "USD",
-    "salary_range_min": "80000",
-    "salary_range_max": "100000",
-    "currency_conversion_note": ""
+    "salary_expectation": "22",
+    "salary_currency": "CAD",
+    "salary_unit": "hour",
+    "salary_range_min": "20",
+    "salary_range_max": "28",
+    "currency_conversion_note": "Hourly wage; BC general minimum wage is $17.85/hr (2025). Warehouse roles typically pay $20–$28/hr."
   },
   "experience": {
-    "years_of_experience_total": "3",
-    "education_level": "Bachelor's Degree",
-    "current_job_title": "",
+    "years_of_experience_total": "2",
+    "education_level": "High School Diploma",
+    "current_job_title": "Warehouse Associate",
     "current_company": "",
-    "target_role": "software engineer"
+    "target_role": "Warehouse Associate / Order Picker"
   },
   "skills_boundary": {
-    "languages": ["Python", "SQL", "JavaScript"],
-    "frameworks": ["FastAPI", "Flask", "React"],
-    "devops": ["Docker", "AWS", "CI/CD"],
-    "databases": ["PostgreSQL", "MongoDB"],
-    "tools": ["Git", "Linux"]
+    "equipment": [
+      "Pallet jack (manual and electric)",
+      "RF scanner",
+      "Hand truck / dolly",
+      "Forklift (counterbalance)",
+      "Reach truck",
+      "Order picker / cherry picker"
+    ],
+    "certifications": [
+      "Forklift Operator Certification",
+      "WHMIS 2015",
+      "Standard First Aid & CPR-C",
+      "OFA Level 1"
+    ],
+    "systems": [
+      "SAP WM",
+      "Manhattan WMS",
+      "Oracle WMS",
+      "Microsoft Excel basics"
+    ],
+    "physical": [
+      "Lift up to 50 lbs repeatedly",
+      "Stand/walk full shift",
+      "Climb ladders, bend, twist, reach",
+      "Comfortable in cooler and freezer environments"
+    ],
+    "soft_skills": [
+      "Reliable attendance",
+      "Team player",
+      "Attention to detail",
+      "Time management"
+    ]
   },
   "resume_facts": {
-    "preserved_companies": ["Company A", "Company B"],
-    "preserved_projects": ["Project X", "Project Y"],
-    "preserved_school": "Your University",
-    "real_metrics": ["50% improvement", "10x faster"]
+    "preserved_companies": ["Previous Warehouse Employer Inc.", "Past Logistics Co."],
+    "preserved_projects": [
+      "Led night-shift order picking team of 6",
+      "Maintained 99% pick accuracy over 12 months"
+    ],
+    "preserved_school": "Your High School / College",
+    "real_metrics": [
+      "Picked 150+ orders per shift",
+      "Zero safety incidents in 18 months",
+      "Reduced putaway time by 20%"
+    ]
   },
   "eeo_voluntary": {
     "gender": "Decline to self-identify",

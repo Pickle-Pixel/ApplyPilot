@@ -1,7 +1,12 @@
-# Direct career site registry for ApplyPilot
+# Direct career site registry for ApplyPilot — Warehousing & Logistics, Greater Vancouver
+#
 # Users can add their own sites following this pattern.
 # Use {location_encoded} placeholder for location (URL-encoded).
 # Use {query_encoded} placeholder for search terms (URL-encoded).
+#
+# This config is tuned for warehouse / order picker / material handler
+# roles in Metro Vancouver. Remote-tech boards (RemoteOK, WeWorkRemotely,
+# etc.) have been removed because they don't list on-site warehouse work.
 
 # ── Manual-Only ATS Domains ──────────────────────────────────────────────
 # These ATS platforms have unsolvable CAPTCHAs. Jobs routing through them
@@ -14,14 +19,11 @@ blocked:
   sites:
     - "glassdoor"
     - "google"
-    - "accenture"
-    - "AccentureCareers"
     - "Workopolis"
   url_patterns:
     - "%glassdoor%"
     - "%google.com/about/careers%"
     - "%google.jobs%"
-    - "%accenture%"
     - "%workopolis.com/out%"
 
 # ── Blocked SSO domains — cannot authenticate through these ──────────────
@@ -30,32 +32,43 @@ blocked_sso:
   - "login.microsoftonline.com"
   - "okta.com"
   - "auth0.com"
-  - "sso.cisco.com"
 
 # ── Base URLs for URL resolution ─────────────────────────────────────────
 # Used by detail enrichment to resolve relative URLs scraped from sites.
 # Sites not listed here (or with null) cannot have relative URLs resolved.
 base_urls:
   "Job Bank Canada": "https://www.jobbank.gc.ca"
+  "WorkBC": "https://www.workbc.ca"
   "CareerJet Canada": "https://www.careerjet.ca"
-  "BuiltIn Remote": "https://builtin.com"
-  "Hacker News Jobs": "https://news.ycombinator.com/"
-  "RemoteOK": null
-  "WelcomeToTheJungle": null
-  "Workopolis": "https://www.workopolis.com"
-  "WeWorkRemotely": "https://weworkremotely.com"
-  "Startup.jobs": "https://startup.jobs"
-  "Nodesk": "https://nodesk.co"
   "Talent.com": "https://www.talent.com"
-  "JustRemote": "https://justremote.co"
-  "Arc.dev": "https://arc.dev"
-  "Himalayas": "https://himalayas.app"
-  "Techstars Jobs": "https://www.techstars.com"
+  "Eluta": "https://www.eluta.ca"
+  "Jooble Canada": "https://ca.jooble.org"
   "Randstad Canada": "https://www.randstad.ca/jobs/search/"
+  "Adecco Canada": "https://www.adecco.ca"
+  "Aerotek Canada": "https://www.aerotek.com"
+  "Drake International": "https://www.drakeintl.com"
+  "Workopolis": "https://www.workopolis.com"
+  "Amazon Jobs": "https://www.amazon.jobs"
+  "Costco Canada": "https://www.costco.ca"
+  "IKEA Canada": "https://www.ikea.com"
+  "UPS Careers": "https://www.jobs-ups.com"
+  "Purolator": "https://careers.purolator.com"
+  "Gordon Food Service": "https://gfs.ca"
+  "Save-On-Foods": "https://www.saveonfoods.com"
+  "Loblaw Careers": "https://careers.loblaw.ca"
+  "Walmart Canada Careers": "https://careers.walmart.ca"
+  "Sysco Careers": "https://careers.sysco.com"
 
 sites:
-  # ── Searchable sites (URL includes query + location params) ──────────
-  # Canada-specific
+  # ── Canadian general job boards ───────────────────────────────────────
+  - name: "Job Bank Canada"
+    url: "https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring={query_encoded}&locationstring={location_encoded}&fage=7&sort=D"
+    type: search
+
+  - name: "WorkBC"
+    url: "https://www.workbc.ca/job-seekers/search-jobs?search={query_encoded}&location={location_encoded}"
+    type: search
+
   - name: "Eluta"
     url: "https://www.eluta.ca/search?q={query_encoded}&l={location_encoded}"
     type: search
@@ -64,118 +77,93 @@ sites:
     url: "https://www.talent.com/jobs?k={query_encoded}&l={location_encoded}"
     type: search
 
-  - name: "Randstad Canada"
-    url: "https://www.randstad.ca/jobs/?keywords={query_encoded}&location={location_encoded}"
-    type: search
-
   - name: "CareerJet Canada"
     url: "https://www.careerjet.ca/search/jobs?s={query_encoded}&l={location_encoded}"
     type: search
 
-  - name: "Job Bank Canada"
-    url: "https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring={query_encoded}&locationstring={location_encoded}&fage=2&sort=D"
+  - name: "Jooble Canada"
+    url: "https://ca.jooble.org/SearchResult?ukw={query_encoded}&rgns={location_encoded}"
     type: search
 
-  # General tech (with search)
-  - name: "Dice"
-    url: "https://www.dice.com/jobs?q={query_encoded}&location=Remote&pageSize=100"
+  # ── Staffing agencies — heavy warehouse focus in Metro Vancouver ──────
+  - name: "Randstad Canada"
+    url: "https://www.randstad.ca/jobs/?keywords={query_encoded}&location={location_encoded}"
     type: search
 
-  - name: "SimplyHired"
-    url: "https://www.simplyhired.com/search?q={query_encoded}&l={location_encoded}"
+  - name: "Adecco Canada"
+    url: "https://www.adecco.ca/en-ca/jobs/?keywords={query_encoded}&location={location_encoded}"
     type: search
 
-  - name: "PowerToFly"
-    url: "https://powertofly.com/jobs/?keywords={query_encoded}&remote=true"
+  - name: "Aerotek Canada"
+    url: "https://www.aerotek.com/en-ca/find-a-job?searchTerm={query_encoded}&location={location_encoded}"
     type: search
 
-  - name: "Techstars Jobs"
-    url: "https://jobs.techstars.com/jobs?keywords={query_encoded}"
+  - name: "Drake International"
+    url: "https://drakeintl.com/canada/job-seekers/job-search?keyword={query_encoded}&location={location_encoded}"
     type: search
 
-  - name: "Startup.jobs"
-    url: "https://startup.jobs/?q={query_encoded}&remote=true"
+  - name: "Express Employment Canada"
+    url: "https://www.expresspros.com/canada/jobs/?keyword={query_encoded}&location={location_encoded}"
     type: search
 
-  - name: "WelcomeToTheJungle"
-    url: "https://www.welcometothejungle.com/en/jobs?query={query_encoded}&refinementList%5Bremote%5D%5B%5D=fulltime"
+  - name: "Labour Unlimited"
+    url: "https://www.labourunlimited.com/jobs?search={query_encoded}"
     type: search
 
-  # ── Static sites (no query params, scraped once) ─────────────────────
-  # Remote-first boards
-  - name: "RemoteOK"
-    url: "https://remoteok.com/remote-dev-jobs"
-    type: static
-
-  - name: "WeWorkRemotely"
-    url: "https://weworkremotely.com/categories/remote-programming-jobs"
-    type: static
-
-  - name: "Remotive"
-    url: "https://remotive.com/remote-jobs/software-dev"
-    type: static
-
-  - name: "JustRemote"
-    url: "https://justremote.co/remote-developer-jobs"
-    type: static
-
-  - name: "Himalayas"
-    url: "https://himalayas.app/jobs/developer"
-    type: static
-
-  - name: "Working Nomads"
-    url: "https://www.workingnomads.com/jobs?category=development"
-    type: static
-
-  - name: "Remote.co"
-    url: "https://remote.co/remote-jobs/developer/"
-    type: static
-
-  - name: "Nodesk"
-    url: "https://nodesk.co/remote-jobs/"
-    type: static
-
-  - name: "DynamiteJobs"
-    url: "https://dynamitejobs.com/category/remote-development-jobs"
-    type: static
-
-  - name: "4DayWeek"
-    url: "https://4dayweek.io/remote-jobs/software-engineer"
-    type: static
-
-  # General tech (no search param)
-  - name: "Hacker News Jobs"
-    url: "https://news.ycombinator.com/jobs"
-    type: static
-
-  - name: "BuiltIn Remote"
-    url: "https://builtin.com/jobs/remote/dev-engineering"
-    type: static
-
-  - name: "Wellfound"
-    url: "https://wellfound.com/role/l/software-engineer/canada"
-    type: static
-
-  - name: "Arc.dev"
-    url: "https://arc.dev/remote-jobs/developer"
-    type: static
-
-  - name: "Jobgether"
-    url: "https://jobgether.com/remote-jobs/software-engineer"
-    type: static
-
-  - name: "TopStartups"
-    url: "https://topstartups.io/jobs/?job_location=Remote"
-    type: static
-
-  - name: "Jobspresso"
-    url: "https://jobspresso.co/remote-work/remote-software-development/"
-    type: static
-
-  - name: "FlexJobs"
-    url: "https://www.flexjobs.com/remote-jobs/computer-it"
-    type: static
-
-  - name: "Otta"
-    url: "https://otta.com/jobs/all?title=software+engineer&remote=true"
+  # ── Major warehouse employers (direct career sites) ───────────────────
+  - name: "Amazon Jobs"
+    url: "https://www.amazon.jobs/en/search?base_query={query_encoded}&loc_query={location_encoded}&country=CAN"
     type: search
+
+  - name: "Costco Canada"
+    url: "https://www.costco.ca/job-search.html?keyword={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "IKEA Canada"
+    url: "https://www.ikea.com/ca/en/jobs/search/?keyword={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "UPS Careers"
+    url: "https://www.jobs-ups.com/search-jobs/{query_encoded}/Canada/{location_encoded}"
+    type: search
+
+  - name: "Purolator"
+    url: "https://careers.purolator.com/search/?q={query_encoded}&locationsearch={location_encoded}"
+    type: search
+
+  - name: "Gordon Food Service"
+    url: "https://gfs.ca/en-ca/careers"
+    type: static
+
+  - name: "Save-On-Foods"
+    url: "https://www.saveonfoods.com/join-our-team"
+    type: static
+
+  - name: "Loblaw Careers"
+    url: "https://careers.loblaw.ca/search-jobs/{query_encoded}/Canada/{location_encoded}"
+    type: search
+
+  - name: "Walmart Canada Careers"
+    url: "https://careers.walmart.ca/search-jobs/{query_encoded}/British-Columbia/{location_encoded}"
+    type: search
+
+  - name: "Sysco Careers"
+    url: "https://careers.sysco.com/jobs?keywords={query_encoded}&location={location_encoded}"
+    type: search
+
+  # ── Local 3PL & logistics ─────────────────────────────────────────────
+  - name: "18 Wheels Logistics"
+    url: "https://www.18wheelslogistics.com/careers"
+    type: static
+
+  - name: "Stryder Canada"
+    url: "https://www.strydercanada.com/careers/"
+    type: static
+
+  - name: "Radius Logistics"
+    url: "https://www.radiuslogistics.com/careers/"
+    type: static
+
+  - name: "Day & Ross"
+    url: "https://dayrossgroup.com/careers/"
+    type: static

@@ -30,10 +30,11 @@ SCORING CRITERIA:
 - 1-2: Poor match. Completely different field or experience level.
 
 IMPORTANT FACTORS:
-- Weight technical skills heavily (programming languages, frameworks, tools)
-- Consider transferable experience (automation, scripting, API work)
-- Factor in the candidate's project experience
+- Weight role-relevant skills heavily — for warehouse roles this means equipment certifications (forklift, reach truck, order picker), WMS/RF-scanner experience, WHMIS, safe lifting, and physical capability
+- Consider transferable experience (any prior warehouse, distribution, retail back-of-house, or manual-labour work)
+- Factor in shift flexibility (day/afternoon/night/weekend availability), reliable attendance, and overtime willingness
 - Be realistic about experience level vs. job requirements (years of experience, seniority)
+- Heavily downweight jobs outside the candidate's target geography (Greater Vancouver / Metro Vancouver) — on-site warehouse work cannot be done remotely
 
 RESPOND IN EXACTLY THIS FORMAT (no other text):
 SCORE: [1-10]
