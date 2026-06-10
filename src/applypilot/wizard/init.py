@@ -26,6 +26,7 @@ from applypilot.config import (
     RESUME_PDF_PATH,
     SEARCH_CONFIG_PATH,
     ensure_dirs,
+    write_private_text,
 )
 
 console = Console()
@@ -169,13 +170,24 @@ def _setup_profile() -> dict:
         "disability_status": "Decline to self-identify",
     }
 
+    # -- Screening --
+    # These are submitted to real employers; some are legally significant, so
+    # collect them explicitly instead of hardcoding answers.
+    console.print("\n[bold]Screening questions[/bold] (used to auto-answer application forms)")
+    profile["screening"] = {
+        "age_18_plus": Confirm.ask("Are you 18 or older?", default=True),
+        "consents_to_background_check": Confirm.ask("Do you consent to a background check?", default=True),
+        "felony_conviction": Confirm.ask("Have you been convicted of a felony?", default=False),
+        "how_heard": Prompt.ask("How did you hear about jobs you apply to?", default="Online Job Board"),
+    }
+
     # -- Availability --
     profile["availability"] = {
         "earliest_start_date": Prompt.ask("Earliest start date", default="Immediately"),
     }
 
     # Save
-    PROFILE_PATH.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_private_text(PROFILE_PATH, json.dumps(profile, indent=2, ensure_ascii=False))
     console.print(f"\n[green]Profile saved to {PROFILE_PATH}[/green]")
     return profile
 
@@ -271,7 +283,7 @@ def _setup_ai_features() -> None:
         env_lines.append(f"LLM_MODEL={model}")
 
     env_lines.append("")
-    ENV_PATH.write_text("\n".join(env_lines), encoding="utf-8")
+    write_private_text(ENV_PATH, "\n".join(env_lines))
     console.print(f"[green]AI configuration saved to {ENV_PATH}[/green]")
 
 
@@ -309,12 +321,12 @@ def _setup_auto_apply() -> None:
         if ENV_PATH.exists():
             existing = ENV_PATH.read_text(encoding="utf-8")
             if "CAPSOLVER_API_KEY" not in existing:
-                ENV_PATH.write_text(
+                write_private_text(
+                    ENV_PATH,
                     existing.rstrip() + f"\nCAPSOLVER_API_KEY={capsolver_key}\n",
-                    encoding="utf-8",
                 )
         else:
-            ENV_PATH.write_text(f"# ApplyPilot configuration\nCAPSOLVER_API_KEY={capsolver_key}\n", encoding="utf-8")
+            write_private_text(ENV_PATH, f"# ApplyPilot configuration\nCAPSOLVER_API_KEY={capsolver_key}\n")
         console.print("[green]CapSolver key saved.[/green]")
     else:
         console.print("[dim]Skipped. Add CAPSOLVER_API_KEY to .env later if needed.[/dim]")

@@ -57,5 +57,11 @@
     "race_ethnicity": "Decline to self-identify",
     "veteran_status": "I am not a protected veteran",
     "disability_status": "I do not wish to answer"
+  },
+  "screening": {
+    "age_18_plus": true,
+    "consents_to_background_check": true,
+    "felony_conviction": false,
+    "how_heard": "Online Job Board"
   }
 }

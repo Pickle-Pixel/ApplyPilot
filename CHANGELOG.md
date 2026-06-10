@@ -5,6 +5,24 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- The auto-apply agent no longer keeps Bash/Edit/Write/WebFetch/WebSearch — only
+  the browser, Read, and the Gmail tools it needs — and the prompt now refuses
+  instructions embedded in page content (prompt-injection guard).
+- `profile.json`, `.env`, generated prompt logs, MCP configs, and the SQLite DB
+  are written `0600` (and `~/.applypilot` is `0700`).
+
+### Fixed
+- `apply --dry-run` is now genuinely side-effect-free: it never sends an
+  application email and never marks jobs applied (previously it did both).
+- Screening answers (age, background check, felony, "previously worked here")
+  come from `profile.screening` instead of hardcoded values; unset legally
+  significant answers are flagged for the human rather than guessed. The agent
+  no longer claims experience with tools the candidate hasn't listed.
+- `apply --url` now matches fresh (unapplied) jobs and won't file duplicates.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added

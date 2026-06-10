@@ -5,6 +5,7 @@ pipeline stage are created up front so any stage can run independently
 without migration ordering issues.
 """
 
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -133,6 +134,13 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
         )
     """)
     conn.commit()
+
+    # The DB holds scraped data plus profile-derived fields -- keep it
+    # owner-only (it is created world-readable by default).
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
     # Run migrations for any columns added after initial schema
     ensure_columns(conn)

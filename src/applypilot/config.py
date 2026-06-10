@@ -89,6 +89,26 @@ def ensure_dirs():
     """Create all required directories."""
     for d in [APP_DIR, TAILORED_DIR, COVER_LETTER_DIR, LOG_DIR, CHROME_WORKER_DIR, APPLY_WORKER_DIR]:
         d.mkdir(parents=True, exist_ok=True)
+    # APP_DIR holds secrets (profile, .env, DB) -- keep it owner-only.
+    try:
+        APP_DIR.chmod(0o700)
+    except OSError:
+        pass
+
+
+def write_private_text(path, content: str) -> None:
+    """Write text to ``path`` and restrict it to owner read/write (0600).
+
+    Use for any file that may contain secrets or personal data (.env, profile,
+    generated prompt logs). Created before chmod so the secret never sits at
+    the default world-readable mode for an observable window.
+    """
+    path = Path(path)
+    path.write_text(content, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def load_profile() -> dict:
