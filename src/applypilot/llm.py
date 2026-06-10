@@ -2,6 +2,7 @@
 Unified LLM client for ApplyPilot.
 
 Auto-detects provider from environment:
+    LLM_PROVIDER=claude_code -> Claude Code CLI (no API key required)
   GEMINI_API_KEY  -> Google Gemini (default: gemini-2.0-flash)
   OPENAI_API_KEY  -> OpenAI (default: gpt-4o-mini)
   LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
@@ -11,6 +12,8 @@ LLM_MODEL env var overrides the model name for any provider.
 
 import logging
 import os
+import shutil
+import subprocess
 import time
 
 import httpx
@@ -31,6 +34,19 @@ def _detect_provider() -> tuple[str, str, str]:
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     local_url = os.environ.get("LLM_URL", "")
     model_override = os.environ.get("LLM_MODEL", "")
+    provider_override = os.environ.get("LLM_PROVIDER", "").strip().lower()
+
+    if provider_override == "claude_code":
+        if shutil.which("claude") is None:
+            raise RuntimeError(
+                "LLM_PROVIDER=claude_code is set, but Claude Code CLI is not on PATH. "
+                "Install from https://claude.ai/code"
+            )
+        return (
+            "claude-code-cli",
+            model_override or "haiku",
+            "",
+        )
 
     if gemini_key and not local_url:
         return (
@@ -55,7 +71,7 @@ def _detect_provider() -> tuple[str, str, str]:
 
     raise RuntimeError(
         "No LLM provider configured. "
-        "Set GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
+        "Set LLM_PROVIDER=claude_code, GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
     )
 
 
@@ -69,6 +85,7 @@ _TIMEOUT = 120  # seconds
 # Base wait on first 429/503 (doubles each retry, caps at 60s).
 # Gemini free tier is 15 RPM = 4s minimum between requests; 10s gives headroom.
 _RATE_LIMIT_BASE_WAIT = 10
+_CLAUDE_CLI_TIMEOUT = 300
 
 
 _GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -92,6 +109,60 @@ class LLMClient:
         # True once we've confirmed the native Gemini API works for this model
         self._use_native_gemini: bool = False
         self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
+        self._is_claude_code: bool = base_url == "claude-code-cli"
+
+    # -- Claude Code CLI ----------------------------------------------------
+
+    @staticmethod
+    def _messages_to_prompt(messages: list[dict]) -> str:
+        """Convert OpenAI-style messages into one deterministic text prompt."""
+        parts: list[str] = []
+        for msg in messages:
+            role = msg.get("role", "user").upper()
+            content = msg.get("content", "")
+            parts.append(f"{role}:\n{content}\n")
+        parts.append("ASSISTANT:\n")
+        return "\n".join(parts)
+
+    def _chat_claude_code(
+        self,
+        messages: list[dict],
+    ) -> str:
+        """Call Claude Code CLI as the LLM backend for scoring/tailoring stages."""
+        prompt = self._messages_to_prompt(messages)
+        cmd = [
+            "claude",
+            "--print",
+            "--model",
+            self.model,
+            "--output-format",
+            "text",
+            "--input-format",
+            "text",
+            "--permission-mode",
+            "bypassPermissions",
+            "--no-session-persistence",
+            "--tools",
+            "",
+            "-",
+        ]
+
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=_CLAUDE_CLI_TIMEOUT,
+            check=False,
+        )
+
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            stdout = (proc.stdout or "").strip()
+            detail = stderr or stdout or f"exit code {proc.returncode}"
+            raise RuntimeError(f"Claude Code CLI failed: {detail[:500]}")
+
+        return (proc.stdout or "").strip()
 
     # -- Native Gemini API --------------------------------------------------
 
@@ -201,6 +272,9 @@ class LLMClient:
 
         for attempt in range(_MAX_RETRIES):
             try:
+                if self._is_claude_code:
+                    return self._chat_claude_code(messages)
+
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
                     return self._chat_native_gemini(messages, temperature, max_tokens)

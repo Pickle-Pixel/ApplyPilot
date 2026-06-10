@@ -245,10 +245,10 @@ def _setup_ai_features() -> None:
         console.print("[dim]Discovery-only mode. You can configure AI later with [bold]applypilot init[/bold].[/dim]")
         return
 
-    console.print("Supported providers: [bold]Gemini[/bold] (recommended, free tier), OpenAI, local (Ollama/llama.cpp)")
+    console.print("Supported providers: [bold]Gemini[/bold] (recommended, free tier), OpenAI, local (Ollama/llama.cpp), [bold]Claude Code CLI[/bold]")
     provider = Prompt.ask(
         "Provider",
-        choices=["gemini", "openai", "local"],
+        choices=["gemini", "openai", "local", "claude_code"],
         default="gemini",
     )
 
@@ -268,6 +268,10 @@ def _setup_ai_features() -> None:
         url = Prompt.ask("Local LLM endpoint URL", default="http://localhost:8080/v1")
         model = Prompt.ask("Model name", default="local-model")
         env_lines.append(f"LLM_URL={url}")
+        env_lines.append(f"LLM_MODEL={model}")
+    elif provider == "claude_code":
+        model = Prompt.ask("Claude model alias", default="haiku")
+        env_lines.append("LLM_PROVIDER=claude_code")
         env_lines.append(f"LLM_MODEL={model}")
 
     env_lines.append("")

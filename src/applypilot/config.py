@@ -206,7 +206,10 @@ def get_tier() -> int:
     """
     load_env()
 
+    use_claude_code_llm = os.environ.get("LLM_PROVIDER", "").strip().lower() == "claude_code"
     has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL"))
+    if use_claude_code_llm and shutil.which("claude") is not None:
+        has_llm = True
     if not has_llm:
         return 1
 
@@ -238,8 +241,13 @@ def check_tier(required: int, feature: str) -> None:
     _console = Console(stderr=True)
 
     missing: list[str] = []
-    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
-        missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
+    use_claude_code_llm = os.environ.get("LLM_PROVIDER", "").strip().lower() == "claude_code"
+    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL"))
+    if use_claude_code_llm and shutil.which("claude") is not None:
+        has_llm = True
+
+    if required >= 2 and not has_llm:
+        missing.append("LLM backend — run [bold]applypilot init[/bold], set GEMINI_API_KEY, or set LLM_PROVIDER=claude_code")
     if required >= 3:
         if not shutil.which("claude"):
             missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
