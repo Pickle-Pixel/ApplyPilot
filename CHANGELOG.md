@@ -5,6 +5,15 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- `applypilot doctor` checks for the Playwright browser; README and the init
+  wizard tell you to run `playwright install chromium`.
+- Re-running `applypilot init` merges into the existing `.env` (preserving keys
+  like `CAPSOLVER_API_KEY`) and prompts before overwriting `profile.json` /
+  `searches.yaml`. A plain-text resume is now required (or an explicit skip).
+
 ## [0.2.0] - 2026-02-17
 
 ### Added

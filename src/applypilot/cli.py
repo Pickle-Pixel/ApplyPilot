@@ -412,6 +412,21 @@ def doctor() -> None:
         results.append(("Chrome/Chromium", fail_mark,
                         "Install Chrome or set CHROME_PATH env var (needed for auto-apply)"))
 
+    # Playwright browser (separate from Chrome; pip does not install it).
+    # NOTE: os is imported locally above; avoid Path here -- a NameError would be
+    # swallowed by this except and always report MISSING.
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            pw_exe = p.chromium.executable_path
+        if pw_exe and os.path.exists(pw_exe):
+            results.append(("Playwright browser", ok_mark, pw_exe))
+        else:
+            raise FileNotFoundError(pw_exe)
+    except Exception:
+        results.append(("Playwright browser", fail_mark,
+                        "Run: playwright install chromium (needed for enrich/smart-extract/PDF)"))
+
     # Node.js / npx (for Playwright MCP)
     npx_bin = shutil.which("npx")
     if npx_bin:

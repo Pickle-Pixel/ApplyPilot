@@ -29,6 +29,7 @@ Three commands. That's it.
 ```bash
 pip install applypilot
 pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex
+playwright install chromium   # the headless browser used by enrich, smart-extract, and PDF rendering
 applypilot init          # one-time setup: resume, profile, preferences, API keys
 applypilot doctor        # verify your setup — shows what's installed and what's missing
 applypilot run           # discover > enrich > score > tailor > cover letters
@@ -89,6 +90,7 @@ Each stage is independent. Run them all or pick what you need.
 | Component | Required For | Details |
 |-----------|-------------|---------|
 | Python 3.11+ | Everything | Core runtime |
+| Playwright Chromium | Enrich, smart-extract, PDF | `playwright install chromium` after pip install (not bundled) |
 | Node.js 18+ | Auto-apply | Needed for `npx` to run Playwright MCP server |
 | Gemini API key | Scoring, tailoring, cover letters | Free tier (15 RPM / 1M tokens/day) is enough |
 | Chrome/Chromium | Auto-apply | Auto-detected on most systems |
