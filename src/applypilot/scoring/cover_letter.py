@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
+from applypilot.scoring.tailor import make_filename_prefix
 from applypilot.scoring.validator import (
     BANNED_WORDS,
     LLM_LEAK_PHRASES,
@@ -201,16 +202,21 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
 
-    # Fetch jobs that have tailored resumes but no cover letter yet
-    jobs = conn.execute(
+    # Fetch jobs that have tailored resumes but no cover letter yet.
+    # limit <= 0 means "all": a literal LIMIT 0 would return zero rows.
+    sql = (
         "SELECT * FROM jobs "
         "WHERE fit_score >= ? AND tailored_resume_path IS NOT NULL "
         "AND full_description IS NOT NULL "
         "AND (cover_letter_path IS NULL OR cover_letter_path = '') "
         "AND COALESCE(cover_attempts, 0) < ? "
-        "ORDER BY fit_score DESC LIMIT ?",
-        (min_score, MAX_ATTEMPTS, limit),
-    ).fetchall()
+        "ORDER BY fit_score DESC"
+    )
+    params: list = [min_score, MAX_ATTEMPTS]
+    if limit > 0:
+        sql += " LIMIT ?"
+        params.append(limit)
+    jobs = conn.execute(sql, params).fetchall()
 
     if not jobs:
         log.info("No jobs needing cover letters (score >= %d).", min_score)
@@ -237,19 +243,19 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             letter = generate_cover_letter(resume_text, job, profile,
                                           validation_mode=validation_mode)
 
-            # Build safe filename prefix
-            safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
-            safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            # Build safe, collision-free filename prefix
+            prefix = make_filename_prefix(job)
 
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
 
-            # Generate PDF (best-effort)
+            # Generate PDF (best-effort). Use the letter renderer, NOT the resume
+            # converter, which drops a cover letter's body.
             pdf_path = None
             try:
-                from applypilot.scoring.pdf import convert_to_pdf
-                pdf_path = str(convert_to_pdf(cl_path))
+                from applypilot.scoring.pdf import convert_letter_to_pdf
+                applicant_name = profile.get("personal", {}).get("full_name", "")
+                pdf_path = str(convert_letter_to_pdf(cl_path, applicant_name=applicant_name))
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 

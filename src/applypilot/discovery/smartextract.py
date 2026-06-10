@@ -1031,6 +1031,7 @@ def _run_all(
     results: list[dict] = []
     total_new = 0
     total_existing = 0
+    errors = 0
 
     def _process_result(r: dict, target: dict) -> None:
         nonlocal total_new, total_existing
@@ -1052,7 +1053,13 @@ def _run_all(
             }
             for future in as_completed(future_to_target):
                 target = future_to_target[future]
-                r = future.result()
+                # One flaky site must not abort the whole stage.
+                try:
+                    r = future.result()
+                except Exception as e:
+                    log.warning("Site %s failed: %s -- continuing", target["name"], e)
+                    errors += 1
+                    continue
                 results.append(r)
                 _process_result(r, target)
     else:
@@ -1063,7 +1070,12 @@ def _run_all(
                 label = f"{target['name']} [{target['query']}]"
             log.info("[%d/%d] %s", i + 1, len(targets), label)
 
-            r = _run_one_site(target["name"], target["url"])
+            try:
+                r = _run_one_site(target["name"], target["url"])
+            except Exception as e:
+                log.warning("Site %s failed: %s -- continuing", target["name"], e)
+                errors += 1
+                continue
             results.append(r)
             _process_result(r, target)
 
@@ -1080,7 +1092,7 @@ def _run_all(
     log.info("%d/%d PASS", passed, len(results))
 
     return {"total_new": total_new, "total_existing": total_existing,
-            "passed": passed, "total": len(results)}
+            "passed": passed, "total": len(results), "errors": errors}
 
 
 # -- Public entry point ------------------------------------------------------

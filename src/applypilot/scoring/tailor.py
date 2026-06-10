@@ -9,6 +9,7 @@ is always code-injected, never LLM-generated. Each retry starts a fresh conversa
 to avoid apologetic spirals.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -30,6 +31,19 @@ from applypilot.scoring.validator import (
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5  # max cross-run retries before giving up
+
+
+def make_filename_prefix(job: dict) -> str:
+    """Build a collision-free filename prefix for a job's generated artifacts.
+
+    Two postings with the same title from the same board would otherwise share
+    a path and overwrite each other, sending one employer the resume tailored
+    for another. A short hash of the (unique) job URL disambiguates them.
+    """
+    safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
+    safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
+    url_hash = hashlib.sha1(job["url"].encode()).hexdigest()[:8]
+    return f"{safe_site}_{safe_title}_{url_hash}"
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
@@ -490,10 +504,8 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             tailored, report = tailor_resume(resume_text, job, profile,
                                              validation_mode=validation_mode)
 
-            # Build safe filename prefix
-            safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
-            safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            # Build safe, collision-free filename prefix
+            prefix = make_filename_prefix(job)
 
             # Save tailored resume text
             txt_path = TAILORED_DIR / f"{prefix}.txt"

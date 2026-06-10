@@ -58,15 +58,45 @@ LLM_LEAK_PHRASES: list[str] = [
 
 # Known fabrication markers: completely unrelated tools/languages.
 # Reasonable stretches (K8s, Terraform, Redis, Kafka etc.) are ALLOWED.
-FABRICATION_WATCHLIST: set[str] = {
+# EXACT_TERMS match on word boundaries; PREFIX_TERMS match any word starting
+# with them (so "certif" catches certified/certification).
+EXACT_TERMS: set[str] = {
     # Languages with zero relation to the candidate's stack
     "c#", "c++", "golang", "rust", "ruby",
     "kotlin", "swift", "scala", "matlab",
     # Frameworks for wrong languages
     "spring", "django", "rails", "angular", "vue", "svelte",
     # Hard lies: certifications can't be stretched
-    "certif", "certified", "pmp", "scrum master", "aws certified",
+    "certified", "pmp", "scrum master", "aws certified",
 }
+PREFIX_TERMS: set[str] = {"certif"}
+
+# Kept for backwards-compat (tailor.py imports this name).
+FABRICATION_WATCHLIST: set[str] = EXACT_TERMS | PREFIX_TERMS
+
+
+def find_watchlist_hits(text: str, allowed: set[str]) -> list[str]:
+    """Return fabrication-watchlist terms that appear in ``text``.
+
+    Uses word-boundary matching so "scala" does not fire on "scalable" and
+    "rails" does not fire on "guardrails". Terms present in ``allowed`` (the
+    candidate's real skills) are never flagged. ``allowed`` is matched by exact
+    lowercased membership against the watchlist term.
+    """
+    low = text.lower()
+    hits: list[str] = []
+    for term in EXACT_TERMS:
+        if term in allowed:
+            continue
+        # Boundaries that also respect '+' and '#' so c++/c# match correctly.
+        if re.search(rf"(?<![\w+#]){re.escape(term)}(?![\w])", low):
+            hits.append(term)
+    for term in PREFIX_TERMS:
+        if term in allowed:
+            continue
+        if re.search(rf"(?<![\w+#]){re.escape(term)}", low):
+            hits.append(term)
+    return hits
 
 REQUIRED_SECTIONS: set[str] = {"SUMMARY", "TECHNICAL SKILLS", "EXPERIENCE", "PROJECTS", "EDUCATION"}
 
@@ -123,14 +153,13 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
     # Collect all text for bulk checks
     all_text_parts: list[str] = [data["summary"]]
 
-    # Skills: check for fabrication (always enforced)
+    # Skills: check for fabrication (always enforced), but never flag a tool the
+    # candidate actually lists in their profile.
+    allowed = _build_skills_set(profile)
     if isinstance(data["skills"], dict):
-        skills_text = " ".join(str(v) for v in data["skills"].values()).lower()
-        for fake in FABRICATION_WATCHLIST:
-            if len(fake) <= 2:
-                continue
-            if fake in skills_text:
-                errors.append(f"Fabricated skill: '{fake}'")
+        skills_text = " ".join(str(v) for v in data["skills"].values())
+        for fake in find_watchlist_hits(skills_text, allowed):
+            errors.append(f"Fabricated skill: '{fake}'")
 
     # Experience: preserved companies must be present (always enforced)
     resume_facts = profile.get("resume_facts", {})
@@ -243,23 +272,19 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
         warnings.append("Phone missing -- will be injected")
 
     # 7. Scan TECHNICAL SKILLS section for fabricated tools
+    allowed = _build_skills_set(profile)
     skills_start = text_lower.find("technical skills")
     skills_end = text_lower.find("experience", skills_start) if skills_start != -1 else -1
     if skills_start != -1 and skills_end != -1:
         skills_block = text_lower[skills_start:skills_end]
-        for fake in FABRICATION_WATCHLIST:
-            if len(fake) <= 2:
-                continue
-            if fake in skills_block:
-                errors.append(f"FABRICATED SKILL in Technical Skills: '{fake}'")
+        for fake in find_watchlist_hits(skills_block, allowed):
+            errors.append(f"FABRICATED SKILL in Technical Skills: '{fake}'")
 
     # 8. Scan full document for fabrication watchlist items not in original
     if original_text:
-        original_lower = original_text.lower()
-        for fake in FABRICATION_WATCHLIST:
-            if len(fake) <= 2:
-                continue
-            if fake in text_lower and fake not in original_lower:
+        original_hits = set(find_watchlist_hits(original_text, allowed))
+        for fake in find_watchlist_hits(text, allowed):
+            if fake not in original_hits:
                 warnings.append(f"New tool/skill appeared: '{fake}' (not in original)")
 
     # 9. Em dashes (should be auto-fixed by sanitize_text, but safety net)

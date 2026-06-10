@@ -228,7 +228,7 @@ def gen_prompt(target_url: str, min_score: int = 7,
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
 
-    prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text)
+    prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text, worker_id=worker_id)
 
     # Release the lock so the job stays available
     release_lock(job["url"])
@@ -272,6 +272,25 @@ def mark_job(url: str, status: str, reason: str | None = None) -> None:
     conn.commit()
 
 
+def reset_stale_locks() -> int:
+    """Clear jobs stuck in 'in_progress' from a previous crashed run.
+
+    All workers live in this process, so anything still 'in_progress' at startup
+    is by definition stale (the worker that held it is gone). Returns NULL so the
+    job is eligible again.
+
+    Returns:
+        Number of stale locks cleared.
+    """
+    conn = get_connection()
+    cursor = conn.execute(
+        "UPDATE jobs SET apply_status = NULL, agent_id = NULL "
+        "WHERE apply_status = 'in_progress'"
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
 def reset_failed() -> int:
     """Reset all failed jobs so they can be retried.
 
@@ -310,11 +329,16 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
 
+    # Reset the worker dir FIRST: build_prompt copies the resume/cover PDFs into
+    # APPLY_WORKER_DIR/worker-{id}/current, which reset_worker_dir would wipe.
+    worker_dir = reset_worker_dir(worker_id)
+
     # Build the prompt
     agent_prompt = prompt_mod.build_prompt(
         job=job,
         tailored_resume=resume_text,
         dry_run=dry_run,
+        worker_id=worker_id,
     )
 
     # Write per-worker MCP config
@@ -346,8 +370,6 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
-
-    worker_dir = reset_worker_dir(worker_id)
 
     update_state(worker_id, status="applying", job_title=job["title"],
                  company=job.get("site", ""), score=job.get("fit_score", 0),
@@ -673,6 +695,11 @@ def main(limit: int = 1, target_url: str | None = None,
 
     config.ensure_dirs()
     console = Console()
+
+    # Recover jobs stranded 'in_progress' by a previous crashed run.
+    recovered = reset_stale_locks()
+    if recovered:
+        console.print(f"[yellow]Recovered {recovered} stale in-progress job(s)[/yellow]")
 
     if continuous:
         effective_limit = 0

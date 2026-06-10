@@ -5,6 +5,7 @@ and exports to PDF using headless Chromium via Playwright.
 """
 
 import logging
+import re
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
@@ -387,6 +388,43 @@ def convert_to_pdf(
     out = Path(out)
     render_pdf(html, str(out))
     log.info("PDF generated: %s", out)
+    return out
+
+
+def _letter_html(text: str, applicant_name: str) -> str:
+    """Build a simple, correctly-structured HTML letter.
+
+    Cover letters have no resume structure (no SUMMARY line, no ALL-CAPS section
+    headers), so parse_resume() drops their body. This renders the prose as
+    paragraphs under a modest name header, escaping all content.
+    """
+    import html as _html
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    body = "\n".join(
+        f"<p>{_html.escape(p).replace(chr(10), '<br>')}</p>" for p in paragraphs
+    )
+    name = _html.escape(applicant_name)
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+@page {{ margin: 1in; }}
+body {{ font-family: 'Calibri', 'Segoe UI', Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #222; }}
+.name {{ font-size: 14pt; font-weight: 700; margin-bottom: 1.5em; }}
+p {{ margin: 0 0 1em 0; }}
+</style></head><body>
+<div class="name">{name}</div>
+{body}
+</body></html>"""
+
+
+def convert_letter_to_pdf(txt_path: Path, applicant_name: str,
+                          output_path: Path | None = None) -> Path:
+    """Render a cover-letter .txt to a properly formatted PDF."""
+    txt_path = Path(txt_path)
+    html = _letter_html(txt_path.read_text(encoding="utf-8"), applicant_name)
+    out = Path(output_path or txt_path.with_suffix(".pdf"))
+    render_pdf(html, str(out))
+    log.info("Cover letter PDF generated: %s", out)
     return out
 
 
