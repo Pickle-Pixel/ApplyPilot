@@ -104,16 +104,27 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
         conn.execute("BEGIN IMMEDIATE")
 
         if target_url:
-            like = f"%{target_url.split('?')[0].rstrip('/')}%"
-            row = conn.execute("""
+            # Exact match FIRST. The query string is often the entire job
+            # identity (indeed ?jk=, linkedin currentJobId=) -- stripping it
+            # for a LIKE pattern matches every job on that board, and LIMIT 1
+            # then applies to an arbitrary one (a different company's job).
+            _sel = """
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
-                WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
+                WHERE ({match})
                   AND tailored_resume_path IS NOT NULL
                   AND apply_status != 'in_progress'
                 LIMIT 1
-            """, (target_url, target_url, like, like)).fetchone()
+            """
+            row = conn.execute(_sel.format(match="url = ? OR application_url = ?"),
+                               (target_url, target_url)).fetchone()
+            if row is None:
+                # Tolerant fallback for scheme / trailing-slash variants of
+                # the SAME url -- the query string stays in the pattern.
+                like = "%" + target_url.split("://", 1)[-1].rstrip("/") + "%"
+                row = conn.execute(_sel.format(match="url LIKE ? OR application_url LIKE ?"),
+                                   (like, like)).fetchone()
         else:
             blocked_sites, blocked_patterns = _load_blocked()
             # Build parameterized filters to avoid SQL injection
