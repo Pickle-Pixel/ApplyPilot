@@ -20,17 +20,15 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import quote_plus
 
-import httpx
 import yaml
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 from applypilot import config
 from applypilot.config import CONFIG_DIR
-from applypilot.database import get_connection, init_db, store_jobs, get_stats
+from applypilot.database import init_db, get_stats
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -73,6 +71,17 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     return False
 
 
+def _title_ok(title: str | None, exclude_titles: list[str]) -> bool:
+    """Check if a job title passes the user's negative title filter."""
+    if not title or not exclude_titles:
+        return True
+    t_lower = title.lower()
+    for ex in exclude_titles:
+        if ex.lower() in t_lower:
+            return False
+    return True
+
+
 # -- Site configuration from YAML --------------------------------------------
 
 def load_sites() -> list[dict]:
@@ -92,6 +101,7 @@ def _store_jobs_filtered(
     strategy: str,
     accept_locs: list[str],
     reject_locs: list[str],
+    exclude_titles: list[str],
 ) -> tuple[int, int]:
     """Store jobs with location filtering. Returns (new, existing)."""
     now = datetime.now(timezone.utc).isoformat()
@@ -106,6 +116,9 @@ def _store_jobs_filtered(
         if not _location_ok(job.get("location"), accept_locs, reject_locs):
             filtered += 1
             continue
+        if not _title_ok(job.get("title"), exclude_titles):
+            filtered += 1
+            continue
         try:
             conn.execute(
                 "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at) "
@@ -118,7 +131,7 @@ def _store_jobs_filtered(
             existing += 1
 
     if filtered:
-        log.info("Filtered %d jobs (wrong location)", filtered)
+        log.info("Filtered %d jobs (wrong location or title)", filtered)
     conn.commit()
     return new, existing
 
@@ -424,7 +437,7 @@ def format_strategy_briefing(intel: dict) -> str:
             sections.append(f"\nJSON-LD: {len(job_postings)} JobPosting entries found (usable!)")
             sections.append(f"First JobPosting:\n{json.dumps(job_postings[0], indent=2)[:3000]}")
         else:
-            sections.append(f"\nJSON-LD: NO JobPosting entries (json_ld strategy will NOT work)")
+            sections.append("\nJSON-LD: NO JobPosting entries (json_ld strategy will NOT work)")
         if other:
             types = [j.get("@type", "?") if isinstance(j, dict) else "?" for j in other]
             sections.append(f"Other JSON-LD types (NOT job data): {types}")
@@ -439,7 +452,7 @@ def format_strategy_briefing(intel: dict) -> str:
             sections.append(f"  Status: {resp['status']} | Size: {resp['size']:,} chars | Type: {resp.get('type', '?')}")
             if "first_item_keys" in resp:
                 sections.append(f"  Item keys: {resp['first_item_keys']}")
-                sections.append(f"  Sample: {json.dumps(resp.get('first_item_sample', {}), indent=2)[:1000]}")
+                sections.append(f"  Sample: {json.dumps(resp.get('first_item_sample', {}), indent=2)[:100]}")
             if "keys" in resp:
                 sections.append(f"  Object keys: {resp['keys']}")
             for k, v in resp.items():
@@ -447,17 +460,17 @@ def format_strategy_briefing(intel: dict) -> str:
                     arr_name = k.replace("nested_", "")
                     sections.append(f"  .{arr_name}: array of {v['count']} items")
                     sections.append(f"    Item keys: {v['first_item_keys']}")
-                    sections.append(f"    Sample: {json.dumps(v.get('first_item_sample', {}), indent=2)[:1000]}")
+                    sections.append(f"    Sample: {json.dumps(v.get('first_item_sample', {}), indent=2)[:100]}")
                     for sk, sv in v.items():
                         if sk.startswith("first_item.") and isinstance(sv, dict):
                             sub_name = sk.replace("first_item.", "")
                             if "count" in sv:
                                 sections.append(f"    .{arr_name}[0].{sub_name}: array of {sv['count']} items")
                                 sections.append(f"      Item keys: {sv['first_item_keys']}")
-                                sections.append(f"      Sample: {json.dumps(sv.get('first_item_sample', {}), indent=2)[:1500]}")
+                                sections.append(f"      Sample: {json.dumps(sv.get('first_item_sample', {}), indent=2)[:150]}")
                             elif "keys" in sv:
                                 sections.append(f"    .{arr_name}[0].{sub_name}: object with keys {sv['keys']}")
-                                sections.append(f"      Sample: {json.dumps(sv.get('sample', {}), indent=2)[:1500]}")
+                                sections.append(f"      Sample: {json.dumps(sv.get('sample', {}), indent=2)[:150]}")
     else:
         sections.append("\nAPI RESPONSES: none intercepted")
 
@@ -1016,6 +1029,7 @@ def _run_all(
     targets: list[dict],
     accept_locs: list[str],
     reject_locs: list[str],
+    exclude_titles: list[str],
     workers: int = 1,
 ) -> dict:
     """Run smart extract on all targets.
@@ -1038,7 +1052,8 @@ def _run_all(
         if jobs:
             new, existing = _store_jobs_filtered(conn, jobs, target["name"],
                                                   r.get("strategy", "?"),
-                                                  accept_locs, reject_locs)
+                                                  accept_locs, reject_locs,
+                                                  exclude_titles)
             total_new += new
             total_existing += existing
             log.info("DB: +%d new, %d already existed", new, existing)
@@ -1103,6 +1118,7 @@ def run_smart_extract(
     """
     search_cfg = config.load_search_config()
     accept_locs, reject_locs = _load_location_filter(search_cfg)
+    exclude_titles = search_cfg.get("exclude_titles", [])
 
     targets = build_scrape_targets(sites=sites, search_cfg=search_cfg)
 
@@ -1115,4 +1131,4 @@ def run_smart_extract(
     log.info("Sites: %d searchable, %d static | Total targets: %d (workers=%d)",
              search_sites, static_sites, len(targets), workers)
 
-    return _run_all(targets, accept_locs, reject_locs, workers=workers)
+    return _run_all(targets, accept_locs, reject_locs, exclude_titles, workers=workers)

@@ -71,6 +71,17 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     return False
 
 
+def _title_ok(title: str | None, exclude_titles: list[str]) -> bool:
+    """Check if a job title passes the user's negative title filter."""
+    if not title or not exclude_titles:
+        return True
+    t_lower = title.lower()
+    for ex in exclude_titles:
+        if ex.lower() in t_lower:
+            return False
+    return True
+
+
 # -- HTML stripper -----------------------------------------------------------
 
 class _HTMLStripper(HTMLParser):
@@ -194,6 +205,7 @@ def search_employer(
     max_results: int = 0,
     accept_locs: list[str] | None = None,
     reject_locs: list[str] | None = None,
+    exclude_titles: list[str] | None = None,
 ) -> list[dict]:
     """Search an employer, paginate through all results, optionally filter by location."""
     log.info("%s: searching \"%s\"...", employer["name"], search_text)
@@ -225,6 +237,9 @@ def search_employer(
                 if not _location_ok(loc, accept_locs, reject_locs):
                     continue
 
+            if exclude_titles and not _title_ok(j.get("title", ""), exclude_titles):
+                continue
+
             all_jobs.append({
                 "title": j.get("title", ""),
                 "location": loc,
@@ -246,7 +261,7 @@ def search_employer(
             break
 
     log.info("%s: %d jobs found%s", employer["name"], len(all_jobs),
-             " (filtered)" if location_filter else "")
+             " (filtered)" if location_filter or exclude_titles else "")
     return all_jobs
 
 
@@ -347,6 +362,7 @@ def _process_one(
     location_filter: bool,
     accept_locs: list[str],
     reject_locs: list[str],
+    exclude_titles: list[str],
 ) -> dict:
     """Search one employer, fetch details, store results."""
     emp = employers[employer_key]
@@ -357,6 +373,7 @@ def _process_one(
             location_filter=location_filter,
             accept_locs=accept_locs,
             reject_locs=reject_locs,
+            exclude_titles=exclude_titles,
         )
     except Exception as e:
         log.error("%s: ERROR searching '%s': %s", emp["name"], search_text, e)
@@ -390,6 +407,7 @@ def scrape_employers(
     max_results: int = 0,
     accept_locs: list[str] | None = None,
     reject_locs: list[str] | None = None,
+    exclude_titles: list[str] | None = None,
     workers: int = 1,
 ) -> dict:
     """Run full scrape: search -> filter -> detail -> store.
@@ -404,6 +422,8 @@ def scrape_employers(
         accept_locs = []
     if reject_locs is None:
         reject_locs = []
+    if exclude_titles is None:
+        exclude_titles = []
 
     # Ensure DB schema
     init_db()
@@ -423,7 +443,7 @@ def scrape_employers(
             futures = {
                 pool.submit(
                     _process_one, key, employers, search_text,
-                    location_filter, accept_locs, reject_locs,
+                    location_filter, accept_locs, reject_locs, exclude_titles
                 ): key
                 for key in valid_keys
             }
@@ -446,7 +466,7 @@ def scrape_employers(
         for key in valid_keys:
             result = _process_one(
                 key, employers, search_text,
-                location_filter, accept_locs, reject_locs,
+                location_filter, accept_locs, reject_locs, exclude_titles
             )
             completed += 1
             total_new += result["new"]
@@ -493,6 +513,7 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
     search_cfg = config.load_search_config()
     queries_cfg = search_cfg.get("queries", [])
     accept_locs, reject_locs = _load_location_filter(search_cfg)
+    exclude_titles = search_cfg.get("exclude_titles", [])
 
     # Default to tier 1-2 queries for workday scraping
     max_tier = search_cfg.get("workday_max_tier", 2)
@@ -526,6 +547,7 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
             location_filter=location_filter,
             accept_locs=accept_locs,
             reject_locs=reject_locs,
+            exclude_titles=exclude_titles,
             workers=workers,
         )
         grand_new += result["new"]

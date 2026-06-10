@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from jobspy import scrape_jobs
 
 from applypilot import config
-from applypilot.database import get_connection, init_db, store_jobs
+from applypilot.database import get_connection, init_db
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +115,17 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     return False
 
 
+def _title_ok(title: str | None, exclude_titles: list[str]) -> bool:
+    """Check if a job title passes the user's negative title filter."""
+    if not title or not exclude_titles:
+        return True
+    t_lower = title.lower()
+    for ex in exclude_titles:
+        if ex.lower() in t_lower:
+            return False
+    return True
+
+
 # -- DB storage (JobSpy DataFrame -> SQLite) ---------------------------------
 
 def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tuple[int, int]:
@@ -129,7 +140,6 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
             continue
 
         title = str(row.get("title", "")) if str(row.get("title", "")) != "nan" else None
-        company = str(row.get("company", "")) if str(row.get("company", "")) != "nan" else None
         location_str = str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None
 
         # Build salary string from min/max
@@ -195,6 +205,7 @@ def _run_one_search(
     accept_locs: list[str],
     reject_locs: list[str],
     glassdoor_map: dict,
+    exclude_titles: list[str],
 ) -> dict:
     """Run a single search query and store results in DB."""
     s = search
@@ -268,11 +279,14 @@ def _run_one_search(
         log.info("[%s] 0 results", label)
         return {"new": 0, "existing": 0, "errors": 0, "filtered": 0, "total": 0, "label": label}
 
-    # Filter by location before storing
+    # Filter by location and title before storing
     before = len(df)
     df = df[df.apply(lambda row: _location_ok(
         str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None,
         accept_locs, reject_locs,
+    ) and _title_ok(
+        str(row.get("title", "")) if str(row.get("title", "")) != "nan" else None,
+        exclude_titles,
     ), axis=1)]
     filtered = before - len(df)
 
@@ -281,7 +295,7 @@ def _run_one_search(
 
     msg = f"[{label}] {before} results -> {new} new, {existing} dupes"
     if filtered:
-        msg += f", {filtered} filtered (location)"
+        msg += f", {filtered} filtered (location/title)"
     log.info(msg)
 
     return {"new": new, "existing": existing, "errors": 0, "filtered": filtered, "total": before, "label": label}
@@ -377,6 +391,7 @@ def _full_crawl(
     defaults = search_cfg.get("defaults", {})
     glassdoor_map = search_cfg.get("glassdoor_location_map", {})
     accept_locs, reject_locs = _load_location_config(search_cfg)
+    exclude_titles = search_cfg.get("exclude_titles", [])
 
     if tiers:
         queries = [q for q in queries if q.get("tier") in tiers]
@@ -411,7 +426,7 @@ def _full_crawl(
         result = _run_one_search(
             s, sites, results_per_site, hours_old,
             proxy_config, defaults, max_retries,
-            accept_locs, reject_locs, glassdoor_map,
+            accept_locs, reject_locs, glassdoor_map, exclude_titles
         )
         completed += 1
         total_new += result["new"]
