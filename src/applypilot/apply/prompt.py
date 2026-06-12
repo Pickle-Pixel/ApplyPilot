@@ -73,6 +73,8 @@ def _build_profile_summary(profile: dict) -> str:
 
     # Availability
     lines.append(f"Available: {avail.get('earliest_start_date', 'Immediately')}")
+    if avail.get("workplace_type"):
+        lines.append(f"Work Preference: {avail['workplace_type']}")
 
     # Standard responses
     lines.extend([
@@ -92,32 +94,16 @@ def _build_profile_summary(profile: dict) -> str:
     return "\n".join(lines)
 
 
-def _build_location_check(profile: dict, search_config: dict) -> str:
-    """Build the location eligibility check section of the prompt.
-
-    Uses the accept_patterns from search config to determine which cities
-    are acceptable for hybrid/onsite roles.
-    """
-    personal = profile["personal"]
-    location_cfg = search_config.get("location", {})
-    accept_patterns = location_cfg.get("accept_patterns", [])
-    primary_city = personal.get("city", location_cfg.get("primary", "your city"))
-
-    # Build the list of acceptable cities for hybrid/onsite
-    if accept_patterns:
-        city_list = ", ".join(accept_patterns)
-    else:
-        city_list = primary_city
-
+def _build_location_check() -> str:
+    """Build the location eligibility check section of the prompt."""
     return f"""== LOCATION CHECK (do this FIRST before any form) ==
 Read the job page. Determine the work arrangement. Then decide:
-- "Remote" or "work from anywhere" -> ELIGIBLE. Apply.
-- "Hybrid" or "onsite" in {city_list} -> ELIGIBLE. Apply.
-- "Hybrid" or "onsite" in another city BUT the posting also says "remote OK" or "remote option available" -> ELIGIBLE. Apply.
-- "Onsite only" or "hybrid only" in any city outside the list above with NO remote option -> NOT ELIGIBLE. Stop immediately. Output RESULT:FAILED:not_eligible_location
-- City is overseas (India, Philippines, Europe, etc.) with no remote option -> NOT ELIGIBLE. Output RESULT:FAILED:not_eligible_location
-- Cannot determine location -> Continue applying. If a screening question reveals it's non-local onsite, answer honestly and let the system reject if needed.
-Do NOT fill out forms for jobs that are clearly onsite in a non-acceptable location. Check EARLY, save time."""
+- "Remote", "work from anywhere", or any remote-friendly arrangement -> ELIGIBLE. Apply.
+- "Hybrid" anywhere in the United States -> ELIGIBLE. Apply.
+- "Onsite" anywhere in the United States -> ELIGIBLE. Apply.
+- Job is located overseas (India, Philippines, Europe, Canada, etc.) with NO remote option -> NOT ELIGIBLE. Output RESULT:FAILED:not_eligible_location
+- Cannot determine location, or location is ambiguous -> ELIGIBLE. Continue applying. If a screening question reveals it's non-US onsite, answer honestly and let the system reject if needed.
+Apply to ALL US-based jobs regardless of work arrangement (remote / hybrid / onsite). Only reject if clearly overseas with no remote option."""
 
 
 def _build_salary_section(profile: dict) -> str:
@@ -436,7 +422,6 @@ def build_prompt(job: dict, tailored_resume: str,
         Complete prompt string for the AI agent.
     """
     profile = config.load_profile()
-    search_config = config.load_search_config()
     personal = profile["personal"]
 
     # --- Resolve resume PDF path ---
@@ -478,7 +463,7 @@ def build_prompt(job: dict, tailored_resume: str,
 
     # --- Build all prompt sections ---
     profile_summary = _build_profile_summary(profile)
-    location_check = _build_location_check(profile, search_config)
+    location_check = _build_location_check()
     salary_section = _build_salary_section(profile)
     screening_section = _build_screening_section(profile)
     hard_rules = _build_hard_rules(profile)

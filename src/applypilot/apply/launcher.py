@@ -88,13 +88,14 @@ def _make_mcp_config(cdp_port: int) -> dict:
 # ---------------------------------------------------------------------------
 
 def acquire_job(target_url: str | None = None, min_score: int = 7,
-                worker_id: int = 0) -> dict | None:
+                worker_id: int = 0, shortlist_only: bool = False) -> dict | None:
     """Atomically acquire the next job to apply to.
 
     Args:
         target_url: Apply to a specific URL instead of picking from queue.
         min_score: Minimum fit_score threshold.
         worker_id: Worker claiming this job (for tracking).
+        shortlist_only: Only pick hand-picked jobs (shortlisted = 1).
 
     Returns:
         Job dict or None if the queue is empty.
@@ -127,6 +128,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             if blocked_patterns:
                 url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
+            shortlist_clause = "AND shortlisted = 1" if shortlist_only else ""
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
@@ -135,6 +137,8 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                   AND (apply_status IS NULL OR apply_status = 'failed')
                   AND (apply_attempts IS NULL OR apply_attempts < ?)
                   AND fit_score >= ?
+                  AND COALESCE(hidden, 0) != 1
+                  {shortlist_clause}
                   {site_clause}
                   {url_clauses}
                 ORDER BY fit_score DESC, url
@@ -548,7 +552,8 @@ def _is_permanent_failure(result: str) -> bool:
 def worker_loop(worker_id: int = 0, limit: int = 1,
                 target_url: str | None = None,
                 min_score: int = 7, headless: bool = False,
-                model: str = "sonnet", dry_run: bool = False) -> tuple[int, int]:
+                model: str = "sonnet", dry_run: bool = False,
+                shortlist_only: bool = False) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -578,7 +583,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                      last_action="waiting for job", actions=0)
 
         job = acquire_job(target_url=target_url, min_score=min_score,
-                          worker_id=worker_id)
+                          worker_id=worker_id, shortlist_only=shortlist_only)
         if not job:
             if not continuous:
                 add_event(f"[W{worker_id}] Queue empty")
@@ -653,7 +658,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 def main(limit: int = 1, target_url: str | None = None,
          min_score: int = 7, headless: bool = False, model: str = "sonnet",
          dry_run: bool = False, continuous: bool = False,
-         poll_interval: int = 60, workers: int = 1) -> None:
+         poll_interval: int = 60, workers: int = 1,
+         shortlist_only: bool = False) -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -737,6 +743,7 @@ def main(limit: int = 1, target_url: str | None = None,
                     headless=headless,
                     model=model,
                     dry_run=dry_run,
+                    shortlist_only=shortlist_only,
                 )
             else:
                 # Multi-worker — distribute limit across workers
@@ -760,6 +767,7 @@ def main(limit: int = 1, target_url: str | None = None,
                             headless=headless,
                             model=model,
                             dry_run=dry_run,
+                            shortlist_only=shortlist_only,
                         ): i
                         for i in range(workers)
                     }

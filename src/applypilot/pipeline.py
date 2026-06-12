@@ -60,8 +60,8 @@ _UPSTREAM: dict[str, str | None] = {
 # ---------------------------------------------------------------------------
 
 def _run_discover(workers: int = 1) -> dict:
-    """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
-    stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    """Stage: Job discovery — JobSpy, Workday, Handshake, and smart-extract scrapers."""
+    stats: dict = {"jobspy": None, "workday": None, "handshake": None, "smartextract": None}
 
     # JobSpy
     console.print("  [cyan]JobSpy full crawl...[/cyan]")
@@ -84,6 +84,17 @@ def _run_discover(workers: int = 1) -> dict:
         log.error("Workday scraper failed: %s", e)
         console.print(f"  [red]Workday error:[/red] {e}")
         stats["workday"] = f"error: {e}"
+
+    # Handshake university job board
+    console.print("  [cyan]Handshake university job board...[/cyan]")
+    try:
+        from applypilot.discovery.handshake import run_handshake_discovery
+        run_handshake_discovery(workers=workers)
+        stats["handshake"] = "ok"
+    except Exception as e:
+        log.error("Handshake scraper failed: %s", e)
+        console.print(f"  [red]Handshake error:[/red] {e}")
+        stats["handshake"] = f"error: {e}"
 
     # Smart extract
     console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
@@ -110,22 +121,26 @@ def _run_enrich(workers: int = 1) -> dict:
         return {"status": f"error: {e}"}
 
 
-def _run_score() -> dict:
+def _run_score(workers: int = 1) -> dict:
     """Stage: LLM scoring — assign fit scores 1-10."""
     try:
         from applypilot.scoring.scorer import run_scoring
-        run_scoring()
+        run_scoring(workers=workers)
         return {"status": "ok"}
     except Exception as e:
         log.error("Scoring failed: %s", e)
         return {"status": f"error: {e}"}
 
 
-def _run_tailor(min_score: int = 7, validation_mode: str = "normal") -> dict:
+def _run_tailor(min_score: int = 7, validation_mode: str = "normal",
+                job_type: str | None = None, eligible_only: bool = False,
+                shortlist_only: bool = False) -> dict:
     """Stage: Resume tailoring — generate tailored resumes for high-fit jobs."""
     try:
         from applypilot.scoring.tailor import run_tailoring
-        run_tailoring(min_score=min_score, validation_mode=validation_mode)
+        run_tailoring(min_score=min_score, validation_mode=validation_mode,
+                      job_type=job_type, eligible_only=eligible_only,
+                      shortlist_only=shortlist_only)
         return {"status": "ok"}
     except Exception as e:
         log.error("Tailoring failed: %s", e)
@@ -324,7 +339,10 @@ def _run_stage_streaming(
 # ---------------------------------------------------------------------------
 
 def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
-                    validation_mode: str = "normal") -> dict:
+                    validation_mode: str = "normal",
+                    job_type: str | None = None,
+                    eligible_only: bool = False,
+                    shortlist_only: bool = False) -> dict:
     """Execute stages one at a time (original behavior)."""
     results: list[dict] = []
     errors: dict[str, str] = {}
@@ -345,7 +363,11 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
             if name in ("tailor", "cover"):
                 kwargs["min_score"] = min_score
                 kwargs["validation_mode"] = validation_mode
-            if name in ("discover", "enrich"):
+            if name == "tailor":
+                kwargs["job_type"] = job_type
+                kwargs["eligible_only"] = eligible_only
+                kwargs["shortlist_only"] = shortlist_only
+            if name in ("discover", "enrich", "score"):
                 kwargs["workers"] = workers
             result = runner(**kwargs)
             elapsed = time.time() - t0
@@ -448,6 +470,9 @@ def run_pipeline(
     stream: bool = False,
     workers: int = 1,
     validation_mode: str = "normal",
+    job_type: str | None = None,
+    eligible_only: bool = False,
+    shortlist_only: bool = False,
 ) -> dict:
     """Run pipeline stages.
 
@@ -501,7 +526,9 @@ def run_pipeline(
                                 validation_mode=validation_mode)
     else:
         result = _run_sequential(ordered, min_score, workers=workers,
-                                 validation_mode=validation_mode)
+                                 validation_mode=validation_mode,
+                                 job_type=job_type, eligible_only=eligible_only,
+                                 shortlist_only=shortlist_only)
 
     # Summary table
     console.print(f"\n{'=' * 70}")

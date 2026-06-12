@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 import typer
@@ -36,11 +37,12 @@ VALID_STAGES = ("discover", "enrich", "score", "tailor", "cover", "pdf")
 def _bootstrap() -> None:
     """Common setup: load env, create dirs, init DB."""
     from applypilot.config import load_env, ensure_dirs
-    from applypilot.database import init_db
+    from applypilot.database import init_db, update_regions
 
     load_env()
     ensure_dirs()
-    init_db()
+    conn = init_db()
+    update_regions(conn)  # tag new rows with region (e.g. US East Coast)
 
 
 def _version_callback(value: bool) -> None:
@@ -97,6 +99,18 @@ def run(
             "lenient: banned words ignored, LLM judge skipped (fastest, fewest API calls)."
         ),
     ),
+    job_type: Optional[str] = typer.Option(
+        None, "--job-type", "-t",
+        help="Filter tailor stage by job type (e.g. full-time, internship).",
+    ),
+    eligible_only: bool = typer.Option(
+        False, "--eligible-only",
+        help="Only tailor jobs explicitly marked eligible=1.",
+    ),
+    shortlist_only: bool = typer.Option(
+        False, "--shortlist-only",
+        help="Only tailor hand-picked jobs (see `applypilot shortlist`).",
+    ),
 ) -> None:
     """Run pipeline stages: discover, enrich, score, tailor, cover, pdf."""
     _bootstrap()
@@ -136,6 +150,9 @@ def run(
         stream=stream,
         workers=workers,
         validation_mode=validation,
+        job_type=job_type,
+        eligible_only=eligible_only,
+        shortlist_only=shortlist_only,
     )
 
     if result.get("errors"):
@@ -157,6 +174,10 @@ def apply(
     mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
     fail_reason: Optional[str] = typer.Option(None, "--fail-reason", help="Reason for --mark-failed."),
     reset_failed: bool = typer.Option(False, "--reset-failed", help="Reset all failed jobs for retry."),
+    shortlist_only: bool = typer.Option(
+        False, "--shortlist-only",
+        help="Only apply to hand-picked jobs (see `applypilot shortlist`).",
+    ),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
@@ -253,6 +274,7 @@ def apply(
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
+        shortlist_only=shortlist_only,
     )
 
 
@@ -451,6 +473,269 @@ def doctor() -> None:
         console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
 
     console.print()
+
+
+@app.command()
+def overview(
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output HTML path."),
+    no_open: bool = typer.Option(False, "--no-open", help="Generate without opening the browser."),
+    serve: bool = typer.Option(False, "--serve", help="Serve live on localhost (hide buttons persist to DB)."),
+    port: int = typer.Option(8765, "--port", help="Port for --serve mode."),
+) -> None:
+    """Cross-workspace dashboard: jobs per role over 1h/24h/72h, platforms, ATS, applied status."""
+    from applypilot.overview import generate_overview, open_overview, serve_overview
+
+    if serve:
+        serve_overview(port)
+    elif no_open:
+        path = generate_overview(output)
+        console.print(f"[green]Overview generated:[/green] {path}")
+    else:
+        open_overview(output)
+        console.print("[green]Overview opened in browser.[/green]")
+
+
+@app.command()
+def shortlist(
+    min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for the picker list."),
+    limit: int = typer.Option(50, "--limit", "-l", help="Max jobs to show in the picker."),
+    show: bool = typer.Option(False, "--list", help="Show the current shortlist and exit."),
+    clear: bool = typer.Option(False, "--clear", help="Clear all shortlist marks and exit."),
+    east_only: bool = typer.Option(False, "--east-only", help="Only show US East Coast jobs."),
+) -> None:
+    """Hand-pick which jobs to tailor/apply (use with --shortlist-only)."""
+    _bootstrap()
+
+    from applypilot.database import get_connection
+
+    conn = get_connection()
+
+    if clear:
+        n = conn.execute("UPDATE jobs SET shortlisted = NULL WHERE shortlisted = 1").rowcount
+        conn.commit()
+        console.print(f"[green]Cleared {n} shortlist mark(s).[/green]")
+        return
+
+    if show:
+        rows = conn.execute(
+            "SELECT fit_score, title, site, location, url FROM jobs "
+            "WHERE shortlisted = 1 ORDER BY fit_score DESC"
+        ).fetchall()
+        if not rows:
+            console.print("[yellow]Shortlist is empty.[/yellow] Run `applypilot shortlist` to pick jobs.")
+            return
+        table = Table(title=f"Shortlist ({len(rows)} jobs)")
+        table.add_column("Score", justify="right")
+        table.add_column("Title", max_width=45)
+        table.add_column("Site")
+        table.add_column("Location", max_width=25)
+        for score, title, site, location, _url in rows:
+            table.add_row(str(score), title or "", site or "", location or "")
+        console.print(table)
+        return
+
+    # --- Interactive picker ---
+    east_clause = "AND region = 'east' " if east_only else ""
+    rows = conn.execute(
+        "SELECT url, fit_score, title, site, location, shortlisted, region, "
+        "       tailored_resume_path, applied_at "
+        "FROM jobs "
+        f"WHERE fit_score >= ? AND applied_at IS NULL "
+        f"AND COALESCE(hidden, 0) != 1 {east_clause}"
+        "ORDER BY fit_score DESC, (region = 'east') DESC, discovered_at DESC LIMIT ?",
+        (min_score, limit),
+    ).fetchall()
+
+    if not rows:
+        console.print(f"[yellow]No scored jobs with fit_score >= {min_score}.[/yellow] "
+                      "Run `applypilot run score` first.")
+        return
+
+    selected = {i for i, r in enumerate(rows) if r["shortlisted"] == 1}
+
+    def _render() -> None:
+        table = Table(title=f"Scored jobs (score >= {min_score}, top {len(rows)})")
+        table.add_column("#", justify="right")
+        table.add_column("Pick")
+        table.add_column("Score", justify="right")
+        table.add_column("Title", max_width=45)
+        table.add_column("Site")
+        table.add_column("Location", max_width=22)
+        table.add_column("Region")
+        table.add_column("Tailored")
+        for i, r in enumerate(rows):
+            mark = "[green]★[/green]" if i in selected else ""
+            tailored = "✓" if r["tailored_resume_path"] else ""
+            region = "[cyan]美东[/cyan]" if r["region"] == "east" else ""
+            style = "bold" if i in selected else None
+            table.add_row(str(i + 1), mark, str(r["fit_score"]), r["title"] or "",
+                          r["site"] or "", r["location"] or "", region, tailored, style=style)
+        console.print(table)
+
+    _render()
+    console.print(
+        "[dim]Toggle picks: numbers/ranges (e.g. 1 3 5-8) | a=all | n=none | "
+        "p=reprint list | Enter=save & exit[/dim]"
+    )
+
+    while True:
+        try:
+            raw = console.input("[bold]shortlist>[/bold] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\nAborted, nothing saved.")
+            return
+
+        if not raw:
+            break
+        if raw == "a":
+            selected = set(range(len(rows)))
+        elif raw == "n":
+            selected = set()
+        elif raw == "p":
+            _render()
+            continue
+        else:
+            ok = True
+            for tok in raw.replace(",", " ").split():
+                m = re.fullmatch(r"(\d+)(?:-(\d+))?", tok)
+                if not m:
+                    console.print(f"[red]Bad input: {tok}[/red]")
+                    ok = False
+                    break
+                lo = int(m.group(1))
+                hi = int(m.group(2) or lo)
+                for n in range(lo, hi + 1):
+                    if not 1 <= n <= len(rows):
+                        console.print(f"[red]Out of range: {n}[/red]")
+                        ok = False
+                        break
+                    i = n - 1
+                    selected.symmetric_difference_update({i})
+                if not ok:
+                    break
+            if not ok:
+                continue
+        console.print(f"  [green]{len(selected)}[/green] selected")
+
+    # Persist: only touch the rows that were shown
+    for i, r in enumerate(rows):
+        conn.execute(
+            "UPDATE jobs SET shortlisted = ? WHERE url = ?",
+            (1 if i in selected else None, r["url"]),
+        )
+    conn.commit()
+    console.print(
+        f"[bold green]Saved: {len(selected)} job(s) shortlisted.[/bold green] "
+        "Next: [bold]applypilot run tailor --shortlist-only[/bold]"
+    )
+
+
+@app.command()
+def check_dupes(
+    workspaces: Optional[list[str]] = typer.Argument(
+        None,
+        help="Workspace directories to compare. Defaults to all ~/.applypilot* dirs containing a database.",
+    ),
+    applied_only: bool = typer.Option(
+        False, "--applied-only",
+        help="Only report jobs applied to from more than one workspace.",
+    ),
+) -> None:
+    """Find jobs that appear in multiple workspaces (cross-role duplicate check)."""
+    import sqlite3
+    from pathlib import Path
+
+    if workspaces:
+        dirs = [Path(w).expanduser() for w in workspaces]
+    else:
+        dirs = sorted(p for p in Path.home().glob(".applypilot*") if (p / "applypilot.db").exists())
+
+    db_paths = [(d, d / "applypilot.db") for d in dirs if (d / "applypilot.db").exists()]
+    if len(db_paths) < 2:
+        console.print("[yellow]Need at least 2 workspaces with a database to compare.[/yellow]")
+        for d in dirs:
+            mark = "[green]✓[/green]" if (d / "applypilot.db").exists() else "[red]✗ no applypilot.db[/red]"
+            console.print(f"  {d}  {mark}")
+        raise typer.Exit()
+
+    # url -> list of (workspace_name, title, applied_at)
+    seen: dict[str, list[tuple[str, str, str | None]]] = {}
+    for d, db in db_paths:
+        name = d.name.replace(".applypilot-", "").replace(".applypilot", "default")
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            rows = conn.execute("SELECT url, title, applied_at FROM jobs").fetchall()
+        finally:
+            conn.close()
+        for url, title, applied_at in rows:
+            seen.setdefault(url, []).append((name, title or "", applied_at))
+
+    dupes = {u: hits for u, hits in seen.items() if len(hits) > 1}
+    if applied_only:
+        dupes = {u: hits for u, hits in dupes.items()
+                 if sum(1 for _, _, a in hits if a) > 1}
+
+    console.print(f"\nCompared {len(db_paths)} workspaces: "
+                  + ", ".join(d.name for d, _ in db_paths))
+
+    if not dupes:
+        console.print("[bold green]No cross-workspace duplicates found.[/bold green]")
+        return
+
+    double_applied = {u: hits for u, hits in dupes.items()
+                      if sum(1 for _, _, a in hits if a) > 1}
+
+    table = Table(title=f"{len(dupes)} jobs in multiple workspaces")
+    table.add_column("Title", max_width=50)
+    table.add_column("Workspaces")
+    table.add_column("Applied from")
+    table.add_column("URL", overflow="fold", max_width=60)
+    for url, hits in sorted(dupes.items(), key=lambda kv: -len(kv[1])):
+        title = hits[0][1]
+        ws = ", ".join(h[0] for h in hits)
+        applied = ", ".join(h[0] for h in hits if h[2]) or "-"
+        style = "red" if url in double_applied else None
+        table.add_row(title, ws, applied, url, style=style)
+    console.print(table)
+
+    if double_applied:
+        console.print(f"\n[bold red]⚠ {len(double_applied)} jobs were applied to from more than one workspace![/bold red]")
+    else:
+        console.print("\n[green]No job has been applied to twice.[/green] "
+                      "[dim]Rows above are only discovered in multiple workspaces — "
+                      "the apply stage will catch them if you check before running apply.[/dim]")
+
+
+@app.command()
+def reset_db(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
+) -> None:
+    """Delete the jobs database and all WAL files to start fresh."""
+    from applypilot.config import load_env, DB_PATH
+
+    load_env()
+
+    files = [DB_PATH, DB_PATH.with_suffix(".db-shm"), DB_PATH.with_suffix(".db-wal")]
+    existing = [f for f in files if f.exists()]
+
+    if not existing:
+        console.print("[yellow]No database files found, nothing to delete.[/yellow]")
+        return
+
+    if not force:
+        console.print("[red]This will delete:[/red]")
+        for f in existing:
+            console.print(f"  {f}")
+        confirm = typer.confirm("Are you sure?")
+        if not confirm:
+            console.print("Aborted.")
+            raise typer.Exit()
+
+    for f in existing:
+        f.unlink()
+        console.print(f"[green]Deleted:[/green] {f}")
+
+    console.print("[bold green]Database reset complete. Run 'applypilot run' to start fresh.[/bold green]")
 
 
 if __name__ == "__main__":
