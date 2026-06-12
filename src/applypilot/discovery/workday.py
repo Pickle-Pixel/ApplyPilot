@@ -300,6 +300,23 @@ def fetch_details(employer: dict, jobs: list[dict]) -> list[dict]:
 
 # -- DB storage --------------------------------------------------------------
 
+def _parse_posted_on(text: str | None) -> str | None:
+    """Convert Workday's 'Posted Today' / 'Posted 3 Days Ago' to an ISO date."""
+    if not text:
+        return None
+    from datetime import timedelta
+    t = text.lower()
+    today = datetime.now(timezone.utc).date()
+    if "today" in t:
+        return today.isoformat()
+    if "yesterday" in t:
+        return (today - timedelta(days=1)).isoformat()
+    m = re.search(r"(\d+)\+?\s*day", t)
+    if m:
+        return (today - timedelta(days=int(m.group(1)))).isoformat()
+    return None
+
+
 def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -> tuple[int, int]:
     """Store corporate jobs in DB. Returns (new, existing)."""
     now = datetime.now(timezone.utc).isoformat()
@@ -327,10 +344,11 @@ def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -
         try:
             conn.execute(
                 "INSERT INTO jobs (url, title, salary, description, location, site, strategy, "
-                "discovered_at, full_description, application_url, detail_scraped_at, detail_error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "discovered_at, date_posted, full_description, application_url, detail_scraped_at, detail_error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (url, job.get("title"), None, short_desc, job.get("location"),
-                 site, strategy, now, full_description, url, detail_scraped_at, detail_error),
+                 site, strategy, now, _parse_posted_on(job.get("posted")),
+                 full_description, url, detail_scraped_at, detail_error),
             )
             new += 1
         except sqlite3.IntegrityError:

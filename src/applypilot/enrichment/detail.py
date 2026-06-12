@@ -267,9 +267,17 @@ def extract_from_json_ld(intel: dict) -> dict | None:
         if not apply_url:
             apply_url = posting.get("url")
 
+        # Posting date if present (ISO 8601 per schema.org)
+        date_posted = posting.get("datePosted")
+        if isinstance(date_posted, str):
+            date_posted = date_posted[:10]
+        else:
+            date_posted = None
+
         return {
             "full_description": desc_clean,
             "application_url": apply_url,
+            "date_posted": date_posted,
         }
 
     return None
@@ -665,8 +673,10 @@ def scrape_site_batch(
                     stats[status] += 1
                     conn.execute(
                         "UPDATE jobs SET full_description = ?, application_url = ?, "
+                        "date_posted = COALESCE(?, date_posted), "
                         "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
-                        (result.get("full_description"), result.get("application_url"), now, url),
+                        (result.get("full_description"), result.get("application_url"),
+                         result.get("date_posted"), now, url),
                     )
                 else:
                     stats["error"] += 1
