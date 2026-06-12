@@ -16,9 +16,17 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
+from applypilot.config import RESUME_PATH, RESUME_TEX_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
-from applypilot.llm import get_client
+from applypilot.llm import get_premium_client as get_client
+from applypilot.scoring.tex import (
+    TexCompileError,
+    compile_tex,
+    extract_tex_body,
+    split_tex,
+    strip_tex,
+    validate_tex_body,
+)
 from applypilot.scoring.validator import (
     BANNED_WORDS,
     FABRICATION_WATCHLIST,
@@ -93,9 +101,17 @@ SKILLS: Reorder each category so the job's must-haves appear first.
 
 Reframe EVERY bullet for this role. Same real work, different angle. Every bullet must be reworded. Never copy verbatim.
 
-PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
+PROJECTS: Always include exactly 5 projects, selecting the most relevant ones for the target role. Reorder by relevance (most relevant first). Never include fewer than 5 — if needed, include less-relevant projects to reach 5.
 
-BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, Designed, Implemented, Reduced, Automated, Deployed, Operated, Optimized). Most relevant first. Max 4 per section.
+BULLETS: Write every bullet using the STAR method in ONE sentence:
+- S (Situation/Background): what problem or context existed — make the goal crystal clear
+- T (Task): what specifically needed to be done
+- A (Action): what you built or implemented
+- R (Result): quantified outcome or impact
+
+Format: "[Action verb] [what you built] to [solve/address what problem], [achieving/resulting in] [quantified outcome]."
+Example: "Built a RAG system over 1,000+ pages of medical literature to enable real-time clinical triage recommendations, reducing specialist escalation time by 40%."
+Vary verbs (Built, Designed, Implemented, Reduced, Automated, Deployed, Optimized). Most relevant first. Max 4 bullets per section.
 
 ## VOICE:
 - Write like a real engineer. Short, direct.
@@ -109,12 +125,77 @@ BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, De
 - Do NOT invent work, companies, degrees, or certifications
 - Do NOT change real numbers ({metrics_str})
 - Preserved companies: {companies_str} -- names stay as-is
-- Preserved school: {school}
-- Must fit 1 page.
+- Include ALL education degrees from the original resume (PhD, Master's, Bachelor's — keep all of them)
+- Include ALL publications from the original resume, verbatim
+- Target 2 pages. For PhD candidates with publications, fill both pages with relevant content.
 
 ## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
 
-{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":"{school} | {education_level}"}}"""
+{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":[{{"degree":"PhD in Computer Science | GPA: 3.81/4.0","institution":"University Name","dates":"Sep 2021 - Jun 2026"}},{{"degree":"M.Sc. in BI & Analytics | GPA: 3.83/4.0","institution":"University Name","dates":"Sep 2019 - May 2021"}},{{"degree":"B.Eng. in EE and Automation","institution":"University Name","dates":"Sep 2015 - May 2019"}}],"publications":[{{"citation":"Author et al., Title, Venue Year, Status","url":"https://..."}}]}}"""
+
+
+def _build_tex_tailor_prompt(profile: dict, max_pages: int) -> str:
+    """Build the LaTeX-mode tailoring system prompt from the user's profile.
+
+    Same fact boundaries as the JSON prompt, but the LLM edits the LaTeX
+    document body directly so the compiled layout stays deterministic.
+    """
+    boundary = profile.get("skills_boundary", {})
+    resume_facts = profile.get("resume_facts", {})
+
+    skills_lines = []
+    for category, items in boundary.items():
+        if isinstance(items, list) and items:
+            label = category.replace("_", " ").title()
+            skills_lines.append(f"{label}: {', '.join(items)}")
+    skills_block = "\n".join(skills_lines)
+
+    companies = resume_facts.get("preserved_companies", [])
+    projects = resume_facts.get("preserved_projects", [])
+    real_metrics = resume_facts.get("real_metrics", [])
+
+    companies_str = ", ".join(companies) if companies else "N/A"
+    metrics_str = ", ".join(real_metrics) if real_metrics else "N/A"
+    banned_str = ", ".join(BANNED_WORDS)
+    page_word = "page" if max_pages == 1 else "pages"
+
+    return f"""You are a senior technical recruiter rewriting a LaTeX resume to get this person an interview.
+
+You receive the BODY of a LaTeX resume (the preamble is fixed and not your concern) and a job description. Return the tailored LaTeX body.
+
+## LATEX RULES (violating any of these fails compilation):
+- Output ONLY the document body. No \\documentclass, no \\usepackage, no \\begin{{document}} or \\end{{document}}, no markdown fences, no commentary.
+- Use ONLY the commands and environments already present in the original body. Do not define new commands.
+- Keep the EXACT same section structure: every \\section in the original appears in your output, same order.
+- Do NOT modify the name/contact header block.
+- Escape special characters in prose: \\% \\& \\$ \\# \\_
+- The compiled PDF must fit in EXACTLY {max_pages} {page_word}. Keep the total amount of content very close to the original body -- same number of entries, similar bullet lengths. If you lengthen one bullet, shorten another.
+
+## SKILLS BOUNDARY (real skills only):
+{skills_block}
+
+You MAY add 2-3 closely related tools (Kubernetes if Docker, Terraform if AWS, Redis if PostgreSQL). No unrelated languages/frameworks.
+
+## TAILORING RULES:
+- Reorder skills so the job's must-haves appear first.
+- Reframe EVERY bullet for this role. Same real work, different angle. Never copy verbatim.
+- Reorder experience bullets and projects by relevance (most relevant first).
+- Write bullets STAR-style in ONE sentence: "[Action verb] [what you built] to [solve what problem], [achieving] [quantified outcome]."
+- Vary verbs (Built, Designed, Implemented, Reduced, Automated, Deployed, Optimized).
+
+## VOICE:
+- Write like a real engineer. Short, direct.
+- BANNED WORDS (using ANY of these = validation failure):
+  {banned_str}
+- No em dashes. Use commas, periods, or hyphens (LaTeX: prefer commas over --).
+
+## HARD RULES:
+- Do NOT invent work, companies, degrees, or certifications
+- Do NOT change real numbers ({metrics_str})
+- Preserved companies: {companies_str} -- names stay as-is
+- Keep ALL education degrees and ALL publications verbatim
+
+## OUTPUT: Return ONLY the raw LaTeX body. Nothing else."""
 
 
 def _build_judge_prompt(profile: dict) -> str:
@@ -292,7 +373,28 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
 
     # Education
     lines.append("EDUCATION")
-    lines.append(sanitize_text(str(data.get("education", ""))))
+    edu_data = data.get("education")
+    if isinstance(edu_data, list):
+        for edu in edu_data:
+            institution = edu.get("institution", "")
+            degree = edu.get("degree", "")
+            dates = edu.get("dates", "")
+            lines.append(sanitize_text(f"{institution}, {degree}"))
+            if dates:
+                lines.append(sanitize_text(dates))
+            lines.append("")
+    else:
+        lines.append(sanitize_text(str(edu_data or "")))
+
+    # Publications
+    pubs = data.get("publications", [])
+    if pubs:
+        lines.append("PUBLICATIONS")
+        for pub in pubs:
+            lines.append(f"- {sanitize_text(pub.get('citation', ''))}")
+            if pub.get("url"):
+                lines.append(f"  {pub['url']}")
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -400,12 +502,13 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        raw = client.chat(messages, max_tokens=2048, temperature=0.4)
+        raw = client.chat(messages, max_tokens=8192, temperature=0.4)
 
         # Parse JSON from response
         try:
             data = extract_json(raw)
         except ValueError:
+            log.warning("JSON parse failed (attempt %d). Raw response (first 500 chars): %s", attempt, raw[:500])
             avoid_notes.append("Output was not valid JSON. Return ONLY a JSON object, nothing else.")
             continue
 
@@ -453,25 +556,179 @@ def tailor_resume(
     return tailored, report
 
 
+# ── LaTeX-Mode Tailoring ─────────────────────────────────────────────────
+
+def tailor_resume_tex(
+    tex_source: str, job: dict, profile: dict, max_pages: int,
+    max_retries: int = 3, validation_mode: str = "normal",
+) -> tuple[str | None, bytes | None, str, dict]:
+    """Tailor a LaTeX resume with deterministic layout and page-count control.
+
+    The preamble is never sent to the LLM -- only the document body is
+    rewritten, then reassembled and compiled. Attempts that fail to compile
+    or overflow max_pages are retried with explicit feedback.
+
+    Args:
+        tex_source:      Full base resume.tex source.
+        job:             Job dict with title, site, location, full_description.
+        profile:         User profile dict.
+        max_pages:       Hard page limit for the compiled PDF.
+        max_retries:     Maximum retry attempts.
+        validation_mode: "strict", "normal", or "lenient" (same as text mode).
+
+    Returns:
+        (full_tex, pdf_bytes, plain_text, report). full_tex/pdf_bytes are None
+        if no attempt ever compiled.
+    """
+    preamble, body, ending = split_tex(tex_source)
+    original_plain = strip_tex(body)
+
+    job_text = (
+        f"TITLE: {job['title']}\n"
+        f"COMPANY: {job['site']}\n"
+        f"LOCATION: {job.get('location', 'N/A')}\n\n"
+        f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
+    )
+
+    report: dict = {
+        "attempts": 0, "validator": None, "judge": None, "pages": None,
+        "status": "pending", "validation_mode": validation_mode, "mode": "tex",
+    }
+    avoid_notes: list[str] = []
+    client = get_client()
+    prompt_base = _build_tex_tailor_prompt(profile, max_pages)
+
+    full_tex: str | None = None
+    pdf_bytes: bytes | None = None
+    plain = ""
+
+    for attempt in range(max_retries + 1):
+        report["attempts"] = attempt + 1
+
+        # Fresh conversation every attempt
+        prompt = prompt_base
+        if avoid_notes:
+            prompt += "\n\n## AVOID THESE ISSUES (from previous attempt):\n" + "\n".join(
+                f"- {n}" for n in avoid_notes[-5:]
+            )
+
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": (
+                f"ORIGINAL LATEX BODY:\n{body}\n\n---\n\n"
+                f"TARGET JOB:\n{job_text}\n\n"
+                "Return the tailored LaTeX body:"
+            )},
+        ]
+
+        raw = client.chat(messages, max_tokens=8192, temperature=0.4)
+        new_body = extract_tex_body(raw)
+
+        # Layer 1: structural + fact validation on the body
+        validation = validate_tex_body(new_body, body, profile, mode=validation_mode)
+        report["validator"] = validation
+        if not validation["passed"]:
+            avoid_notes.extend(validation["errors"])
+            if attempt < max_retries:
+                continue
+            report["status"] = "failed_validation"
+            return full_tex, pdf_bytes, plain, report
+
+        # Layer 2: must compile
+        candidate = preamble + "\n" + new_body.strip() + "\n" + ending
+        try:
+            candidate_pdf, pages = compile_tex(candidate)
+        except TexCompileError as e:
+            log.warning("LaTeX compile failed (attempt %d): %s", attempt + 1, str(e)[:200])
+            avoid_notes.append(f"LaTeX failed to compile. Fix this error: {str(e)[:400]}")
+            continue
+
+        full_tex, pdf_bytes = candidate, candidate_pdf
+        plain = strip_tex(new_body)
+        report["pages"] = pages
+
+        # Layer 3: page-count control -- the whole point of tex mode
+        if pages > max_pages:
+            avoid_notes.append(
+                f"Compiled to {pages} pages but the limit is {max_pages}. "
+                "Shorten bullets and the summary. Do not drop sections or entries."
+            )
+            if attempt < max_retries:
+                continue
+            report["status"] = "failed_validation"
+            return full_tex, pdf_bytes, plain, report
+
+        # Layer 4: LLM judge (catches subtle fabrication) -- skipped in lenient mode
+        if validation_mode == "lenient":
+            report["judge"] = {"verdict": "SKIPPED", "passed": True, "issues": "none"}
+            report["status"] = "approved"
+            return full_tex, pdf_bytes, plain, report
+
+        judge = judge_tailored_resume(original_plain, plain, job.get("title", ""), profile)
+        report["judge"] = judge
+        if not judge["passed"]:
+            avoid_notes.append(f"Judge rejected: {judge['issues']}")
+            if attempt < max_retries:
+                continue
+            report["status"] = "approved_with_judge_warning"
+            return full_tex, pdf_bytes, plain, report
+
+        report["status"] = "approved"
+        return full_tex, pdf_bytes, plain, report
+
+    report["status"] = "exhausted_retries"
+    return full_tex, pdf_bytes, plain, report
+
+
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
 def run_tailoring(min_score: int = 7, limit: int = 20,
-                  validation_mode: str = "normal") -> dict:
+                  validation_mode: str = "normal",
+                  job_type: str | None = None,
+                  eligible_only: bool = False,
+                  shortlist_only: bool = False) -> dict:
     """Generate tailored resumes for high-scoring jobs.
 
     Args:
         min_score:       Minimum fit_score to tailor for.
         limit:           Maximum jobs to process.
         validation_mode: "strict", "normal", or "lenient".
+        job_type:        Filter by job type (e.g. "full-time", "internship").
+        eligible_only:   If True, only tailor jobs with eligible = 1.
+        shortlist_only:  If True, only tailor hand-picked jobs (shortlisted = 1).
 
     Returns:
         {"approved": int, "failed": int, "errors": int, "elapsed": float}
     """
     profile = load_profile()
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
+
+    # LaTeX mode: resume.tex present -> deterministic layout + page control
+    tex_mode = RESUME_TEX_PATH.exists()
+    tex_source = ""
+    max_pages = 0
+    if tex_mode:
+        import os
+        tex_source = RESUME_TEX_PATH.read_text(encoding="utf-8")
+        resume_text = strip_tex(split_tex(tex_source)[1])
+        max_pages = int(os.environ.get("RESUME_MAX_PAGES", 0))
+        if not max_pages:
+            # Default page limit = whatever the base resume compiles to
+            _, max_pages = compile_tex(tex_source)
+        log.info("LaTeX mode: tailoring %s (page limit: %d)", RESUME_TEX_PATH, max_pages)
+    else:
+        resume_text = RESUME_PATH.read_text(encoding="utf-8")
+
     conn = get_connection()
 
     jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=min_score, limit=limit)
+
+    # Apply extra filters
+    if job_type:
+        jobs = [j for j in jobs if j.get("job_type") == job_type]
+    if eligible_only:
+        jobs = [j for j in jobs if j.get("eligible") == 1]
+    if shortlist_only:
+        jobs = [j for j in jobs if j.get("shortlisted") == 1]
 
     if not jobs:
         log.info("No untailored jobs with score >= %d.", min_score)
@@ -487,17 +744,30 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     for job in jobs:
         completed += 1
         try:
-            tailored, report = tailor_resume(resume_text, job, profile,
-                                             validation_mode=validation_mode)
+            tex_pdf_bytes: bytes | None = None
+            full_tex: str | None = None
+            if tex_mode:
+                full_tex, tex_pdf_bytes, tailored, report = tailor_resume_tex(
+                    tex_source, job, profile, max_pages,
+                    validation_mode=validation_mode)
+            else:
+                tailored, report = tailor_resume(resume_text, job, profile,
+                                                 validation_mode=validation_mode)
 
             # Build safe filename prefix
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
             safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
             prefix = f"{safe_site}_{safe_title}"
 
-            # Save tailored resume text
+            # Save tailored resume text (in tex mode: plain text extracted from
+            # the LaTeX -- the DB keeps pointing at the .txt so the apply stage
+            # contract is unchanged)
             txt_path = TAILORED_DIR / f"{prefix}.txt"
             txt_path.write_text(tailored, encoding="utf-8")
+
+            # Save the tailored LaTeX source alongside, for traceability
+            if tex_mode and full_tex:
+                (TAILORED_DIR / f"{prefix}.tex").write_text(full_tex, encoding="utf-8")
 
             # Save job description for traceability
             job_path = TAILORED_DIR / f"{prefix}_JOB.txt"
@@ -519,11 +789,17 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             # "approved_with_judge_warning" is also a success — resume was generated.
             pdf_path = None
             if report["status"] in ("approved", "approved_with_judge_warning"):
-                try:
-                    from applypilot.scoring.pdf import convert_to_pdf
-                    pdf_path = str(convert_to_pdf(txt_path))
-                except Exception:
-                    log.debug("PDF generation failed for %s", txt_path, exc_info=True)
+                if tex_mode and tex_pdf_bytes:
+                    # Already compiled by LaTeX -- just write it out
+                    out_pdf = TAILORED_DIR / f"{prefix}.pdf"
+                    out_pdf.write_bytes(tex_pdf_bytes)
+                    pdf_path = str(out_pdf)
+                else:
+                    try:
+                        from applypilot.scoring.pdf import convert_to_pdf
+                        pdf_path = str(convert_to_pdf(txt_path))
+                    except Exception:
+                        log.debug("PDF generation failed for %s", txt_path, exc_info=True)
 
             result = {
                 "url": job["url"],

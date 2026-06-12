@@ -8,7 +8,9 @@ profile and resume file.
 import json
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from applypilot.config import RESUME_PATH, load_profile
@@ -101,17 +103,19 @@ def score_job(resume_text: str, job: dict) -> dict:
         return {"score": 0, "keywords": "", "reasoning": f"LLM error: {e}"}
 
 
-def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
+def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1) -> dict:
     """Score unscored jobs that have full descriptions.
 
     Args:
         limit: Maximum number of jobs to score in this run.
         rescore: If True, re-score all jobs (not just unscored ones).
+        workers: Number of parallel threads for LLM calls.
 
     Returns:
         {"scored": int, "errors": int, "elapsed": float, "distribution": list}
     """
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    from applypilot.scoring.tex import load_base_resume_text
+    resume_text = load_base_resume_text()
     conn = get_connection()
 
     if rescore:
@@ -131,35 +135,47 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
 
-    log.info("Scoring %d jobs sequentially...", len(jobs))
+    log.info("Scoring %d jobs with %d worker(s)...", len(jobs), workers)
     t0 = time.time()
     completed = 0
     errors = 0
     results: list[dict] = []
+    _db_lock = threading.Lock()   # guards DB writes
+    _log_lock = threading.Lock()  # guards counter + logging
 
-    for job in jobs:
+    def _score_and_save(job: dict) -> dict:
         result = score_job(resume_text, job)
         result["url"] = job["url"]
-        completed += 1
+        # Each thread gets its own DB connection (thread-local via get_connection())
+        now = datetime.now(timezone.utc).isoformat()
+        with _db_lock:
+            thread_conn = get_connection()
+            thread_conn.execute(
+                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                (result["score"], f"{result['keywords']}\n{result['reasoning']}", now, job["url"]),
+            )
+            thread_conn.commit()
+        return result
 
-        if result["score"] == 0:
-            errors += 1
-
-        results.append(result)
-
-        log.info(
-            "[%d/%d] score=%d  %s",
-            completed, len(jobs), result["score"], job.get("title", "?")[:60],
-        )
-
-    # Write scores to DB
-    now = datetime.now(timezone.utc).isoformat()
-    for r in results:
-        conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-            (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
-        )
-    conn.commit()
+    if workers <= 1:
+        for job in jobs:
+            result = _score_and_save(job)
+            completed += 1
+            if result["score"] == 0:
+                errors += 1
+            results.append(result)
+            log.info("[%d/%d] score=%d  %s", completed, len(jobs), result["score"], job.get("title", "?")[:60])
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_score_and_save, job): job for job in jobs}
+            for future in as_completed(futures):
+                result = future.result()
+                with _log_lock:
+                    completed += 1
+                    if result["score"] == 0:
+                        errors += 1
+                    results.append(result)
+                    log.info("[%d/%d] score=%d  %s", completed, len(jobs), result["score"], futures[future].get("title", "?")[:60])
 
     elapsed = time.time() - t0
     log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)

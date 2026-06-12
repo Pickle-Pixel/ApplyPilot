@@ -5,6 +5,7 @@ and exports to PDF using headless Chromium via Playwright.
 """
 
 import logging
+import re
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
@@ -190,11 +191,49 @@ def build_html(resume: dict) -> str:
             items += f'<div class="entry"><div class="entry-title">{e["title"]}</div>{subtitle}<ul>{bullets}</ul></div>'
         proj_html = f'<div class="section"><div class="section-title">Projects</div>{items}</div>'
 
-    # Education
+    # Education (supports multi-line with institution, degree, dates per entry)
     edu_html = ""
     if "EDUCATION" in sections:
         edu_text = sections["EDUCATION"].strip()
-        edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
+        edu_lines = [l for l in edu_text.split("\n") if l.strip()]
+        edu_items = ""
+        i = 0
+        while i < len(edu_lines):
+            line = edu_lines[i].strip()
+            # Check if next line looks like a date range
+            if i + 1 < len(edu_lines) and re.search(r"\d{4}", edu_lines[i + 1]):
+                dates = edu_lines[i + 1].strip()
+                edu_items += f'<div class="edu-entry"><div class="edu-title">{line}</div><div class="edu-dates">{dates}</div></div>'
+                i += 2
+            else:
+                edu_items += f'<div class="edu-entry"><div class="edu-title">{line}</div></div>'
+                i += 1
+        edu_html = f'<div class="section"><div class="section-title">Education</div>{edu_items}</div>'
+
+    # Publications
+    pub_html = ""
+    if "PUBLICATIONS" in sections:
+        pub_text = sections["PUBLICATIONS"].strip()
+        pub_lines = pub_text.split("\n")
+        pub_items = ""
+        current_cite = ""
+        current_url = ""
+        for line in pub_lines:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                if current_cite:
+                    url_part = f' <span class="pub-url">{current_url}</span>' if current_url else ""
+                    pub_items += f"<li>{current_cite}{url_part}</li>"
+                current_cite = stripped[2:]
+                current_url = ""
+            elif stripped.startswith("http"):
+                current_url = stripped
+            elif stripped:
+                current_cite += " " + stripped
+        if current_cite:
+            url_part = f' <span class="pub-url">{current_url}</span>' if current_url else ""
+            pub_items += f"<li>{current_cite}{url_part}</li>"
+        pub_html = f'<div class="section"><div class="section-title">Publications</div><ul class="pub-list">{pub_items}</ul></div>'
 
     # Summary
     summary_html = ""
@@ -310,8 +349,30 @@ li {{
     margin-bottom: 1px;
     line-height: 1.35;
 }}
-.edu {{
+.edu-entry {{
+    margin-bottom: 3px;
+}}
+.edu-title {{
     font-size: 10pt;
+    font-weight: 500;
+}}
+.edu-dates {{
+    font-size: 9pt;
+    color: #555;
+    font-style: italic;
+}}
+.pub-list {{
+    margin-left: 14px;
+    padding: 0;
+}}
+.pub-list li {{
+    font-size: 9pt;
+    margin-bottom: 2px;
+    line-height: 1.35;
+}}
+.pub-url {{
+    color: #2a7ab5;
+    font-size: 8.5pt;
 }}
 </style>
 </head>
@@ -327,6 +388,7 @@ li {{
 {exp_html}
 {proj_html}
 {edu_html}
+{pub_html}
 </body>
 </html>"""
 
