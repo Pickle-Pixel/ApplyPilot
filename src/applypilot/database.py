@@ -5,6 +5,7 @@ pipeline stage are created up front so any stage can run independently
 without migration ordering issues.
 """
 
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -98,6 +99,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             site                  TEXT,
             strategy              TEXT,
             discovered_at         TEXT,
+            date_posted           TEXT,     -- when the job was posted on the platform
 
             -- Enrichment stage (detail_scraper)
             full_description      TEXT,
@@ -119,6 +121,11 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             cover_letter_path     TEXT,
             cover_letter_at       TEXT,
             cover_attempts        INTEGER DEFAULT 0,
+
+            -- Manual eligibility review
+            eligible              INTEGER,  -- NULL=unreviewed, 1=eligible, 0=ineligible
+            eligible_note         TEXT,     -- reason e.g. "requires US citizen"
+            job_type              TEXT,     -- internship, full-time, contract, etc.
 
             -- Application stage
             applied_at            TEXT,
@@ -153,6 +160,7 @@ _ALL_COLUMNS: dict[str, str] = {
     "site": "TEXT",
     "strategy": "TEXT",
     "discovered_at": "TEXT",
+    "date_posted": "TEXT",
     # Enrichment
     "full_description": "TEXT",
     "application_url": "TEXT",
@@ -180,6 +188,17 @@ _ALL_COLUMNS: dict[str, str] = {
     "apply_duration_ms": "INTEGER",
     "apply_task_id": "TEXT",
     "verification_confidence": "TEXT",
+    # Manual eligibility review
+    "eligible": "INTEGER",
+    "eligible_note": "TEXT",
+    # Manual shortlist (hand-picked jobs to tailor/apply)
+    "shortlisted": "INTEGER",
+    # Region tag derived from location ("east" = US East Coast, "other" = classified non-east)
+    "region": "TEXT",
+    # Manually dismissed from the dashboard (kept in DB so re-discovery dedups against it)
+    "hidden": "INTEGER",
+    # Job type (internship, full-time, contract, etc.)
+    "job_type": "TEXT",
 }
 
 
@@ -217,6 +236,71 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
         conn.commit()
 
     return added
+
+
+# ---------------------------------------------------------------------------
+# Region tagging (US East Coast prioritization)
+# ---------------------------------------------------------------------------
+
+# Case-sensitive state abbreviations (avoid matching words like "me")
+_EAST_STATE_ABBRS = (
+    "ME", "NH", "VT", "MA", "RI", "CT", "NY", "NJ", "PA",
+    "DE", "MD", "DC", "VA", "NC", "SC", "GA", "FL",
+)
+_EAST_ABBR_RE = re.compile(r"\b(" + "|".join(_EAST_STATE_ABBRS) + r")\b")
+
+# Lowercase full state names and major metro names
+_EAST_NAMES = (
+    "maine", "new hampshire", "vermont", "massachusetts", "rhode island",
+    "connecticut", "new york", "new jersey", "pennsylvania", "delaware",
+    "maryland", "district of columbia", "virginia", "north carolina",
+    "south carolina", "georgia", "florida",
+    "nyc", "manhattan", "brooklyn", "boston", "philadelphia", "pittsburgh",
+    "washington, d", "baltimore", "atlanta", "miami", "orlando", "tampa",
+    "charlotte", "raleigh", "durham", "richmond", "jersey city", "newark",
+    "hoboken", "princeton", "stamford", "hartford", "new haven",
+)
+
+
+def classify_region(location: str | None) -> str | None:
+    """Classify a job location string: "east" (US East Coast) or "other".
+
+    Returns None for empty locations and pure-remote jobs (location-independent).
+    """
+    if not location:
+        return None
+    loc_lower = location.lower()
+    is_remote = any(k in loc_lower for k in ("remote", "anywhere", "work from home"))
+    if _EAST_ABBR_RE.search(location) or any(n in loc_lower for n in _EAST_NAMES):
+        return "east"
+    if is_remote:
+        return None
+    return "other"
+
+
+def update_regions(conn: sqlite3.Connection | None = None) -> int:
+    """Backfill the region column for rows not yet classified.
+
+    Safe to call on every startup -- only touches rows with region IS NULL.
+
+    Returns:
+        Number of rows tagged.
+    """
+    if conn is None:
+        conn = get_connection()
+
+    rows = conn.execute(
+        "SELECT url, location FROM jobs WHERE region IS NULL AND location IS NOT NULL"
+    ).fetchall()
+    tagged = 0
+    for url, location in rows:
+        region = classify_region(location)
+        if region:
+            conn.execute("UPDATE jobs SET region = ? WHERE url = ?", (region, url))
+            tagged += 1
+    if tagged:
+        conn.commit()
+    return tagged
 
 
 def get_stats(conn: sqlite3.Connection | None = None) -> dict:
@@ -388,12 +472,14 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         "scored": "fit_score IS NOT NULL",
         "pending_tailor": (
             "fit_score >= ? AND full_description IS NOT NULL "
-            "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5"
+            "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5 "
+            "AND COALESCE(eligible, 1) != 0 AND COALESCE(hidden, 0) != 1"
         ),
         "tailored": "tailored_resume_path IS NOT NULL",
         "pending_apply": (
             "tailored_resume_path IS NOT NULL AND applied_at IS NULL "
-            "AND application_url IS NOT NULL"
+            "AND application_url IS NOT NULL AND COALESCE(eligible, 1) != 0 "
+            "AND COALESCE(hidden, 0) != 1"
         ),
         "applied": "applied_at IS NOT NULL",
     }
