@@ -22,40 +22,81 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _detect_provider() -> tuple[str, str, str]:
-    """Return (base_url, model, api_key) based on environment variables.
+    """Return (base_url, model, api_key) for the BASE client.
 
-    Reads env at call time (not module import time) so that load_env() called
-    in _bootstrap() is always visible here.
+    Priority: LLM_URL (local Ollama) > GEMINI_API_KEY > OPENAI_API_KEY
+    This ensures local models are used for basic tasks when LLM_URL is set.
     """
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     local_url = os.environ.get("LLM_URL", "")
     model_override = os.environ.get("LLM_MODEL", "")
 
-    if gemini_key and not local_url:
+    # Local Ollama takes priority when LLM_URL is set
+    if local_url:
+        return (
+            local_url.rstrip("/"),
+            model_override or "qwen3:32b",
+            os.environ.get("LLM_API_KEY", "ollama"),
+        )
+
+    if gemini_key:
         return (
             "https://generativelanguage.googleapis.com/v1beta/openai",
-            model_override or "gemini-2.0-flash",
+            model_override or "gemini-2.5-flash",
             gemini_key,
         )
 
-    if openai_key and not local_url:
+    if openai_key:
         return (
             "https://api.openai.com/v1",
             model_override or "gpt-4o-mini",
             openai_key,
         )
 
+    raise RuntimeError(
+        "No LLM provider configured. "
+        "Set LLM_URL (Ollama), GEMINI_API_KEY, or OPENAI_API_KEY in your environment."
+    )
+
+
+def _detect_premium_provider() -> tuple[str, str, str]:
+    """Return (base_url, model, api_key) for the PREMIUM client.
+
+    Priority: GEMINI_API_KEY > OPENAI_API_KEY > falls back to base provider.
+    Used for tailor and cover letter stages that need a smarter model.
+    PREMIUM_LLM_MODEL overrides the model name.
+    """
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    premium_model = os.environ.get("PREMIUM_LLM_MODEL", "")
+
+    if gemini_key:
+        return (
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            premium_model or "gemini-2.5-flash",
+            gemini_key,
+        )
+
+    if openai_key:
+        return (
+            "https://api.openai.com/v1",
+            premium_model or "gpt-4o-mini",
+            openai_key,
+        )
+
+    # No cloud key — fall back to base provider (Ollama) with premium model override
+    local_url = os.environ.get("LLM_URL", "")
     if local_url:
         return (
             local_url.rstrip("/"),
-            model_override or "local-model",
-            os.environ.get("LLM_API_KEY", ""),
+            premium_model or os.environ.get("LLM_MODEL", "qwen3:32b"),
+            os.environ.get("LLM_API_KEY", "ollama"),
         )
 
     raise RuntimeError(
-        "No LLM provider configured. "
-        "Set GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
+        "No premium LLM provider configured. "
+        "Set GEMINI_API_KEY or OPENAI_API_KEY for tailor/cover stages."
     )
 
 
@@ -92,6 +133,10 @@ class LLMClient:
         # True once we've confirmed the native Gemini API works for this model
         self._use_native_gemini: bool = False
         self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
+        # Newer OpenAI models (GPT-5 family, o-series) reject 'max_tokens' and
+        # custom temperatures. Flipped automatically on the first 400 error.
+        self._use_max_completion_tokens: bool = False
+        self._drop_temperature: bool = False
 
     # -- Native Gemini API --------------------------------------------------
 
@@ -142,7 +187,15 @@ class LLMClient:
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        # gemini-2.5-flash thinking mode returns multiple parts:
+        # parts[0] = thinking content (thought=True), parts[-1] = actual response.
+        # Always use the last non-empty text part.
+        parts = data["candidates"][0]["content"]["parts"]
+        for part in reversed(parts):
+            text = part.get("text", "")
+            if text.strip():
+                return text
+        return parts[0]["text"]
 
     # -- OpenAI-compat API --------------------------------------------------
 
@@ -163,6 +216,13 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if self._use_max_completion_tokens:
+            # Reasoning models spend thinking tokens from the same budget --
+            # enforce a floor so small caps (e.g. scorer's 512) don't truncate
+            # the visible answer mid-reasoning.
+            payload["max_completion_tokens"] = max(payload.pop("max_tokens"), 2048)
+        if self._drop_temperature:
+            payload.pop("temperature", None)
 
         resp = self._client.post(
             f"{self.base_url}/chat/completions",
@@ -174,6 +234,31 @@ class LLMClient:
         # Raise a specific sentinel so chat() can switch to native API.
         if resp.status_code == 403 and self._is_gemini:
             raise _GeminiCompatForbidden(resp)
+
+        # Adapt to newer OpenAI models that reject legacy parameters,
+        # then retry once with the corrected payload.
+        if resp.status_code == 400:
+            try:
+                err = resp.json().get("error", {})
+            except Exception:
+                err = {}
+            param = err.get("param", "")
+            code = err.get("code", "")
+            if code in ("unsupported_parameter", "unsupported_value") and param:
+                # Decide on what THIS request actually sent, not the instance
+                # flags -- under concurrency another thread may have already
+                # flipped the flag after our payload was built, in which case
+                # we still need to retry this call once with the new params.
+                if param == "max_tokens" and "max_tokens" in payload:
+                    if not self._use_max_completion_tokens:
+                        log.info("Model '%s' requires max_completion_tokens; adapting.", self.model)
+                    self._use_max_completion_tokens = True
+                    return self._chat_compat(messages, temperature, max_tokens)
+                if param == "temperature" and "temperature" in payload:
+                    if not self._drop_temperature:
+                        log.info("Model '%s' rejects custom temperature; using default.", self.model)
+                    self._drop_temperature = True
+                    return self._chat_compat(messages, temperature, max_tokens)
 
         return self._handle_compat_response(resp)
 
@@ -228,7 +313,9 @@ class LLMClient:
 
             except httpx.HTTPStatusError as exc:
                 resp = exc.response
-                if resp.status_code in (429, 503) and attempt < _MAX_RETRIES - 1:
+                # 431/502/504: transient edge/CDN flakiness seen under high
+                # concurrency -- retry alongside rate limits (429/503).
+                if resp.status_code in (429, 431, 502, 503, 504) and attempt < _MAX_RETRIES - 1:
                     # Respect Retry-After header if provided (Gemini sends this).
                     retry_after = (
                         resp.headers.get("Retry-After")
@@ -285,6 +372,7 @@ class _GeminiCompatForbidden(Exception):
 # ---------------------------------------------------------------------------
 
 _instance: LLMClient | None = None
+_premium_instance: LLMClient | None = None
 
 
 def get_client() -> LLMClient:
@@ -295,3 +383,18 @@ def get_client() -> LLMClient:
         log.info("LLM provider: %s  model: %s", base_url, model)
         _instance = LLMClient(base_url, model, api_key)
     return _instance
+
+
+def get_premium_client() -> LLMClient:
+    """Return a client for tailor/cover stages using GEMINI_API_KEY or OPENAI_API_KEY.
+
+    Premium client always prefers cloud providers (Gemini > OpenAI) over local Ollama,
+    giving better quality for resume tailoring and cover letter generation.
+    Falls back to base client if no cloud key is configured.
+    """
+    global _premium_instance
+    if _premium_instance is None:
+        base_url, model, api_key = _detect_premium_provider()
+        log.info("Premium LLM provider: %s  model: %s", base_url, model)
+        _premium_instance = LLMClient(base_url, model, api_key)
+    return _premium_instance
