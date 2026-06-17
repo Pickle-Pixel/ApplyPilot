@@ -1,12 +1,13 @@
 [project]
-name = "applypilot"
-version = "0.3.0"
-description = "AI-powered end-to-end job application pipeline"
+name = "applyassist"
+version = "0.4.0"
+description = "AI job-search copilot: discover, score, and tailor — then you review and submit. Human-in-the-loop, not a spray bot."
 readme = "README.md"
 license = "AGPL-3.0-only"
 requires-python = ">=3.11"
-authors = [{name = "Pickle-Pixel"}]
-keywords = ["job-search", "automation", "ai", "resume", "apply", "job-application"]
+authors = [{name = "Waleed Akram Khan"}]
+# ApplyAssist is a fork of ApplyPilot by Pickle-Pixel (https://github.com/Pickle-Pixel/ApplyPilot), AGPL-3.0.
+keywords = ["job-search", "ai", "resume", "apply", "job-application", "human-in-the-loop", "assistant", "copilot"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -32,22 +33,22 @@ dependencies = [
 dev = ["pytest>=7.0", "ruff>=0.1"]
 
 [project.scripts]
-applypilot = "applypilot.cli:app"
+applyassist = "applyassist.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/Pickle-Pixel/ApplyPilot"
-Repository = "https://github.com/Pickle-Pixel/ApplyPilot"
-Issues = "https://github.com/Pickle-Pixel/ApplyPilot/issues"
+Homepage = "https://github.com/waleedakramkhan/ApplyAssist"
+Repository = "https://github.com/waleedakramkhan/ApplyAssist"
+Issues = "https://github.com/waleedakramkhan/ApplyAssist/issues"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/applypilot"]
+packages = ["src/applyassist"]
 
 [tool.hatch.build]
-artifacts = ["src/applypilot/config/*.yaml"]
+artifacts = ["src/applyassist/config/*.yaml"]
 
 [tool.ruff]
 target-version = "py311"

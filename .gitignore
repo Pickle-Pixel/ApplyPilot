@@ -26,6 +26,8 @@ __pycache__/
 dist/
 build/
 *.egg
+.venv/
+venv/
 
 # IDE
 .vscode/

@@ -1,9 +1,42 @@
 # Changelog
 
-All notable changes to ApplyPilot will be documented in this file.
+All notable changes to ApplyAssist will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.4.0] - ApplyAssist fork
+
+ApplyAssist forks [ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot) (AGPL-3.0) and
+re-purposes it from an autonomous submitter into a **human-in-the-loop assistant**. The goal
+shifts from volume to relevance: prepare applications, but keep the human reviewing and clicking
+Submit.
+
+### Changed
+- **Renamed** the project, package, CLI command, and data dir to `applyassist`
+  (`~/.applyassist/`, env `APPLYASSIST_DIR`).
+- **Review mode is now the default** for `applyassist apply`: the agent fills the entire form in
+  a visible browser, then STOPS so you review and submit. Sequential and human-paced — no Live
+  dashboard or parallel workers in this mode.
+- Autopilot (auto-submit) is now **opt-in** behind `--autopilot`, with a confirmation prompt and
+  prominent warnings. Replaces the old default-on auto-submit and the `--dry-run` apply flag.
+
+### Removed
+- **CapSolver CAPTCHA-solving** entirely (prompt instructions, `CAPSOLVER_API_KEY`, wizard prompt,
+  doctor check). ApplyAssist does not defeat anti-bot challenges; it hands the open browser to the
+  human (`RESULT:NEEDS_HUMAN:captcha`).
+
+### Added
+- **`RESULT:READY_FOR_REVIEW`** and **`RESULT:NEEDS_HUMAN:reason`** outcomes; `pending_review` and
+  `needs_human` job statuses.
+- **Daily cap** (`config.DEFAULTS["daily_cap"]`, default 30, env `APPLYASSIST_DAILY_CAP`) enforced
+  in both review and autopilot loops to keep applying human-paced.
+- **Responsible-use notice** printed before applying, plus README philosophy, attribution, and an
+  "Open source vs hosted" (open-core) section.
+
+---
+
+_The history below is inherited from ApplyPilot._
 
 ## [0.2.0] - 2026-02-17
 

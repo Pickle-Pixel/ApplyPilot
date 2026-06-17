@@ -1,184 +1,142 @@
-<!-- logo here -->
+# ApplyAssist
 
-> **⚠️ ApplyPilot** is the original open-source project, created by [Pickle-Pixel](https://github.com/Pickle-Pixel) and first published on GitHub on **February 17, 2026**. We are **not affiliated** with applypilot.app, useapplypilot.com, or any other product using the "ApplyPilot" name. These sites are **not associated with this project** and may misrepresent what they offer. If you're looking for the autonomous, open-source job application agent — you're in the right place.
+**An AI job-search copilot. It does the tedious work — discovering, scoring, tailoring, and filling out applications — then *you* review and click Submit.**
 
-# ApplyPilot
-
-**Applied to 1,000 jobs in 2 days. Fully autonomous. Open source.**
-
-[![PyPI version](https://img.shields.io/pypi/v/applypilot?color=blue)](https://pypi.org/project/applypilot/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/Pickle-Pixel/ApplyPilot?style=social)](https://github.com/Pickle-Pixel/ApplyPilot)
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/S6S01UL5IO)
 
-
-
-
-https://github.com/user-attachments/assets/7ee3417f-43d4-4245-9952-35df1e77f2df
-
+> ApplyAssist is a fork of [**ApplyPilot**](https://github.com/Pickle-Pixel/ApplyPilot) by [Pickle-Pixel](https://github.com/Pickle-Pixel) (AGPL-3.0). It keeps the genuinely useful machinery — multi-board discovery, AI fit-scoring, per-job resume tailoring and cover letters — and **deliberately removes the "fully autonomous, apply to 1,000 jobs" behavior**. See [Why this fork exists](#why-this-fork-exists).
 
 ---
 
-## What It Does
+## Why this fork exists
 
-ApplyPilot is a 6-stage autonomous job application pipeline. It discovers jobs across 5+ boards, scores them against your resume with AI, tailors your resume per job, writes cover letters, and **submits applications for you**. It navigates forms, uploads documents, answers screening questions, all hands-free.
+The original tool optimizes for **volume**: apply to as many jobs as possible, hands-free, solving CAPTCHAs along the way. In practice that is the wrong goal:
 
-Three commands. That's it.
+- **Volume isn't the bottleneck — relevance and signal are.** 30 targeted applications beat 1,000 sprayed ones. Recruiters and ATS systems detect and down-rank bulk submissions.
+- **It gets accounts banned.** LinkedIn and others actively flag high-volume automated applying, especially combined with scraping and CAPTCHA-solving. Losing your account mid-search is a real setback.
+- **Auto-submitting without review replicates mistakes at scale** — one wrong field, one mismatched role, multiplied by hundreds.
+- **Solving CAPTCHAs is bot-detection evasion.** A CAPTCHA is a site explicitly asking for a human. ApplyAssist's answer is to give it one — you.
+
+So ApplyAssist keeps a human in the loop. It removes the friction (finding jobs, tailoring, filling forms) but leaves the **judgment and the Submit click** with you. You review every application in seconds instead of filling it out in minutes — that's how you scale responsibly.
+
+---
+
+## What it does
+
+A pipeline that prepares applications, plus an **assisted-apply** step that fills the form and stops:
 
 ```bash
-pip install applypilot
+pip install applyassist
 pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex
-applypilot init          # one-time setup: resume, profile, preferences, API keys
-applypilot doctor        # verify your setup — shows what's installed and what's missing
-applypilot run           # discover > enrich > score > tailor > cover letters
-applypilot run -w 4      # same but parallel (4 threads for discovery/enrichment)
-applypilot apply         # autonomous browser-driven submission
-applypilot apply -w 3    # parallel apply (3 Chrome instances)
-applypilot apply --dry-run  # fill forms without submitting
+applyassist init          # one-time setup: resume, profile, preferences, API keys
+applyassist doctor        # verify setup — shows what's installed and what's missing
+applyassist run           # discover → enrich → score → tailor → cover letters → pdf
+applyassist apply         # REVIEW MODE (default): opens a browser, fills the form, STOPS for you to submit
 ```
 
-> **Why two install commands?** `python-jobspy` pins an exact numpy version in its metadata that conflicts with pip's resolver, but works fine at runtime with any modern numpy. The `--no-deps` flag bypasses the resolver; the second command installs jobspy's actual runtime dependencies. Everything except `python-jobspy` installs normally.
+> **Why two install commands?** `python-jobspy` pins an exact numpy version in its metadata that conflicts with pip's resolver but works fine at runtime. `--no-deps` bypasses the resolver; the second command installs jobspy's actual runtime deps.
 
 ---
 
-## Two Paths
+## How applying works
 
-### Full Pipeline (recommended)
-**Requires:** Python 3.11+, Node.js (for npx), Gemini API key (free), Claude Code CLI, Chrome
+`applyassist apply` defaults to **review mode**:
 
-Runs all 6 stages, from job discovery to autonomous application submission. This is the full power of ApplyPilot.
+1. It picks your highest-fit prepared job and opens it in a **visible** browser.
+2. The agent navigates the form, uploads your tailored resume + cover letter, answers screening questions, and fills every field.
+3. It **stops before Submit**, leaves the browser open, and hands control to you.
+4. You eyeball the form, fix anything, and **click Submit yourself**. Then tell ApplyAssist whether you submitted (`a`), want to skip (`s`), or quit (`q`).
 
-### Discovery + Tailoring Only
-**Requires:** Python 3.11+, Gemini API key (free)
+It never solves CAPTCHAs. If a challenge appears, it pauses and you finish that step in the open browser.
 
-Runs stages 1-5: discovers jobs, scores them, tailors your resume, generates cover letters. You submit applications manually with the AI-prepared materials.
+A **daily cap** (default 30, set `APPLYASSIST_DAILY_CAP`) keeps your pace human — recruiters down-rank bursts and platforms flag them.
+
+### Autopilot (opt-in, not recommended)
+
+```bash
+applyassist apply --autopilot     # also clicks Submit. Prompts for confirmation. Higher ban/ToS risk.
+```
+
+Autopilot still never solves CAPTCHAs and still respects the daily cap. Use it sparingly, if at all.
 
 ---
 
-## The Pipeline
+## The pipeline
 
-| Stage | What Happens |
+| Stage | What happens |
 |-------|-------------|
-| **1. Discover** | Scrapes 5 job boards (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs) + 48 Workday employer portals + 30 direct career sites |
-| **2. Enrich** | Fetches full job descriptions via JSON-LD, CSS selectors, or AI-powered extraction |
-| **3. Score** | AI rates every job 1-10 based on your resume and preferences. Only high-fit jobs proceed |
-| **4. Tailor** | AI rewrites your resume per job: reorganizes, emphasizes relevant experience, adds keywords. Never fabricates |
-| **5. Cover Letter** | AI generates a targeted cover letter per job |
-| **6. Auto-Apply** | Claude Code navigates application forms, fills fields, uploads documents, answers questions, and submits |
+| **1. Discover** | Scrapes job boards (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs) + Workday employer portals + direct career sites |
+| **2. Enrich** | Fetches full job descriptions via JSON-LD, CSS selectors, or AI extraction |
+| **3. Score** | AI rates every job 1–10 against your resume and preferences; only high-fit jobs proceed |
+| **4. Tailor** | AI reorganizes your resume per job to emphasize relevant experience. **Never fabricates** |
+| **5. Cover letter** | AI drafts a targeted cover letter per job |
+| **6. PDF** | Converts tailored resumes and cover letters to PDF for upload |
 
-Each stage is independent. Run them all or pick what you need.
-
----
-
-## ApplyPilot vs The Alternatives
-
-| Feature | ApplyPilot | AIHawk | Manual |
-|---------|-----------|--------|--------|
-| Job discovery | 5 boards + Workday + direct sites | LinkedIn only | One board at a time |
-| AI scoring | 1-10 fit score per job | Basic filtering | Your gut feeling |
-| Resume tailoring | Per-job AI rewrite | Template-based | Hours per application |
-| Auto-apply | Full form navigation + submission | LinkedIn Easy Apply only | Click, type, repeat |
-| Supported sites | Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs, 46 Workday portals, 28 direct sites | LinkedIn | Whatever you open |
-| License | AGPL-3.0 | MIT | N/A |
+Then **assisted apply** (review mode) fills the form for you to submit. Each stage is independent — run them all or pick what you need.
 
 ---
 
 ## Requirements
 
-| Component | Required For | Details |
+| Component | Required for | Details |
 |-----------|-------------|---------|
 | Python 3.11+ | Everything | Core runtime |
-| Node.js 18+ | Auto-apply | Needed for `npx` to run Playwright MCP server |
-| Gemini API key | Scoring, tailoring, cover letters | Free tier (15 RPM / 1M tokens/day) is enough |
-| Chrome/Chromium | Auto-apply | Auto-detected on most systems |
-| Claude Code CLI | Auto-apply | Install from [claude.ai/code](https://claude.ai/code) |
+| Gemini API key | Scoring, tailoring, cover letters | Free tier is enough — get one at [aistudio.google.com](https://aistudio.google.com) |
+| Node.js 18+ | Assisted apply | Needed for `npx` to run the Playwright MCP server |
+| Chrome/Chromium | Assisted apply | Auto-detected on most systems |
+| Claude Code CLI | Assisted apply | Install from [claude.ai/code](https://claude.ai/code) |
 
-**Gemini API key is free.** Get one at [aistudio.google.com](https://aistudio.google.com). OpenAI and local models (Ollama/llama.cpp) are also supported.
+OpenAI and local models (Ollama/llama.cpp) are also supported.
 
-### Optional
-
-| Component | What It Does |
-|-----------|-------------|
-| CapSolver API key | Solves CAPTCHAs during auto-apply (hCaptcha, reCAPTCHA, Turnstile, FunCaptcha). Without it, CAPTCHA-blocked applications just fail gracefully |
-
-> **Note:** python-jobspy is installed separately with `--no-deps` because it pins an exact numpy version in its metadata that conflicts with pip's resolver. It works fine with modern numpy at runtime.
+There is **no CAPTCHA-solver dependency** — that was removed by design.
 
 ---
 
-## Configuration
+## Open source vs hosted
 
-All generated by `applypilot init`:
+ApplyAssist is **free and fully featured when self-hosted.** Every capability above runs locally with your own API keys; nothing is paywalled.
 
-### `profile.json`
-Your personal data in one structured file: contact info, work authorization, compensation, experience, skills, resume facts (preserved during tailoring), and EEO defaults. Powers scoring, tailoring, and form auto-fill.
+A future **paid hosted** tier would sell *convenience*, not features: managed API keys, multi-device sync, and zero local setup. Because ApplyAssist is AGPL-3.0, **any hosted version's source stays public** — that's a deliberate constraint, not an afterthought. Open-core via managed hosting is compatible with AGPL; closed-source SaaS is not.
 
-### `searches.yaml`
-Job search queries, target titles, locations, boards. Run multiple searches with different parameters.
-
-### `.env`
-API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` (optional).
-
-### Package configs (shipped with ApplyPilot)
-- `config/employers.yaml` - Workday employer registry (48 preconfigured)
-- `config/sites.yaml` - Direct career sites (30+), blocked sites, base URLs, manual ATS domains
-- `config/searches.example.yaml` - Example search configuration
+The capability tiers (`applyassist doctor` shows yours) describe what your *local install* can do based on installed dependencies — they are not a billing boundary.
 
 ---
 
-## How Stages Work
+## CLI reference
 
-### Discover
-Queries Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs via JobSpy. Scrapes 48 Workday employer portals (configurable in `employers.yaml`). Hits 30 direct career sites with custom extractors. Deduplicates by URL.
-
-### Enrich
-Visits each job URL and extracts the full description. 3-tier cascade: JSON-LD structured data, then CSS selector patterns, then AI-powered extraction for unknown layouts.
-
-### Score
-AI scores every job 1-10 against your profile. 9-10 = strong match, 7-8 = good, 5-6 = moderate, 1-4 = skip. Only jobs above your threshold proceed to tailoring.
-
-### Tailor
-Generates a custom resume per job: reorders experience, emphasizes relevant skills, incorporates keywords from the job description. Your `resume_facts` (companies, projects, metrics) are preserved exactly. The AI reorganizes but never fabricates.
-
-### Cover Letter
-Writes a targeted cover letter per job referencing the specific company, role, and how your experience maps to their requirements.
-
-### Auto-Apply
-Claude Code launches a Chrome instance, navigates to each application page, detects the form type, fills personal information and work history, uploads the tailored resume and cover letter, answers screening questions with AI, and submits. A live dashboard shows progress in real-time.
-
-The Playwright MCP server is configured automatically at runtime per worker. No manual MCP setup needed.
-
-```bash
-# Utility modes (no Chrome/Claude needed)
-applypilot apply --mark-applied URL    # manually mark a job as applied
-applypilot apply --mark-failed URL     # manually mark a job as failed
-applypilot apply --reset-failed        # reset all failed jobs for retry
-applypilot apply --gen --url URL       # generate prompt file for manual debugging
+```
+applyassist init                        # First-time setup wizard
+applyassist doctor                      # Verify setup, diagnose missing requirements
+applyassist run [stages...]             # Run pipeline stages (discover enrich score tailor cover pdf, or 'all')
+applyassist run --workers 4             # Parallel discovery/enrichment
+applyassist run --min-score 8           # Override score threshold
+applyassist apply                       # REVIEW MODE: fill the form, stop for you to submit (default)
+applyassist apply --url URL             # Prepare a specific job
+applyassist apply --autopilot           # Opt-in: also clicks Submit (confirmation required)
+applyassist apply --mark-applied URL    # Mark a job applied after you submitted it
+applyassist apply --mark-failed URL     # Mark a job failed
+applyassist apply --reset-failed        # Reset failed jobs for retry
+applyassist apply --gen --url URL       # Generate the agent prompt for manual debugging
+applyassist status                      # Pipeline statistics
+applyassist dashboard                   # Open HTML results dashboard
 ```
 
 ---
 
-## CLI Reference
+## Responsible use
 
-```
-applypilot init                         # First-time setup wizard
-applypilot doctor                       # Verify setup, diagnose missing requirements
-applypilot run [stages...]              # Run pipeline stages (or 'all')
-applypilot run --workers 4              # Parallel discovery/enrichment
-applypilot run --stream                 # Concurrent stages (streaming mode)
-applypilot run --min-score 8            # Override score threshold
-applypilot run --dry-run                # Preview without executing
-applypilot run --validation lenient     # Relax validation (recommended for Gemini free tier)
-applypilot run --validation strict      # Strictest validation (retries on any banned word)
-applypilot apply                        # Launch auto-apply
-applypilot apply --workers 3            # Parallel browser workers
-applypilot apply --dry-run              # Fill forms without submitting
-applypilot apply --continuous           # Run forever, polling for new jobs
-applypilot apply --headless             # Headless browser mode
-applypilot apply --url URL              # Apply to a specific job
-applypilot status                       # Pipeline statistics
-applypilot dashboard                    # Open HTML results dashboard
-```
+- More applications is not the goal — more **interviews per application** is.
+- Review and submit every application yourself.
+- No CAPTCHA solving, no bot-detection evasion.
+- Respect the daily cap; vary your pace.
+- The hours you save on form-filling are best spent on **referrals and follow-ups** — they convert far better than cold applications.
+
+---
+
+## Attribution
+
+ApplyAssist is a fork of [ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot) by [Pickle-Pixel](https://github.com/Pickle-Pixel), licensed under AGPL-3.0. Significant credit for the discovery, scoring, and tailoring machinery belongs to the original project. ApplyAssist re-purposes it as a human-in-the-loop assistant rather than an autonomous submitter.
 
 ---
 
@@ -190,6 +148,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, 
 
 ## License
 
-ApplyPilot is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+ApplyAssist is licensed under the [GNU Affero General Public License v3.0](LICENSE), inherited from ApplyPilot.
 
-You are free to use, modify, and distribute this software. If you deploy a modified version as a service, you must release your source code under the same license.
+You are free to use, modify, and distribute this software. **If you deploy a modified version as a service, you must release your source code under the same license.**
