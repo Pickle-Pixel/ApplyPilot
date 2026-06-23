@@ -17,15 +17,10 @@ import threading
 import time
 from datetime import datetime
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
 from applypilot.config import load_env, ensure_dirs
 from applypilot.database import init_db, get_connection, get_stats
 
 log = logging.getLogger(__name__)
-console = Console()
 
 
 # ---------------------------------------------------------------------------
@@ -63,37 +58,31 @@ def _run_discover(workers: int = 1) -> dict:
     """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
     stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
 
-    # JobSpy
-    console.print("  [cyan]JobSpy full crawl...[/cyan]")
+    log.info("JobSpy full crawl...")
     try:
         from applypilot.discovery.jobspy import run_discovery
         run_discovery()
         stats["jobspy"] = "ok"
     except Exception as e:
         log.error("JobSpy crawl failed: %s", e)
-        console.print(f"  [red]JobSpy error:[/red] {e}")
         stats["jobspy"] = f"error: {e}"
 
-    # Workday corporate scraper
-    console.print("  [cyan]Workday corporate scraper...[/cyan]")
+    log.info("Workday corporate scraper...")
     try:
         from applypilot.discovery.workday import run_workday_discovery
         run_workday_discovery(workers=workers)
         stats["workday"] = "ok"
     except Exception as e:
         log.error("Workday scraper failed: %s", e)
-        console.print(f"  [red]Workday error:[/red] {e}")
         stats["workday"] = f"error: {e}"
 
-    # Smart extract
-    console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
+    log.info("Smart extract (AI-powered scraping)...")
     try:
         from applypilot.discovery.smartextract import run_smart_extract
         run_smart_extract(workers=workers)
         stats["smartextract"] = "ok"
     except Exception as e:
         log.error("Smart extract failed: %s", e)
-        console.print(f"  [red]Smart extract error:[/red] {e}")
         stats["smartextract"] = f"error: {e}"
 
     return stats
@@ -177,10 +166,7 @@ def _resolve_stages(stage_names: list[str]) -> list[str]:
     resolved = []
     for name in stage_names:
         if name not in STAGE_META:
-            console.print(
-                f"[red]Unknown stage:[/red] '{name}'. "
-                f"Available: {', '.join(STAGE_ORDER)}, all"
-            )
+            log.error("Unknown stage '%s'. Available: %s, all", name, ', '.join(STAGE_ORDER))
             raise SystemExit(1)
         if name not in resolved:
             resolved.append(name)
@@ -332,10 +318,8 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
 
     for name in ordered:
         meta = STAGE_META[name]
-        console.print(f"\n{'=' * 70}")
-        console.print(f"  [bold]STAGE: {name}[/bold] — {meta['desc']}")
-        console.print(f"  Started: {datetime.now().strftime('%H:%M:%S')}")
-        console.print(f"{'=' * 70}")
+        log.info("-" * 60)
+        log.info("STAGE: %s — %s", name, meta['desc'])
 
         t0 = time.time()
         runner = _STAGE_RUNNERS[name]
@@ -365,13 +349,12 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
             elapsed = time.time() - t0
             status = f"error: {e}"
             log.exception("Stage '%s' crashed", name)
-            console.print(f"\n  [red]STAGE FAILED:[/red] {e}")
 
         results.append({"stage": name, "status": status, "elapsed": elapsed})
         if status not in ("ok", "partial"):
             errors[name] = status
 
-        console.print(f"\n  Stage '{name}' completed in {elapsed:.1f}s — {status}")
+        log.info("Stage '%s' done in %.1fs — %s", name, elapsed, status)
 
     total_elapsed = time.time() - pipeline_start
     return {"stages": results, "errors": errors, "elapsed": total_elapsed}
@@ -384,8 +367,8 @@ def _run_streaming(ordered: list[str], min_score: int, workers: int = 1,
     stop_event = threading.Event()
     pipeline_start = time.time()
 
-    console.print(f"\n  [bold cyan]STREAMING MODE[/bold cyan] — stages run concurrently")
-    console.print(f"  Poll interval: {_STREAM_POLL_INTERVAL}s\n")
+    log.info("STREAMING MODE — stages run concurrently")
+    log.info("Poll interval: %ds", _STREAM_POLL_INTERVAL)
 
     # Mark stages NOT in `ordered` as done so downstream doesn't wait for them
     for stage in STAGE_ORDER:
@@ -406,18 +389,16 @@ def _run_streaming(ordered: list[str], min_score: int, workers: int = 1,
         )
         threads[name] = t
         t.start()
-        console.print(f"  [dim]Started thread:[/dim] {name}")
+        log.info("Started thread: %s", name)
 
     # Wait for all threads to finish
     try:
         for name in ordered:
             threads[name].join()
             elapsed = time.time() - start_times[name]
-            console.print(
-                f"  [green]Completed:[/green] {name} ({elapsed:.1f}s)"
-            )
+            log.info("Completed: %s (%.1fs)", name, elapsed)
     except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted — stopping stages...[/yellow]")
+        log.warning("Interrupted — stopping stages...")
         stop_event.set()
         for t in threads.values():
             t.join(timeout=10)
@@ -473,26 +454,20 @@ def run_pipeline(
 
     # Banner
     mode = "streaming" if stream else "sequential"
-    console.print()
-    console.print(Panel.fit(
-        f"[bold]ApplyPilot Pipeline[/bold] ({mode})",
-        border_style="blue",
-    ))
-    console.print(f"  Min score:  {min_score}")
-    console.print(f"  Workers:    {workers}")
-    console.print(f"  Validation: {validation_mode}")
-    console.print(f"  Stages:     {' -> '.join(ordered)}")
+    log.info("=== ApplyPilot Pipeline (%s) ===", mode)
+    log.info("min_score=%d  workers=%d  validation=%s", min_score, workers, validation_mode)
+    log.info("stages: %s", " -> ".join(ordered))
 
     # Pre-run stats
     pre_stats = get_stats()
-    console.print(f"  DB:        {pre_stats['total']} jobs, {pre_stats['pending_detail']} pending enrichment")
+    log.info("DB: %d jobs, %d pending enrichment", pre_stats['total'], pre_stats['pending_detail'])
 
     if dry_run:
-        console.print(f"\n  [yellow]DRY RUN[/yellow] — would execute ({mode}):")
+        log.info("DRY RUN — would execute (%s):", mode)
         for name in ordered:
             meta = STAGE_META[name]
-            console.print(f"    {name:<12s}  {meta['desc']}")
-        console.print(f"\n  No changes made.")
+            log.info("  %-12s  %s", name, meta['desc'])
+        log.info("No changes made.")
         return {"stages": [], "errors": {}, "elapsed": 0.0}
 
     # Execute
@@ -503,38 +478,23 @@ def run_pipeline(
         result = _run_sequential(ordered, min_score, workers=workers,
                                  validation_mode=validation_mode)
 
-    # Summary table
-    console.print(f"\n{'=' * 70}")
-    summary = Table(title="Pipeline Summary", show_header=True, header_style="bold")
-    summary.add_column("Stage", style="bold")
-    summary.add_column("Status")
-    summary.add_column("Time", justify="right")
-
+    # Summary
+    log.info("=" * 60)
+    log.info("Pipeline Summary")
     for r in result["stages"]:
-        elapsed_str = f"{r['elapsed']:.1f}s"
-        status_display = r["status"][:30]
-        if r["status"] == "ok":
-            style = "green"
-        elif r["status"] in ("partial", "skipped"):
-            style = "yellow"
-        else:
-            style = "red"
-        summary.add_row(r["stage"], f"[{style}]{status_display}[/{style}]", elapsed_str)
-
-    summary.add_row("", "", "")
-    summary.add_row("[bold]Total[/bold]", "", f"[bold]{result['elapsed']:.1f}s[/bold]")
-    console.print(summary)
+        log.info("  %-12s  %-20s  %.1fs", r["stage"], r["status"][:20], r["elapsed"])
+    log.info("  %-12s  %-20s  %.1fs", "TOTAL", "", result["elapsed"])
+    log.info("=" * 60)
 
     # Final DB stats
     final = get_stats()
-    console.print(f"\n  [bold]DB Final State:[/bold]")
-    console.print(f"    Total jobs:     {final['total']}")
-    console.print(f"    With desc:      {final['with_description']}")
-    console.print(f"    Scored:         {final['scored']}")
-    console.print(f"    Tailored:       {final['tailored']}")
-    console.print(f"    Cover letters:  {final['with_cover_letter']}")
-    console.print(f"    Ready to apply: {final['ready_to_apply']}")
-    console.print(f"    Applied:        {final['applied']}")
-    console.print(f"{'=' * 70}\n")
+    log.info("DB Final State:")
+    log.info("  total jobs:     %d", final['total'])
+    log.info("  with desc:      %d", final['with_description'])
+    log.info("  scored:         %d", final['scored'])
+    log.info("  tailored:       %d", final['tailored'])
+    log.info("  cover letters:  %d", final['with_cover_letter'])
+    log.info("  ready to apply: %d", final['ready_to_apply'])
+    log.info("  applied:        %d", final['applied'])
 
     return result

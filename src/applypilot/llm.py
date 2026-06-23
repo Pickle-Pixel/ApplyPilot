@@ -11,6 +11,8 @@ LLM_MODEL env var overrides the model name for any provider.
 
 import logging
 import os
+import random
+import threading
 import time
 
 import httpx
@@ -66,9 +68,54 @@ def _detect_provider() -> tuple[str, str, str]:
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
 
-# Base wait on first 429/503 (doubles each retry, caps at 60s).
-# Gemini free tier is 15 RPM = 4s minimum between requests; 10s gives headroom.
-_RATE_LIMIT_BASE_WAIT = 10
+# On a 429/503: wait = min(BASE * 2^attempt, MAX) + random jitter.
+# Jitter desynchronises two instances that share a key so they don't retry
+# simultaneously and immediately re-collide.
+_RATE_LIMIT_BASE_WAIT = 20   # seconds (was 10 — more conservative first pause)
+_RATE_LIMIT_MAX_WAIT  = 120  # seconds cap (was 60)
+_RATE_LIMIT_JITTER    = 10   # seconds of uniform random noise added to each wait
+
+# ---------------------------------------------------------------------------
+# Proactive inter-request throttle
+# ---------------------------------------------------------------------------
+# Enforces a minimum gap between outgoing requests within this process,
+# keeping us below the provider's RPM limit before we ever see a 429.
+#
+# Gemini free  = 15 RPM →  4s theoretical → we use  5s (≈12 RPM, −20% safety margin)
+# OpenAI       = 500 RPM → 0.12s          → we use  0.25s (≈240 RPM, well under limit)
+# Local/custom = no API limit              → no throttle
+
+_MIN_INTERVAL: dict[str, float] = {
+    "gemini":  5.0,
+    "openai":  0.25,
+    "default": 0.0,
+}
+
+_last_request_time: float = 0.0
+_rate_gate = threading.Lock()
+
+
+def _provider_key(base_url: str) -> str:
+    if "generativelanguage.googleapis.com" in base_url:
+        return "gemini"
+    if "openai.com" in base_url:
+        return "openai"
+    return "default"
+
+
+def _proactive_throttle(base_url: str) -> None:
+    """Sleep if needed so we don't exceed the provider's RPM ceiling proactively."""
+    global _last_request_time
+    interval = _MIN_INTERVAL.get(_provider_key(base_url), 0.0)
+    if interval <= 0:
+        return
+    with _rate_gate:
+        elapsed = time.time() - _last_request_time
+        if elapsed < interval:
+            gap = interval - elapsed
+            log.debug("Rate gate: holding %.1fs before next request", gap)
+            time.sleep(gap)
+        _last_request_time = time.time()
 
 
 _GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -201,6 +248,8 @@ class LLMClient:
 
         for attempt in range(_MAX_RETRIES):
             try:
+                _proactive_throttle(self.base_url)
+
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
                     return self._chat_native_gemini(messages, temperature, max_tokens)
@@ -229,23 +278,25 @@ class LLMClient:
             except httpx.HTTPStatusError as exc:
                 resp = exc.response
                 if resp.status_code in (429, 503) and attempt < _MAX_RETRIES - 1:
-                    # Respect Retry-After header if provided (Gemini sends this).
+                    # Honour Retry-After if the server sends one, otherwise
+                    # use exponential backoff with a random jitter so two
+                    # processes that share a key don't retry in lockstep.
                     retry_after = (
                         resp.headers.get("Retry-After")
                         or resp.headers.get("X-RateLimit-Reset-Requests")
                     )
                     if retry_after:
                         try:
-                            wait = float(retry_after)
+                            wait = float(retry_after) + random.uniform(0, _RATE_LIMIT_JITTER)
                         except (ValueError, TypeError):
-                            wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
+                            wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), _RATE_LIMIT_MAX_WAIT)
+                            wait += random.uniform(0, _RATE_LIMIT_JITTER)
                     else:
-                        wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
+                        wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), _RATE_LIMIT_MAX_WAIT)
+                        wait += random.uniform(0, _RATE_LIMIT_JITTER)
 
                     log.warning(
-                        "LLM rate limited (HTTP %s). Waiting %ds before retry %d/%d. "
-                        "Tip: Gemini free tier = 15 RPM. Consider a paid account "
-                        "or switching to a local model.",
+                        "LLM rate limited (HTTP %s). Waiting %.0fs before retry %d/%d.",
                         resp.status_code, wait, attempt + 1, _MAX_RETRIES,
                     )
                     time.sleep(wait)
@@ -254,9 +305,10 @@ class LLMClient:
 
             except httpx.TimeoutException:
                 if attempt < _MAX_RETRIES - 1:
-                    wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
+                    wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), _RATE_LIMIT_MAX_WAIT)
+                    wait += random.uniform(0, _RATE_LIMIT_JITTER)
                     log.warning(
-                        "LLM request timed out, retrying in %ds (attempt %d/%d)",
+                        "LLM request timed out, retrying in %.0fs (attempt %d/%d)",
                         wait, attempt + 1, _MAX_RETRIES,
                     )
                     time.sleep(wait)

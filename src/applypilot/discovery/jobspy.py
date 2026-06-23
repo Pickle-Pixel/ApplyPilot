@@ -81,37 +81,41 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
 
     Falls back to sensible defaults if not defined in the YAML.
     """
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
+    loc_block = search_cfg.get("location", {})
+    accept = loc_block.get("accept_patterns", [])
+    reject = loc_block.get("reject_patterns", [])
     return accept, reject
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter.
 
-    Remote jobs are always accepted. Non-remote jobs must match an accept
-    pattern and not match a reject pattern.
+    Evaluation order (first match wins):
+      1. Reject patterns — always block, even for remote jobs (e.g. Russia remote)
+      2. Remote keywords — any non-rejected remote job passes
+      3. Accept patterns — non-remote jobs must match an explicit accept entry
+      4. Default-reject — unknown non-remote locations are dropped
     """
     if not location:
-        return True  # unknown location -- keep it, let scorer decide
+        return True  # unknown location — keep it, let scorer decide
 
     loc = location.lower()
 
-    # Remote jobs always OK
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
-        return True
-
-    # Reject non-remote matches
+    # 1. Hard reject — checked before remote so e.g. "Remote (Russia)" is still blocked
     for r in reject:
         if r.lower() in loc:
             return False
 
-    # Accept matches
+    # 2. Remote jobs pass for any non-rejected country
+    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
+        return True
+
+    # 3. On-site / hybrid jobs must match an explicit accept pattern
     for a in accept:
         if a.lower() in loc:
             return True
 
-    # No match -- reject unknown
+    # 4. No match — reject
     return False
 
 
@@ -301,7 +305,7 @@ def search_jobs(
 ) -> dict:
     """Run a single job search via JobSpy and store results in DB."""
     if sites is None:
-        sites = ["indeed", "linkedin", "zip_recruiter"]
+        sites = ["indeed", "linkedin", "glassdoor"]
 
     proxy_config = parse_proxy(proxy) if proxy else None
 
@@ -369,7 +373,7 @@ def _full_crawl(
 ) -> dict:
     """Run all search queries from search config across all locations."""
     if sites is None:
-        sites = ["indeed", "linkedin", "zip_recruiter"]
+        sites = ["indeed", "linkedin", "glassdoor"]
 
     # Build search combinations from config
     queries = search_cfg.get("queries", [])
@@ -461,7 +465,7 @@ def run_discovery(cfg: dict | None = None) -> dict:
         return {"new": 0, "existing": 0, "errors": 0, "db_total": 0, "queries": 0}
 
     proxy = cfg.get("proxy")
-    sites = cfg.get("sites")
+    sites = cfg.get("boards") or cfg.get("sites")
     results_per_site = cfg.get("defaults", {}).get("results_per_site", 100)
     hours_old = cfg.get("defaults", {}).get("hours_old", 72)
     tiers = cfg.get("tiers")

@@ -162,7 +162,15 @@ def collect_page_intelligence(url: str, headless: bool = True) -> dict:
                 pass
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        try:
+            browser = p.chromium.launch(headless=headless)
+        except Exception:
+            from applypilot.config import get_chrome_path
+            browser = p.chromium.launch(
+                executable_path=get_chrome_path(),
+                headless=headless,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
         page = browser.new_page(user_agent=UA)
         page.on("response", on_response)
 

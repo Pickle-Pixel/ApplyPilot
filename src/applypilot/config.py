@@ -8,13 +8,19 @@ from pathlib import Path
 # User data directory — all user-specific files live here
 APP_DIR = Path(os.environ.get("APPLYPILOT_DIR", Path.home() / ".applypilot"))
 
+# Shared config dir — profile.json and .env resolve from here when set.
+# Allows multiple instances to share credentials without duplication.
+# Defaults to APP_DIR for backwards compatibility.
+SHARED_DIR = Path(os.environ.get("APPLYPILOT_SHARED_DIR", APP_DIR))
+
 # Core paths
 DB_PATH = APP_DIR / "applypilot.db"
-PROFILE_PATH = APP_DIR / "profile.json"
+APPLIED_DB_PATH = SHARED_DIR / "applied.db"  # shared cross-instance registry
+PROFILE_PATH = Path(os.environ.get("APPLYPILOT_PROFILE", SHARED_DIR / "profile.json"))
 RESUME_PATH = APP_DIR / "resume.txt"
 RESUME_PDF_PATH = APP_DIR / "resume.pdf"
 SEARCH_CONFIG_PATH = APP_DIR / "searches.yaml"
-ENV_PATH = APP_DIR / ".env"
+ENV_PATH = Path(os.environ.get("APPLYPILOT_ENV_FILE", SHARED_DIR / ".env"))
 
 # Generated output
 TAILORED_DIR = APP_DIR / "tailored_resumes"

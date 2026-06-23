@@ -4,8 +4,10 @@ Handles launching an isolated Chrome instance with remote debugging,
 worker profile setup/cloning, and cross-platform process cleanup.
 """
 
+import hashlib
 import json
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -17,8 +19,22 @@ from applypilot import config
 
 logger = logging.getLogger(__name__)
 
-# CDP port base — each worker uses BASE_CDP_PORT + worker_id
-BASE_CDP_PORT = 9222
+
+def _instance_base_port() -> int:
+    """Derive a stable CDP base port from the instance name so concurrent
+    apply runs on different instances don't clobber each other's Chrome.
+    Maps each instance into a 10-port window in 9200-9399.
+    """
+    instance_dir = os.environ.get("APPLYPILOT_DIR", "")
+    name = Path(instance_dir).name if instance_dir else "default"
+    offset = int(hashlib.md5(name.encode()).hexdigest()[:2], 16) % 20 * 10
+    return 9200 + offset
+
+
+# CDP port base — each worker uses BASE_CDP_PORT + worker_id.
+# Derived from the instance name so concurrent apply runs on different
+# instances don't collide on the same port.
+BASE_CDP_PORT = _instance_base_port()
 
 # Track Chrome processes per worker for cleanup
 _chrome_procs: dict[int, subprocess.Popen] = {}

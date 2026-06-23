@@ -97,8 +97,8 @@ def score_job(resume_text: str, job: dict) -> dict:
         response = client.chat(messages, max_tokens=512, temperature=0.2)
         return _parse_score_response(response)
     except Exception as e:
-        log.error("LLM error scoring job '%s': %s", job.get("title", "?"), e)
-        return {"score": 0, "keywords": "", "reasoning": f"LLM error: {e}"}
+        log.error("LLM error scoring job '%s': %s", job.get("title", "?"), str(e).splitlines()[0])
+        return {"score": 0, "keywords": "", "reasoning": f"LLM error: {str(e).splitlines()[0]}"}
 
 
 def run_scoring(limit: int = 0, rescore: bool = False) -> dict:

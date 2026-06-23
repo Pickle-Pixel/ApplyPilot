@@ -334,16 +334,28 @@ li {{
 # ── PDF Renderer ─────────────────────────────────────────────────────────
 
 def render_pdf(html: str, output_path: str) -> None:
-    """Render HTML to PDF using Playwright's headless Chromium.
+    """Render HTML to PDF using Playwright with headless Chrome.
+
+    Prefers Playwright's bundled Chromium; falls back to the system Chrome
+    (needed on OS versions not yet supported by Playwright's install script).
 
     Args:
         html: Complete HTML string.
         output_path: Path to write the PDF file.
     """
     from playwright.sync_api import sync_playwright
+    from applypilot.config import get_chrome_path
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        try:
+            browser = p.chromium.launch()
+        except Exception:
+            system_chrome = get_chrome_path()
+            log.debug("Playwright bundled browser unavailable; using system Chrome at %s", system_chrome)
+            browser = p.chromium.launch(
+                executable_path=system_chrome,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
         page = browser.new_page()
         page.set_content(html, wait_until="networkidle")
         page.pdf(

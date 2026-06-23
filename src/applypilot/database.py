@@ -5,12 +5,14 @@ pipeline stage are created up front so any stage can run independently
 without migration ordering issues.
 """
 
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse, urlencode, parse_qsl
 
-from applypilot.config import DB_PATH
+from applypilot.config import DB_PATH, APPLIED_DB_PATH
 
 # Thread-local connection storage — each thread gets its own connection
 # (required for SQLite thread safety with parallel workers)
@@ -422,3 +424,100 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         columns = rows[0].keys()
         return [dict(zip(columns, row)) for row in rows]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Cross-instance deduplication via shared applied.db
+# ---------------------------------------------------------------------------
+
+_STRIP_PARAMS: frozenset[str] = frozenset({
+    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+    "trk", "trackingId", "refId", "src", "ref", "source", "mcid",
+    "lipi", "li_fat_id", "fbclid", "gclid", "msclkid",
+})
+
+
+def canonical_url(url: str) -> str:
+    """Normalize a URL for deduplication — strip tracking params, fragment, trailing slash."""
+    try:
+        p = urlparse(url.strip())
+        qs = [(k, v) for k, v in parse_qsl(p.query) if k not in _STRIP_PARAMS]
+        clean = p._replace(query=urlencode(qs), fragment="")
+        return clean.geturl().rstrip("/").lower()
+    except Exception:
+        return url.strip().lower()
+
+
+def get_applied_db() -> sqlite3.Connection:
+    """Thread-local connection to the shared applied.db in SHARED_DIR."""
+    path = str(APPLIED_DB_PATH)
+    if not hasattr(_local, "connections"):
+        _local.connections = {}
+    conn = _local.connections.get(path)
+    if conn is not None:
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except sqlite3.ProgrammingError:
+            pass
+    conn = sqlite3.connect(path, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.row_factory = sqlite3.Row
+    _local.connections[path] = conn
+    return conn
+
+
+def init_applied_db() -> None:
+    """Create applied_urls table in shared applied.db if it doesn't exist."""
+    Path(APPLIED_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    conn = get_applied_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS applied_urls (
+            canonical_url  TEXT PRIMARY KEY,
+            raw_url        TEXT,
+            instance       TEXT NOT NULL,
+            title          TEXT,
+            site           TEXT,
+            applied_at     TEXT NOT NULL,
+            status         TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+
+def is_already_applied(url: str, application_url: str | None = None) -> bool:
+    """Return True if either URL is already in the shared applied registry."""
+    try:
+        conn = get_applied_db()
+        urls = list({canonical_url(url)} | ({canonical_url(application_url)} if application_url else set()))
+        placeholders = ",".join("?" * len(urls))
+        row = conn.execute(
+            f"SELECT 1 FROM applied_urls WHERE canonical_url IN ({placeholders}) LIMIT 1",
+            urls,
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False  # never block application on registry errors
+
+
+def record_applied(job: dict, instance: str) -> None:
+    """Write a successful application to the shared cross-instance registry."""
+    try:
+        conn = get_applied_db()
+        now = datetime.now(timezone.utc).isoformat()
+        raw_urls = {job["url"]}
+        if job.get("application_url"):
+            raw_urls.add(job["application_url"])
+        for raw in raw_urls:
+            conn.execute(
+                """INSERT OR IGNORE INTO applied_urls
+                   (canonical_url, raw_url, instance, title, site, applied_at, status)
+                   VALUES (?,?,?,?,?,?,'applied')""",
+                (canonical_url(raw), raw, instance,
+                 job.get("title"), job.get("site"), now),
+            )
+        conn.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("record_applied failed: %s", e)
