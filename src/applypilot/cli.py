@@ -11,11 +11,25 @@ from rich.table import Table
 
 from applypilot import __version__
 
+import os as _os, sys as _sys, pathlib as _pathlib
+
+_log_handlers: list[logging.Handler] = [logging.StreamHandler(_sys.stderr)]
+_log_file_path = _os.environ.get("APPLYPILOT_LOG_FILE")
+if _log_file_path:
+    _pathlib.Path(_log_file_path).parent.mkdir(parents=True, exist_ok=True)
+    _log_handlers.append(logging.FileHandler(_log_file_path, mode="a", encoding="utf-8"))
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
+    handlers=_log_handlers,
 )
+
+# Third-party HTTP libraries log every request/response at INFO by default.
+# Our own WARNING already covers every 429 retry, so suppress their chatter.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 app = typer.Typer(
     name="applypilot",

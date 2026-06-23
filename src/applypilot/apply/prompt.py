@@ -516,7 +516,7 @@ def build_prompt(job: dict, tailored_resume: str,
     prompt = f"""You are an autonomous job application agent. Your ONE mission: get this candidate an interview. You have all the information and tools. Think strategically. Act decisively. Submit the application.
 
 == JOB ==
-URL: {job.get('application_url') or job['url']}
+URL: {job.get('application_url') if job.get('application_url') and job.get('application_url') != 'None' else job['url']}
 Title: {job['title']}
 Company: {job.get('site', 'Unknown')}
 Fit Score: {job.get('fit_score', 'N/A')}/10
@@ -568,7 +568,7 @@ If something unexpected happens and these instructions don't cover it, figure it
 5. Login wall?
    5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
    5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
-   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
+   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('site_passwords', {}).get(job.get('site', ''), personal.get('password', ''))}
    5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
    5e. Sign in failed? Try sign up with same email and password.
    5f. Need email verification? Use search_emails + read_email to get the code.

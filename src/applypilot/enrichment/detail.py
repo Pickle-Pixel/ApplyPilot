@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
+_NULL_STRINGS = frozenset({"None", "none", "null", "NULL", "N/A", "n/a", ""})
+
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
@@ -144,7 +146,15 @@ def resolve_wttj_urls(conn: sqlite3.Connection) -> int:
                 pass
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        try:
+            browser = p.chromium.launch(headless=True)
+        except Exception:
+            from applypilot.config import get_chrome_path
+            browser = p.chromium.launch(
+                executable_path=get_chrome_path(),
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
         page = browser.new_page(user_agent=UA)
         page.on("response", capture_algolia)
         page.goto(
@@ -473,13 +483,15 @@ def extract_with_llm(page, url: str) -> dict:
         result = extract_json(raw)
         desc = result.get("full_description")
         apply_url = result.get("application_url")
+        if str(apply_url).strip() in _NULL_STRINGS:
+            apply_url = None
 
         if desc:
             desc = clean_description(desc)
 
         return {"full_description": desc, "application_url": apply_url}
     except Exception as e:
-        log.error("LLM ERROR: %s", e)
+        log.error("LLM ERROR: %s", str(e).splitlines()[0])
         return {"full_description": None, "application_url": None}
 
 
@@ -636,7 +648,14 @@ def scrape_site_batch(
             launch_opts: dict = {"headless": True}
             if _PROXY_CONFIG:
                 launch_opts["proxy"] = _PROXY_CONFIG["playwright"]
-            browser = p.chromium.launch(**launch_opts)
+            try:
+                browser = p.chromium.launch(**launch_opts)
+            except Exception:
+                from applypilot.config import get_chrome_path
+                launch_opts["executable_path"] = get_chrome_path()
+                launch_opts.setdefault("args", [])
+                launch_opts["args"] += ["--no-sandbox", "--disable-dev-shm-usage"]
+                browser = p.chromium.launch(**launch_opts)
             context = browser.new_context(user_agent=UA)
             page = context.new_page()
 
@@ -681,6 +700,20 @@ def scrape_site_batch(
                     time.sleep(delay)
 
             browser.close()
+    except Exception as e:
+        # Playwright launch or cleanup failure (e.g. bundled browser unavailable on this OS).
+        # Mark remaining jobs as browser_unavailable so they aren't retried next run.
+        log.warning("Browser unavailable for %s batch (%d jobs): %s", site, len(jobs), e)
+        unprocessed = len(jobs) - stats["processed"]
+        if unprocessed > 0:
+            stats["error"] += unprocessed
+            if conn:
+                for url, _ in jobs[stats["processed"]:]:
+                    conn.execute(
+                        "UPDATE jobs SET detail_error = ?, detail_scraped_at = ? WHERE url = ?",
+                        ("browser_unavailable", now, url),
+                    )
+                conn.commit()
     finally:
         if own_conn:
             conn.close()

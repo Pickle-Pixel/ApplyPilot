@@ -5,6 +5,7 @@ in a terminal dashboard using the Rich library.
 """
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -81,6 +82,8 @@ def add_event(msg: str) -> None:
     Args:
         msg: Rich markup string describing the event.
     """
+    plain = re.sub(r'\[/?[^\]]*\]', '', msg)
+    logger.info("%s", plain)
     ts = datetime.now().strftime("%H:%M:%S")
     with _lock:
         _events.append(f"[dim]{ts}[/dim] {msg}")

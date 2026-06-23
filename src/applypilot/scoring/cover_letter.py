@@ -275,7 +275,7 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             }
             error_count += 1
             results.append(result)
-            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
+            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], str(e).splitlines()[0])
 
     # Persist to DB: increment attempt counter for ALL, save path only for successes
     now = datetime.now(timezone.utc).isoformat()

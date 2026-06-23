@@ -20,11 +20,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rich.console import Console
-from rich.live import Live
-
 from applypilot import config
-from applypilot.database import get_connection
+from applypilot.database import get_connection, is_already_applied, record_applied, init_applied_db
 from applypilot.apply import chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
@@ -71,7 +68,7 @@ def _make_mcp_config(cdp_port: int) -> dict:
                 "command": "npx",
                 "args": [
                     "@playwright/mcp@latest",
-                    f"--cdp-endpoint=http://localhost:{cdp_port}",
+                    f"--cdp-endpoint=http://127.0.0.1:{cdp_port}",
                     f"--viewport-size={config.DEFAULTS['viewport']}",
                 ],
             },
@@ -147,7 +144,8 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
 
         # Skip manual ATS sites (unsolvable CAPTCHAs)
         from applypilot.config import is_manual_ats
-        apply_url = row["application_url"] or row["url"]
+        _raw_app_url = row["application_url"]
+        apply_url = (_raw_app_url if _raw_app_url and _raw_app_url != "None" else None) or row["url"]
         if is_manual_ats(apply_url):
             conn.execute(
                 "UPDATE jobs SET apply_status = 'manual', apply_error = 'manual ATS' WHERE url = ?",
@@ -155,6 +153,17 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             )
             conn.commit()
             logger.info("Skipping manual ATS: %s", row["url"][:80])
+            return None
+
+        # Cross-instance dedup — skip if already applied via another instance
+        if is_already_applied(row["url"], row["application_url"]):
+            conn.execute(
+                "UPDATE jobs SET apply_status = 'skip_dedup', "
+                "apply_error = 'applied via another instance' WHERE url = ?",
+                (row["url"],),
+            )
+            conn.commit()
+            logger.info("Skipping (cross-instance dedup): %s", row["url"][:80])
             return None
 
         now = datetime.now(timezone.utc).isoformat()
@@ -403,6 +412,10 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                             if bt == "text":
                                 text_parts.append(block["text"])
                                 lf.write(block["text"] + "\n")
+                                # Emit agent text to main log (truncated to avoid flooding)
+                                for tline in block["text"].splitlines():
+                                    if tline.strip():
+                                        logger.info("[W%d] %s", worker_id, tline[:200])
                             elif bt == "tool_use":
                                 name = (
                                     block.get("name", "")
@@ -422,6 +435,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                                     desc = name
 
                                 lf.write(f"  >> {desc}\n")
+                                logger.info("[W%d] >> %s", worker_id, desc)
                                 ws = get_state(worker_id)
                                 cur_actions = ws.actions if ws else 0
                                 update_state(worker_id,
@@ -610,6 +624,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 continue
             elif result == "applied":
                 mark_result(job["url"], "applied", duration_ms=duration_ms)
+                instance_name = os.path.basename(os.environ.get("APPLYPILOT_DIR", "default"))
+                record_applied(job, instance=instance_name)
                 applied += 1
                 update_state(worker_id, jobs_applied=applied,
                              jobs_done=applied + failed)
@@ -672,7 +688,7 @@ def main(limit: int = 1, target_url: str | None = None,
     _stop_event.clear()
 
     config.ensure_dirs()
-    console = Console()
+    init_applied_db()
 
     if continuous:
         effective_limit = 0
@@ -686,8 +702,8 @@ def main(limit: int = 1, target_url: str | None = None,
         init_worker(i)
 
     worker_label = f"{workers} worker{'s' if workers > 1 else ''}"
-    console.print(f"Launching apply pipeline ({mode_label}, {worker_label}, poll every {POLL_INTERVAL}s)...")
-    console.print("[dim]Ctrl+C = skip current job(s) | Ctrl+C x2 = stop[/dim]")
+    logger.info("Launching apply pipeline (%s, %s, poll every %ds)...",
+                mode_label, worker_label, POLL_INTERVAL)
 
     # Double Ctrl+C handler
     _ctrl_c_count = 0
@@ -696,14 +712,13 @@ def main(limit: int = 1, target_url: str | None = None,
         nonlocal _ctrl_c_count
         _ctrl_c_count += 1
         if _ctrl_c_count == 1:
-            console.print("\n[yellow]Skipping current job(s)... (Ctrl+C again to STOP)[/yellow]")
-            # Kill all active Claude processes to skip current jobs
+            logger.warning("Skipping current job(s)... (Ctrl+C again to STOP)")
             with _claude_lock:
                 for wid, cproc in list(_claude_procs.items()):
                     if cproc.poll() is None:
                         _kill_process_tree(cproc.pid)
         else:
-            console.print("\n[red bold]STOPPING[/red bold]")
+            logger.warning("STOPPING")
             _stop_event.set()
             with _claude_lock:
                 for wid, cproc in list(_claude_procs.items()):
@@ -714,78 +729,88 @@ def main(limit: int = 1, target_url: str | None = None,
 
     signal.signal(signal.SIGINT, _sigint_handler)
 
-    try:
-        with Live(render_full(), console=console, refresh_per_second=2) as live:
-            # Daemon thread for display refresh only (no business logic)
-            _dashboard_running = True
+    def _run_workers() -> tuple[int, int]:
+        if workers == 1:
+            return worker_loop(
+                worker_id=0,
+                limit=effective_limit,
+                target_url=target_url,
+                min_score=min_score,
+                headless=headless,
+                model=model,
+                dry_run=dry_run,
+            )
 
-            def _refresh():
-                while _dashboard_running:
-                    live.update(render_full())
-                    time.sleep(0.5)
+        if effective_limit:
+            base = effective_limit // workers
+            extra = effective_limit % workers
+            limits = [base + (1 if i < extra else 0) for i in range(workers)]
+        else:
+            limits = [0] * workers
 
-            refresh_thread = threading.Thread(target=_refresh, daemon=True)
-            refresh_thread.start()
-
-            if workers == 1:
-                # Single worker — run directly in main thread
-                total_applied, total_failed = worker_loop(
-                    worker_id=0,
-                    limit=effective_limit,
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="apply-worker") as executor:
+            futures = {
+                executor.submit(
+                    worker_loop,
+                    worker_id=i,
+                    limit=limits[i],
                     target_url=target_url,
                     min_score=min_score,
                     headless=headless,
                     model=model,
                     dry_run=dry_run,
-                )
-            else:
-                # Multi-worker — distribute limit across workers
-                if effective_limit:
-                    base = effective_limit // workers
-                    extra = effective_limit % workers
-                    limits = [base + (1 if i < extra else 0)
-                              for i in range(workers)]
-                else:
-                    limits = [0] * workers  # continuous mode
+                ): i
+                for i in range(workers)
+            }
+            results: list[tuple[int, int]] = []
+            for future in as_completed(futures):
+                wid = futures[future]
+                try:
+                    results.append(future.result())
+                except Exception:
+                    logger.exception("Worker %d crashed", wid)
+                    results.append((0, 0))
 
-                with ThreadPoolExecutor(max_workers=workers,
-                                        thread_name_prefix="apply-worker") as executor:
-                    futures = {
-                        executor.submit(
-                            worker_loop,
-                            worker_id=i,
-                            limit=limits[i],
-                            target_url=target_url,
-                            min_score=min_score,
-                            headless=headless,
-                            model=model,
-                            dry_run=dry_run,
-                        ): i
-                        for i in range(workers)
-                    }
+        return sum(r[0] for r in results), sum(r[1] for r in results)
 
-                    results: list[tuple[int, int]] = []
-                    for future in as_completed(futures):
-                        wid = futures[future]
-                        try:
-                            results.append(future.result())
-                        except Exception:
-                            logger.exception("Worker %d crashed", wid)
-                            results.append((0, 0))
+    is_tty = sys.stdout.isatty()
 
-                total_applied = sum(r[0] for r in results)
-                total_failed = sum(r[1] for r in results)
+    try:
+        if is_tty:
+            from rich.console import Console as _Console
+            _console = _Console()
+            _console.print("[dim]Ctrl+C = skip current job(s) | Ctrl+C x2 = stop[/dim]")
 
-            _dashboard_running = False
-            refresh_thread.join(timeout=2)
-            live.update(render_full())
+            from rich.live import Live
+            _dashboard_running = True
 
-        totals = get_totals()
-        console.print(
-            f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
-            f"(${totals['cost']:.3f})[/bold]"
-        )
-        console.print(f"Logs: {config.LOG_DIR}")
+            def _refresh(live):
+                while _dashboard_running:
+                    live.update(render_full())
+                    time.sleep(0.5)
+
+            with Live(render_full(), console=_console, refresh_per_second=2) as live:
+                refresh_thread = threading.Thread(
+                    target=_refresh, args=(live,), daemon=True)
+                refresh_thread.start()
+                total_applied, total_failed = _run_workers()
+                _dashboard_running = False
+                refresh_thread.join(timeout=2)
+                live.update(render_full())
+
+            totals = get_totals()
+            _console.print(
+                f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
+                f"(${totals['cost']:.3f})[/bold]"
+            )
+            _console.print(f"Logs: {config.LOG_DIR}")
+        else:
+            total_applied, total_failed = _run_workers()
+            totals = get_totals()
+            logger.info("Done: %d applied, %d failed ($%.3f)",
+                        total_applied, total_failed, totals['cost'])
+            logger.info("Logs: %s", config.LOG_DIR)
 
     except KeyboardInterrupt:
         pass
