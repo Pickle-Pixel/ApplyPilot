@@ -97,11 +97,29 @@ def run(
             "lenient: banned words ignored, LLM judge skipped (fastest, fewest API calls)."
         ),
     ),
+    url: Optional[str] = typer.Option(
+        None, "--url",
+        help="Inject a specific job URL and run enrich -> score -> tailor -> cover -> pdf on it (skips discover).",
+    ),
 ) -> None:
     """Run pipeline stages: discover, enrich, score, tailor, cover, pdf."""
     _bootstrap()
 
     from applypilot.pipeline import run_pipeline
+
+    # --url: inject the job into the DB and skip discover
+    if url:
+        from applypilot.database import get_connection, store_jobs
+        conn = get_connection()
+        new, dup = store_jobs(conn, [{"url": url}], site="manual", strategy="manual")
+        if new:
+            console.print(f"[green]Added job URL to pipeline:[/green] {url}")
+        else:
+            console.print(f"[yellow]Job URL already in database:[/yellow] {url}")
+        if not stages:
+            stages = ["enrich", "score", "tailor", "cover", "pdf"]
+        else:
+            stages = [s for s in stages if s != "discover"]
 
     stage_list = stages if stages else ["all"]
 
