@@ -89,9 +89,11 @@ TITLE: Match the target role. Keep seniority (Senior/Lead/Staff). Drop company s
 
 SUMMARY: Rewrite from scratch. Lead with the 1-2 skills that matter most for THIS role. Sound like someone who's done this job.
 
-SKILLS: Reorder each category so the job's must-haves appear first.
+SKILLS: Include EVERY skill from the SKILLS BOUNDARY, each in its matching category. Reorder within each category so the job's must-haves appear first, but never drop a listed skill.
 
 Reframe EVERY bullet for this role. Same real work, different angle. Every bullet must be reworded. Never copy verbatim.
+
+KEYWORDS: When the ORIGINAL RESUME already contains domain methods, tools, frameworks, or terminology that the job description also asks for (e.g. specific research methods, platforms, "research operations", "AI agents", named methodologies), keep those EXACT terms in the rewritten bullets. Reword the sentence around them, but do not genericize a real keyword away. Never invent a keyword the candidate does not have in the original resume.
 
 PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
 
@@ -114,7 +116,7 @@ BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, De
 
 ## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
 
-{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":"{school} | {education_level}"}}"""
+{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","Quantitative Methods":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":"{school} | {education_level}"}}"""
 
 
 def _build_judge_prompt(profile: dict) -> str:
@@ -220,6 +222,24 @@ def extract_json(raw: str) -> dict:
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
+def _clean_subtitle(subtitle: str | None) -> str | None:
+    """Return a usable subtitle, or None if it's blank or an unfilled placeholder.
+
+    The tailor prompt's JSON schema uses "Tech | Dates" as the subtitle example,
+    which the LLM sometimes copies verbatim when it has no real tech/dates to
+    fill in. Drop those rather than rendering the placeholder.
+    """
+    if not subtitle:
+        return None
+    s = sanitize_text(str(subtitle)).strip()
+    if not s:
+        return None
+    low = s.lower().replace(" ", "")
+    if low in {"tech|dates", "tech", "dates"} or "|dates" in low or "tech|" in low:
+        return None
+    return s
+
+
 def assemble_resume_text(data: dict, profile: dict) -> str:
     """Convert JSON resume data to formatted plain text.
 
@@ -263,19 +283,31 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
     lines.append(sanitize_text(data["summary"]))
     lines.append("")
 
-    # Technical Skills
+    # Technical Skills -- rendered deterministically from the profile's
+    # skills_boundary, not the LLM output. Skills are a curated allowlist, and
+    # the LLM unreliably drops entries when asked to echo a fixed list, so we
+    # render every category the user defined and guarantee nothing is lost.
+    # Empty categories are skipped.
     lines.append("TECHNICAL SKILLS")
-    if isinstance(data["skills"], dict):
-        for cat, val in data["skills"].items():
-            lines.append(f"{cat}: {sanitize_text(str(val))}")
+    boundary = profile.get("skills_boundary", {})
+    label_overrides = {"programming_languages": "Languages", "ux_methods": "UX Methods"}
+    for cat, items in boundary.items():
+        if not isinstance(items, list) or not items:
+            continue
+        label = label_overrides.get(cat, cat.replace("_", " ").title())
+        val_clean = sanitize_text(", ".join(items)).strip()
+        if not val_clean:
+            continue
+        lines.append(f"{label}: {val_clean}")
     lines.append("")
 
     # Experience
     lines.append("EXPERIENCE")
     for entry in data.get("experience", []):
         lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
+        subtitle = _clean_subtitle(entry.get("subtitle"))
+        if subtitle:
+            lines.append(subtitle)
         for b in entry.get("bullets", []):
             lines.append(f"- {sanitize_text(b)}")
         lines.append("")
@@ -284,8 +316,9 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
     lines.append("PROJECTS")
     for entry in data.get("projects", []):
         lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
+        subtitle = _clean_subtitle(entry.get("subtitle"))
+        if subtitle:
+            lines.append(subtitle)
         for b in entry.get("bullets", []):
             lines.append(f"- {sanitize_text(b)}")
         lines.append("")
