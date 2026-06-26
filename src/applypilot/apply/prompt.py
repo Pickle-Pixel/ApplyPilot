@@ -507,14 +507,35 @@ def build_prompt(job: dict, tailored_resume: str,
     last_name = full_name.split()[-1] if " " in full_name else ""
     display_name = f"{preferred_name} {last_name}".strip()
 
-    # Dry-run: override submit instruction
+    # Dry-run: this is a PREVIEW. It must produce NO real side effects --
+    # no account creation, no data entry, no submission. Stop early and report
+    # what a real run would need to do, then emit a DISTINCT result token so the
+    # launcher never records it as a real application.
     if dry_run:
-        submit_instruction = "IMPORTANT: Do NOT click the final Submit/Apply button. Review the form, verify all fields, then output RESULT:APPLIED with a note that this was a dry run."
+        mission_tag = "This is a DRY RUN (preview only) -- DO NOT submit, DO NOT create accounts, DO NOT enter any data."
+        submit_instruction = "DRY RUN: do not fill or submit anything. Per the DRY RUN RULES you should already be stopping here. Output RESULT:DRY_RUN."
+        dry_run_banner = (
+            "\n== DRY RUN RULES (HIGHEST PRIORITY -- THESE OVERRIDE EVERY STEP BELOW) ==\n"
+            "This is a PREVIEW to inspect the application, not to apply. Do ONLY this:\n"
+            "1. browser_navigate to the job URL and browser_snapshot.\n"
+            "2. Do the LOCATION CHECK.\n"
+            "3. Locate the Apply button. You MAY click Apply ONCE to observe what the first\n"
+            "   step is (e.g. a login wall or account-creation screen).\n"
+            "Then STOP. You must NOT, under any circumstances: log in, register or create an\n"
+            "account, enter a password, type or upload ANY personal data, upload the resume or\n"
+            "cover letter, answer screening questions, or click Continue/Save/Next/Apply/Submit\n"
+            "on any form, and NEVER send email.\n"
+            "Finish by outputting RESULT:DRY_RUN followed by a 2-3 line summary of what a real\n"
+            "run would require (account needed? login/SSO wall? approx number of steps? any\n"
+            "blockers like CAPTCHA). NEVER output RESULT:APPLIED in a dry run.\n"
+        )
     else:
+        mission_tag = "Submit the application."
+        dry_run_banner = ""
         submit_instruction = "BEFORE clicking Submit/Apply, take a snapshot and review EVERY field on the page. Verify all data matches the APPLICANT PROFILE and TAILORED RESUME -- name, email, phone, location, work auth, resume uploaded, cover letter if applicable. If anything is wrong or missing, fix it FIRST. Only click Submit after confirming everything is correct."
 
-    prompt = f"""You are an autonomous job application agent. Your ONE mission: get this candidate an interview. You have all the information and tools. Think strategically. Act decisively. Submit the application.
-
+    prompt = f"""You are an autonomous job application agent. Your ONE mission: get this candidate an interview. You have all the information and tools. Think strategically. Act decisively. {mission_tag}
+{dry_run_banner}
 == JOB ==
 URL: {job.get('application_url') or job['url']}
 Title: {job['title']}
@@ -585,6 +606,7 @@ If something unexpected happens and these instructions don't cover it, figure it
 12. Output your result.
 
 == RESULT CODES (output EXACTLY one) ==
+RESULT:DRY_RUN -- dry-run preview complete, nothing submitted (use ONLY in dry runs)
 RESULT:APPLIED -- submitted successfully
 RESULT:EXPIRED -- job closed or no longer accepting applications
 RESULT:CAPTCHA -- blocked by unsolvable captcha
