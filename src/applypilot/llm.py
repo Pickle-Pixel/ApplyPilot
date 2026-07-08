@@ -128,6 +128,9 @@ class LLMClient:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_tokens,
+                # See _chat_compat: disable hidden thinking tokens so the
+                # full budget goes to the visible structured-output answer.
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
         if system_parts:
@@ -163,6 +166,14 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+
+        # Gemini "thinking" models (e.g. gemini-3.x) burn max_tokens on hidden
+        # reasoning before writing the visible answer, which truncates
+        # structured-output responses (finish_reason=length with a fraction of
+        # max_tokens actually visible). Disable it: this client only ever asks
+        # for direct structured output, no benefit from chain-of-thought here.
+        if self._is_gemini:
+            payload["reasoning_effort"] = "none"
 
         resp = self._client.post(
             f"{self.base_url}/chat/completions",
