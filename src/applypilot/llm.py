@@ -1,17 +1,22 @@
-"""
-Unified LLM client for ApplyPilot.
+"""Unified LLM client for ApplyPilot.
 
 Auto-detects provider from environment:
-  GEMINI_API_KEY  -> Google Gemini (default: gemini-2.0-flash)
-  OPENAI_API_KEY  -> OpenAI (default: gpt-4o-mini)
-  LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
+  LLM_PROVIDER=codex -> Codex CLI chat wrapper
+  GEMINI_API_KEY     -> Google Gemini (default: gemini-2.0-flash)
+  OPENAI_API_KEY     -> OpenAI (default: gpt-4o-mini)
+  LLM_URL            -> Local llama.cpp / Ollama compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
 """
 
+import json
 import logging
 import os
+import shutil
+import subprocess
 import time
+import tempfile
+from pathlib import Path
 
 import httpx
 
@@ -21,19 +26,59 @@ log = logging.getLogger(__name__)
 # Provider detection
 # ---------------------------------------------------------------------------
 
-def _detect_provider() -> tuple[str, str, str]:
-    """Return (base_url, model, api_key) based on environment variables.
+def _detect_provider() -> tuple[str, str, str, str]:
+    """Return (provider, base_url, model, api_key) from environment variables.
 
     Reads env at call time (not module import time) so that load_env() called
     in _bootstrap() is always visible here.
     """
+    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     local_url = os.environ.get("LLM_URL", "")
     model_override = os.environ.get("LLM_MODEL", "")
 
+    if provider == "codex":
+        codex_bin = shutil.which("codex")
+        if not codex_bin:
+            raise RuntimeError(
+                "LLM_PROVIDER=codex is set, but the Codex CLI was not found on PATH."
+            )
+        return ("codex", codex_bin, model_override or "gpt-5.4-mini", "")
+
+    if provider == "gemini":
+        if not gemini_key:
+            raise RuntimeError("LLM_PROVIDER=gemini is set, but GEMINI_API_KEY is missing.")
+        return (
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            model_override or "gemini-2.0-flash",
+            gemini_key,
+        )
+
+    if provider == "openai":
+        if not openai_key:
+            raise RuntimeError("LLM_PROVIDER=openai is set, but OPENAI_API_KEY is missing.")
+        return (
+            "openai",
+            "https://api.openai.com/v1",
+            model_override or "gpt-4o-mini",
+            openai_key,
+        )
+
+    if provider == "local":
+        if not local_url:
+            raise RuntimeError("LLM_PROVIDER=local is set, but LLM_URL is missing.")
+        return (
+            "local",
+            local_url.rstrip("/"),
+            model_override or "local-model",
+            os.environ.get("LLM_API_KEY", ""),
+        )
+
     if gemini_key and not local_url:
         return (
+            "gemini",
             "https://generativelanguage.googleapis.com/v1beta/openai",
             model_override or "gemini-2.0-flash",
             gemini_key,
@@ -41,6 +86,7 @@ def _detect_provider() -> tuple[str, str, str]:
 
     if openai_key and not local_url:
         return (
+            "openai",
             "https://api.openai.com/v1",
             model_override or "gpt-4o-mini",
             openai_key,
@@ -48,6 +94,7 @@ def _detect_provider() -> tuple[str, str, str]:
 
     if local_url:
         return (
+            "local",
             local_url.rstrip("/"),
             model_override or "local-model",
             os.environ.get("LLM_API_KEY", ""),
@@ -55,7 +102,7 @@ def _detect_provider() -> tuple[str, str, str]:
 
     raise RuntimeError(
         "No LLM provider configured. "
-        "Set GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
+        "Set LLM_PROVIDER=codex or provide GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL."
     )
 
 
@@ -207,7 +254,7 @@ class LLMClient:
 
                 return self._chat_compat(messages, temperature, max_tokens)
 
-            except _GeminiCompatForbidden as exc:
+            except _GeminiCompatForbidden:
                 # Model not available on OpenAI-compat layer — switch to native.
                 log.warning(
                     "Gemini compat endpoint returned 403 for model '%s'. "
@@ -273,6 +320,126 @@ class LLMClient:
         self._client.close()
 
 
+class CodexLLMClient:
+    """Thin wrapper that turns Codex CLI into an LLM provider."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self._codex_bin = shutil.which("codex") or "codex"
+
+        from applypilot.config import codex_login_status
+
+        ok, detail = codex_login_status()
+        if not ok:
+            raise RuntimeError(
+                "Codex provider selected, but Codex is not logged in. "
+                f"Run `codex login` first ({detail})."
+            )
+
+    @staticmethod
+    def _messages_to_prompt(messages: list[dict]) -> str:
+        blocks: list[str] = []
+        for message in messages:
+            role = str(message.get("role", "user")).upper()
+            content = str(message.get("content", "")).strip()
+            if not content:
+                continue
+            blocks.append(f"{role}:\n{content}")
+        blocks.append("ASSISTANT:")
+        return "\n\n".join(blocks).strip() + "\n"
+
+    @staticmethod
+    def _extract_jsonl_message(stdout: str) -> str:
+        """Best-effort extraction of the last assistant message from JSONL."""
+        last_text = ""
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            item = event.get("item") if isinstance(event, dict) else None
+            if not isinstance(item, dict):
+                continue
+
+            if item.get("type") in {"agent_message", "message"}:
+                text = item.get("text") or item.get("content") or ""
+                if isinstance(text, str) and text.strip():
+                    last_text = text.strip()
+        return last_text
+
+    def chat(
+        self,
+        messages: list[dict],
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> str:
+        """Send a chat completion request through the Codex CLI."""
+        del temperature, max_tokens
+
+        prompt = self._messages_to_prompt(messages)
+        fd, last_message = tempfile.mkstemp(prefix="applypilot-codex-", suffix=".txt")
+        os.close(fd)
+        last_message_path = Path(last_message)
+
+        try:
+            cmd = [
+                self._codex_bin,
+                "exec",
+                "--json",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
+                "--model",
+                self.model,
+                "--output-last-message",
+                str(last_message_path),
+                "-",
+            ]
+
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            if last_message_path.exists():
+                last_message = last_message_path.read_text(encoding="utf-8").strip()
+                if last_message and proc.returncode == 0:
+                    return last_message
+
+            fallback = self._extract_jsonl_message(proc.stdout or "")
+            if fallback and proc.returncode == 0:
+                return fallback
+
+            detail = (proc.stderr or proc.stdout or "").strip()
+            if not detail:
+                detail = "Codex returned no assistant message."
+            raise RuntimeError(
+                f"Codex request failed with exit code {proc.returncode}: {detail[:500]}"
+            )
+        finally:
+            try:
+                last_message_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def ask(self, prompt: str, **kwargs) -> str:
+        """Convenience: single user prompt -> assistant response."""
+        return self.chat([{"role": "user", "content": prompt}], **kwargs)
+
+    def close(self) -> None:
+        return None
+
+
 class _GeminiCompatForbidden(Exception):
     """Sentinel: Gemini OpenAI-compat returned 403. Switch to native API."""
     def __init__(self, response: httpx.Response) -> None:
@@ -284,14 +451,17 @@ class _GeminiCompatForbidden(Exception):
 # Singleton
 # ---------------------------------------------------------------------------
 
-_instance: LLMClient | None = None
+_instance: LLMClient | CodexLLMClient | None = None
 
 
-def get_client() -> LLMClient:
+def get_client() -> LLMClient | CodexLLMClient:
     """Return (or create) the module-level LLMClient singleton."""
     global _instance
     if _instance is None:
-        base_url, model, api_key = _detect_provider()
-        log.info("LLM provider: %s  model: %s", base_url, model)
-        _instance = LLMClient(base_url, model, api_key)
+        provider, base_url, model, api_key = _detect_provider()
+        log.info("LLM provider: %s  model: %s", provider, model)
+        if provider == "codex":
+            _instance = CodexLLMClient(model)
+        else:
+            _instance = LLMClient(base_url, model, api_key)
     return _instance

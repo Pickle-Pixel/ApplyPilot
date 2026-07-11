@@ -4,16 +4,17 @@ Interactive flow that creates ~/.applypilot/ with:
   - resume.txt (and optionally resume.pdf)
   - profile.json
   - searches.yaml
-  - .env (LLM API key)
+  - .env (LLM provider configuration)
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
-import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
@@ -27,8 +28,25 @@ from applypilot.config import (
     SEARCH_CONFIG_PATH,
     ensure_dirs,
 )
+from applypilot.resume import ingest_resume_source
 
 console = Console()
+
+
+def _set_env_var(key: str, value: str) -> None:
+    """Create or update a key in ~/.applypilot/.env."""
+    lines: list[str] = []
+    if ENV_PATH.exists():
+        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                lines.append(line)
+                continue
+            if line.split("=", 1)[0].strip() == key:
+                continue
+            lines.append(line)
+    lines.append(f"{key}={value}")
+    ENV_PATH.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +55,11 @@ console = Console()
 
 def _setup_resume() -> None:
     """Prompt for resume file and copy into APP_DIR."""
-    console.print(Panel("[bold]Step 1: Resume[/bold]\nPoint to your master resume file (.txt or .pdf)."))
+    console.print(Panel(
+        "[bold]Step 1: Resume[/bold]\n"
+        "Point to your master resume file (.txt, .pdf, or .tex).\n"
+        "LaTeX resumes will be copied, converted to text for AI stages, and compiled to PDF when possible."
+    ))
 
     while True:
         path_str = Prompt.ask("Resume file path")
@@ -48,14 +70,11 @@ def _setup_resume() -> None:
             continue
 
         suffix = src.suffix.lower()
-        if suffix not in (".txt", ".pdf"):
-            console.print("[red]Unsupported format.[/red] Provide a .txt or .pdf file.")
+        if suffix not in (".txt", ".pdf", ".tex"):
+            console.print("[red]Unsupported format.[/red] Provide a .txt, .pdf, or .tex file.")
             continue
 
-        if suffix == ".txt":
-            shutil.copy2(src, RESUME_PATH)
-            console.print(f"[green]Copied to {RESUME_PATH}[/green]")
-        elif suffix == ".pdf":
+        if suffix == ".pdf":
             shutil.copy2(src, RESUME_PDF_PATH)
             console.print(f"[green]Copied to {RESUME_PDF_PATH}[/green]")
 
@@ -71,6 +90,14 @@ def _setup_resume() -> None:
                     console.print(f"[green]Copied to {RESUME_PATH}[/green]")
                 else:
                     console.print("[yellow]File not found, skipping plain-text copy.[/yellow]")
+        else:
+            artifacts = ingest_resume_source(src)
+            for label, path in artifacts.items():
+                console.print(f"[green]Created {label.replace('_', ' ')}:[/green] {path}")
+            if suffix == ".tex" and RESUME_PDF_PATH.exists():
+                console.print(f"[green]Compiled LaTeX resume to:[/green] {RESUME_PDF_PATH}")
+            elif suffix == ".tex":
+                console.print("[yellow]LaTeX source copied, but PDF compilation was skipped or failed.[/yellow]")
         break
 
 
@@ -238,17 +265,21 @@ def _setup_ai_features() -> None:
     console.print(Panel(
         "[bold]Step 4: AI Features (optional)[/bold]\n"
         "An LLM powers job scoring, resume tailoring, and cover letters.\n"
-        "Without this, you can still discover and enrich jobs."
+        "Without this, you can still discover and enrich jobs.\n"
+        "Codex is available here as a tailoring provider."
     ))
 
     if not Confirm.ask("Enable AI scoring and resume tailoring?", default=True):
         console.print("[dim]Discovery-only mode. You can configure AI later with [bold]applypilot init[/bold].[/dim]")
         return
 
-    console.print("Supported providers: [bold]Gemini[/bold] (recommended, free tier), OpenAI, local (Ollama/llama.cpp)")
+    console.print(
+        "Supported providers: [bold]Gemini[/bold] (recommended, free tier), "
+        "OpenAI, local (Ollama/llama.cpp), [bold]Codex[/bold]"
+    )
     provider = Prompt.ask(
         "Provider",
-        choices=["gemini", "openai", "local"],
+        choices=["gemini", "openai", "local", "codex"],
         default="gemini",
     )
 
@@ -257,18 +288,40 @@ def _setup_ai_features() -> None:
     if provider == "gemini":
         api_key = Prompt.ask("Gemini API key (from aistudio.google.com)")
         model = Prompt.ask("Model", default="gemini-2.0-flash")
+        env_lines.append("LLM_PROVIDER=gemini")
         env_lines.append(f"GEMINI_API_KEY={api_key}")
         env_lines.append(f"LLM_MODEL={model}")
     elif provider == "openai":
         api_key = Prompt.ask("OpenAI API key")
         model = Prompt.ask("Model", default="gpt-4o-mini")
+        env_lines.append("LLM_PROVIDER=openai")
         env_lines.append(f"OPENAI_API_KEY={api_key}")
         env_lines.append(f"LLM_MODEL={model}")
     elif provider == "local":
         url = Prompt.ask("Local LLM endpoint URL", default="http://localhost:8080/v1")
         model = Prompt.ask("Model name", default="local-model")
+        env_lines.append("LLM_PROVIDER=local")
         env_lines.append(f"LLM_URL={url}")
         env_lines.append(f"LLM_MODEL={model}")
+    elif provider == "codex":
+        model = Prompt.ask("Codex model", default="gpt-5.4-mini")
+        env_lines.append("LLM_PROVIDER=codex")
+        env_lines.append(f"LLM_MODEL={model}")
+        console.print(
+            "[yellow]Codex selected.[/yellow] This configures scoring, tailoring, and cover letters."
+        )
+        ok, detail = _check_codex_login()
+        if ok:
+            console.print(f"[green]Codex login detected.[/green] {detail}")
+        else:
+            console.print(f"[yellow]Codex is not logged in yet.[/yellow] {detail}")
+            if Confirm.ask("Run `codex login` now?", default=True):
+                subprocess.run(["codex", "login"], check=False)
+                ok, detail = _check_codex_login()
+                if ok:
+                    console.print(f"[green]Codex login detected.[/green] {detail}")
+                else:
+                    console.print(f"[yellow]Codex login still missing.[/yellow] {detail}")
 
     env_lines.append("")
     ENV_PATH.write_text("\n".join(env_lines), encoding="utf-8")
@@ -279,27 +332,66 @@ def _setup_ai_features() -> None:
 # Auto-Apply
 # ---------------------------------------------------------------------------
 
+def _check_codex_login() -> tuple[bool, str]:
+    """Check whether Codex is logged in."""
+    try:
+        proc = subprocess.run(
+            ["codex", "login", "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return False, str(exc)
+
+    output = (proc.stdout or proc.stderr or "").strip()
+    ok = proc.returncode == 0 and bool(output)
+    return ok, output or f"exit code {proc.returncode}"
+
+
 def _setup_auto_apply() -> None:
-    """Configure autonomous job application (requires Claude Code CLI)."""
+    """Configure autonomous job application (requires an agent CLI)."""
     console.print(Panel(
         "[bold]Step 5: Auto-Apply (optional)[/bold]\n"
         "ApplyPilot can autonomously fill and submit job applications\n"
-        "using Claude Code as the browser agent."
+        "using Claude Code or Codex as the browser agent."
     ))
 
     if not Confirm.ask("Enable autonomous job applications?", default=True):
         console.print("[dim]You can apply manually using the tailored resumes ApplyPilot generates.[/dim]")
         return
 
-    # Check for Claude Code CLI
+    agent_choices = []
     if shutil.which("claude"):
-        console.print("[green]Claude Code CLI detected.[/green]")
+        agent_choices.append("claude")
+    if shutil.which("codex"):
+        agent_choices.append("codex")
+    if not agent_choices:
+        agent_choices = ["claude", "codex"]
+
+    default_agent = os.environ.get("APPLYPILOT_AGENT") or ("claude" if "claude" in agent_choices else agent_choices[0])
+    if default_agent not in agent_choices:
+        default_agent = "claude" if "claude" in agent_choices else agent_choices[0]
+    agent = Prompt.ask("Agent CLI", choices=agent_choices, default=default_agent)
+    _set_env_var("APPLYPILOT_AGENT", agent)
+
+    if agent == "codex":
+        ok, detail = _check_codex_login()
+        if ok:
+            console.print(f"[green]Codex login detected.[/green] {detail}")
+        else:
+            console.print(f"[yellow]Codex is not logged in yet.[/yellow] {detail}")
+            if Confirm.ask("Run `codex login` now?", default=True):
+                subprocess.run(["codex", "login"], check=False)
     else:
-        console.print(
-            "[yellow]Claude Code CLI not found on PATH.[/yellow]\n"
-            "Install it from: [bold]https://claude.ai/code[/bold]\n"
-            "Auto-apply won't work until Claude Code is installed."
-        )
+        if shutil.which("claude"):
+            console.print("[green]Claude Code CLI detected.[/green]")
+        else:
+            console.print(
+                "[yellow]Claude Code CLI not found on PATH.[/yellow]\n"
+                "Install it from: [bold]https://claude.ai/code[/bold]\n"
+                "Auto-apply won't work until Claude Code is installed."
+            )
 
     # Optional: CapSolver for CAPTCHAs
     console.print("\n[dim]Some job sites use CAPTCHAs. CapSolver can handle them automatically.[/dim]")
@@ -356,7 +448,7 @@ def run_wizard() -> None:
     _setup_ai_features()
     console.print()
 
-    # Step 5: Auto-apply (Claude Code detection)
+    # Step 5: Auto-apply (Claude Code or Codex detection)
     _setup_auto_apply()
     console.print()
 
@@ -378,9 +470,9 @@ def run_wizard() -> None:
 
     unlock_hint = ""
     if tier == 1:
-        unlock_hint = "\n[dim]To unlock Tier 2: configure an LLM API key (re-run [bold]applypilot init[/bold]).[/dim]"
+        unlock_hint = "\n[dim]To unlock Tier 2: configure an LLM provider (re-run [bold]applypilot init[/bold]).[/dim]"
     elif tier == 2:
-        unlock_hint = "\n[dim]To unlock Tier 3: install Claude Code CLI + Chrome.[/dim]"
+        unlock_hint = "\n[dim]To unlock Tier 3: install Claude Code CLI or Codex, plus Chrome.[/dim]"
 
     console.print(
         Panel.fit(

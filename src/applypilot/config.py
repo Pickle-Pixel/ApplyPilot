@@ -13,6 +13,7 @@ DB_PATH = APP_DIR / "applypilot.db"
 PROFILE_PATH = APP_DIR / "profile.json"
 RESUME_PATH = APP_DIR / "resume.txt"
 RESUME_PDF_PATH = APP_DIR / "resume.pdf"
+RESUME_TEX_PATH = APP_DIR / "resume.tex"
 SEARCH_CONFIG_PATH = APP_DIR / "searches.yaml"
 ENV_PATH = APP_DIR / ".env"
 
@@ -196,28 +197,109 @@ TIER_COMMANDS: dict[int, list[str]] = {
     3: ["apply"],
 }
 
+AGENT_BACKENDS = ("claude", "codex")
+LLM_PROVIDERS = ("gemini", "openai", "local", "codex")
+
+
+def get_llm_provider() -> str:
+    """Return the configured provider for scoring/tailoring/cover letters."""
+    load_env()
+
+    configured = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    if configured in LLM_PROVIDERS:
+        return configured
+
+    if os.environ.get("GEMINI_API_KEY") and not os.environ.get("LLM_URL"):
+        return "gemini"
+    if os.environ.get("OPENAI_API_KEY") and not os.environ.get("LLM_URL"):
+        return "openai"
+    if os.environ.get("LLM_URL"):
+        return "local"
+
+    return ""
+
+
+def get_agent_backend() -> str:
+    """Return the configured auto-apply agent backend.
+
+    The backend can be pinned via APPLYPILOT_AGENT. If unset, Claude is
+    preferred when available; otherwise Codex is used when installed.
+    """
+    load_env()
+
+    configured = os.environ.get("APPLYPILOT_AGENT", "").strip().lower()
+    if configured in AGENT_BACKENDS:
+        return configured
+
+    if shutil.which("claude"):
+        return "claude"
+    if shutil.which("codex"):
+        return "codex"
+    return "claude"
+
+
+def codex_login_status() -> tuple[bool, str]:
+    """Check whether Codex is logged in."""
+    import subprocess
+
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        return False, "Codex CLI not found"
+
+    try:
+        proc = subprocess.run(
+            [codex_bin, "login", "status"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return False, str(exc)
+
+    output = (proc.stdout or proc.stderr or "").strip()
+    ok = proc.returncode == 0 and bool(output)
+    return ok, output or f"exit code {proc.returncode}"
+
 
 def get_tier() -> int:
     """Detect the current tier based on available dependencies.
 
     Tier 1 (Discovery):            Python + pip
-    Tier 2 (AI Scoring & Tailoring): + LLM API key
-    Tier 3 (Full Auto-Apply):       + Claude Code CLI + Chrome
+    Tier 2 (AI Scoring & Tailoring): + LLM provider
+    Tier 3 (Full Auto-Apply):       + Claude Code CLI or Codex + Chrome
     """
     load_env()
 
-    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL"))
+    provider = get_llm_provider()
+    if provider == "codex":
+        has_llm, _ = codex_login_status()
+    elif provider in ("gemini", "openai", "local"):
+        has_llm = True
+    else:
+        has_llm = False
+
     if not has_llm:
         return 1
 
+    backend = get_agent_backend()
+
     has_claude = shutil.which("claude") is not None
+    has_codex = shutil.which("codex") is not None
     try:
         get_chrome_path()
         has_chrome = True
     except FileNotFoundError:
         has_chrome = False
 
-    if has_claude and has_chrome:
+    if backend == "claude":
+        has_agent = has_claude
+    elif backend == "codex":
+        has_agent, _ = codex_login_status()
+        has_agent = has_agent and has_codex
+    else:
+        has_agent = has_claude or has_codex
+
+    if has_agent and has_chrome:
         return 3
 
     return 2
@@ -238,11 +320,23 @@ def check_tier(required: int, feature: str) -> None:
     _console = Console(stderr=True)
 
     missing: list[str] = []
-    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
-        missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
+    if required >= 2:
+        provider = get_llm_provider()
+        if provider == "codex":
+            logged_in, detail = codex_login_status()
+            if not logged_in:
+                missing.append(f"Codex login — run [bold]codex login[/bold] ({detail})")
+        elif provider not in ("gemini", "openai", "local"):
+            missing.append("LLM provider — run [bold]applypilot init[/bold] to configure Gemini, OpenAI, local, or Codex")
     if required >= 3:
-        if not shutil.which("claude"):
-            missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
+        backend = get_agent_backend()
+        if backend == "codex":
+            logged_in, detail = codex_login_status()
+            if not logged_in:
+                missing.append("Codex login — run [bold]codex login[/bold]")
+        else:
+            if not shutil.which("claude"):
+                missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
         try:
             get_chrome_path()
         except FileNotFoundError:

@@ -1,8 +1,9 @@
-"""Apply orchestration: acquire jobs, spawn Claude Code sessions, track results.
+"""Apply orchestration: acquire jobs, spawn agent sessions, track results.
 
 This is the main entry point for the apply pipeline. It pulls jobs from
-the database, launches Chrome + Claude Code for each one, parses the
-result, and updates the database. Supports parallel workers via --workers.
+the database, launches Chrome plus the selected agent backend for each one,
+parses the result, and updates the database. Supports parallel workers via
+--workers.
 """
 
 import atexit
@@ -23,9 +24,10 @@ from pathlib import Path
 from rich.console import Console
 from rich.live import Live
 
+from applypilot.agent import build_playwright_override_args, get_agent_backend
 from applypilot import config
 from applypilot.database import get_connection
-from applypilot.apply import chrome, dashboard, prompt as prompt_mod
+from applypilot.apply import prompt as prompt_mod
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
     reset_worker_dir, cleanup_on_exit, _kill_process_tree,
@@ -49,7 +51,7 @@ POLL_INTERVAL = config.DEFAULTS["poll_interval"]
 # Thread-safe shutdown coordination
 _stop_event = threading.Event()
 
-# Track active Claude Code processes for skip (Ctrl+C) handling
+# Track active agent processes for skip (Ctrl+C) handling
 _claude_procs: dict[int, subprocess.Popen] = {}
 _claude_lock = threading.Lock()
 
@@ -81,6 +83,11 @@ def _make_mcp_config(cdp_port: int) -> dict:
             },
         }
     }
+
+
+def _make_codex_overrides(cdp_port: int) -> list[str]:
+    """Build `codex exec -c` overrides for Playwright MCP."""
+    return build_playwright_override_args(cdp_port)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +132,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 params.extend(blocked_sites)
             url_clauses = ""
             if blocked_patterns:
-                url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
+                url_clauses = " ".join("AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
@@ -211,8 +218,9 @@ def release_lock(url: str) -> None:
 # ---------------------------------------------------------------------------
 
 def gen_prompt(target_url: str, min_score: int = 7,
-               model: str = "sonnet", worker_id: int = 0) -> Path | None:
-    """Generate a prompt file and print the Claude CLI command for manual debugging.
+               model: str = "sonnet", worker_id: int = 0,
+               agent: str | None = None) -> Path | None:
+    """Generate a prompt file and print the agent CLI command for manual debugging.
 
     Returns:
         Path to the generated prompt file, or None if no job found.
@@ -290,13 +298,101 @@ def reset_failed() -> int:
     return cursor.rowcount
 
 
+def build_manual_command(
+    *,
+    agent: str | None = None,
+    model: str = "sonnet",
+    worker_id: int = 0,
+    prompt_file: Path,
+) -> str:
+    """Build a copy-paste command for manually running the agent."""
+    backend = get_agent_backend(agent, model=model)
+    port = BASE_CDP_PORT + worker_id
+    mcp_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
+
+    if backend.name == "codex":
+        return (
+            f"codex exec --model {backend.model} --dangerously-bypass-approvals-and-sandbox "
+            f'--cd "{config.APP_DIR}" --skip-git-repo-check '
+            f"{' '.join(_make_codex_overrides(port))} "
+            f'--output-last-message "{prompt_file.with_suffix(".last-message.txt")}" '
+            f'< "{prompt_file}"'
+        )
+
+    return (
+        f"claude --model {backend.model} -p "
+        f"--mcp-config {mcp_path} "
+        f"--permission-mode bypassPermissions < {prompt_file}"
+    )
+
+
+def _build_agent_command(
+    backend_name: str,
+    binary: str,
+    model: str,
+    port: int,
+    worker_id: int,
+    worker_dir: Path,
+) -> tuple[list[str], Path | None]:
+    """Build the runtime command for the selected backend."""
+    if backend_name == "codex":
+        last_message_path = config.LOG_DIR / (
+            f"codex_{datetime.now().strftime('%Y%m%d_%H%M%S')}_w{worker_id}.last-message.txt"
+        )
+        cmd = [
+            binary,
+            "exec",
+            "--model",
+            model,
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--cd",
+            str(worker_dir),
+            "--skip-git-repo-check",
+            "--output-last-message",
+            str(last_message_path),
+            *_make_codex_overrides(port),
+            "-",
+        ]
+        return cmd, last_message_path
+
+    mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
+    cmd = [
+        binary,
+        "--model",
+        model,
+        "-p",
+        "--mcp-config",
+        str(mcp_config_path),
+        "--permission-mode",
+        "bypassPermissions",
+        "--no-session-persistence",
+        "--disallowedTools",
+        (
+            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
+            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
+            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
+            "mcp__gmail__create_label,mcp__gmail__update_label,"
+            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
+            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
+            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
+            "mcp__gmail__delete_filter"
+        ),
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "-",
+    ]
+    return cmd, None
+
+
 # ---------------------------------------------------------------------------
 # Per-job execution
 # ---------------------------------------------------------------------------
 
 def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
-    """Spawn a Claude Code session for one job application.
+            model: str = "sonnet", dry_run: bool = False,
+            agent: str | None = None) -> tuple[str, int]:
+    """Spawn an agent session for one job application.
 
     Returns:
         Tuple of (status_string, duration_ms). Status is one of:
@@ -317,37 +413,27 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         dry_run=dry_run,
     )
 
-    # Write per-worker MCP config
-    mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
-    mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
+    backend = get_agent_backend(agent, model=model)
 
-    # Build claude command
-    cmd = [
-        "claude",
-        "--model", model,
-        "-p",
-        "--mcp-config", str(mcp_config_path),
-        "--permission-mode", "bypassPermissions",
-        "--no-session-persistence",
-        "--disallowedTools", (
-            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
-            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
-            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
-            "mcp__gmail__create_label,mcp__gmail__update_label,"
-            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
-            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
-            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
-            "mcp__gmail__delete_filter"
-        ),
-        "--output-format", "stream-json",
-        "--verbose", "-",
-    ]
+    # Write per-worker MCP config for Claude; Codex receives TOML overrides.
+    mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
+    if backend.name == "claude":
+        mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
 
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
     worker_dir = reset_worker_dir(worker_id)
+
+    cmd, last_message_path = _build_agent_command(
+        backend.name,
+        backend.binary,
+        backend.model,
+        port,
+        worker_id,
+        worker_dir,
+    )
 
     update_state(worker_id, status="applying", job_title=job["title"],
                  company=job.get("site", ""), score=job.get("fit_score", 0),
@@ -397,7 +483,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 try:
                     msg = json.loads(line)
                     msg_type = msg.get("type")
-                    if msg_type == "assistant":
+                    if backend.name == "claude" and msg_type == "assistant":
                         for block in msg.get("message", {}).get("content", []):
                             bt = block.get("type")
                             if bt == "text":
@@ -427,6 +513,15 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                                 update_state(worker_id,
                                              actions=cur_actions + 1,
                                              last_action=desc[:35])
+                    elif backend.name == "codex" and msg_type == "item.completed":
+                        item = msg.get("item", {})
+                        if item.get("type") == "agent_message":
+                            text = item.get("text", "")
+                            if text:
+                                text_parts.append(text)
+                                lf.write(text + "\n")
+                    elif msg_type == "turn.completed":
+                        continue
                     elif msg_type == "result":
                         stats = {
                             "input_tokens": msg.get("usage", {}).get("input_tokens", 0),
@@ -449,11 +544,14 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             return "skipped", int((time.time() - start) * 1000)
 
         output = "\n".join(text_parts)
+        if not output and last_message_path and last_message_path.exists():
+            output = last_message_path.read_text(encoding="utf-8")
         elapsed = int(time.time() - start)
         duration_ms = int((time.time() - start) * 1000)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        job_log = config.LOG_DIR / f"claude_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.txt"
+        agent_slug = backend.name
+        job_log = config.LOG_DIR / f"{agent_slug}_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.txt"
         job_log.write_text(output, encoding="utf-8")
 
         if stats:
@@ -548,7 +646,8 @@ def _is_permanent_failure(result: str) -> bool:
 def worker_loop(worker_id: int = 0, limit: int = 1,
                 target_url: str | None = None,
                 min_score: int = 7, headless: bool = False,
-                model: str = "sonnet", dry_run: bool = False) -> tuple[int, int]:
+                model: str = "sonnet", dry_run: bool = False,
+                agent: str | None = None) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -557,7 +656,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         target_url: Apply to a specific URL.
         min_score: Minimum fit_score threshold.
         headless: Run Chrome headless.
-        model: Claude model name.
+        model: Agent model name.
         dry_run: Don't click Submit.
 
     Returns:
@@ -602,7 +701,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
 
             result, duration_ms = run_job(job, port=port, worker_id=worker_id,
-                                            model=model, dry_run=dry_run)
+                                            model=model, dry_run=dry_run,
+                                            agent=agent)
 
             if result == "skipped":
                 release_lock(job["url"])
@@ -653,7 +753,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 def main(limit: int = 1, target_url: str | None = None,
          min_score: int = 7, headless: bool = False, model: str = "sonnet",
          dry_run: bool = False, continuous: bool = False,
-         poll_interval: int = 60, workers: int = 1) -> None:
+         poll_interval: int = 60, workers: int = 1,
+         agent: str | None = None) -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -661,11 +762,12 @@ def main(limit: int = 1, target_url: str | None = None,
         target_url: Apply to a specific URL.
         min_score: Minimum fit_score threshold.
         headless: Run Chrome in headless mode.
-        model: Claude model name.
+        model: Agent model name.
         dry_run: Don't click Submit.
         continuous: Run forever, polling for new jobs.
         poll_interval: Seconds between DB polls when queue is empty.
         workers: Number of parallel workers (default 1).
+        agent: Agent backend override.
     """
     global POLL_INTERVAL
     POLL_INTERVAL = poll_interval
@@ -737,6 +839,7 @@ def main(limit: int = 1, target_url: str | None = None,
                     headless=headless,
                     model=model,
                     dry_run=dry_run,
+                    agent=agent,
                 )
             else:
                 # Multi-worker — distribute limit across workers
@@ -760,6 +863,7 @@ def main(limit: int = 1, target_url: str | None = None,
                             headless=headless,
                             model=model,
                             dry_run=dry_run,
+                            agent=agent,
                         ): i
                         for i in range(workers)
                     }
