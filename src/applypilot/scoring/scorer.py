@@ -5,15 +5,14 @@ job description. All personal data is loaded at runtime from the user's
 profile and resume file.
 """
 
-import json
 import logging
 import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import RESUME_PATH, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
+from applypilot.resume import load_resume_text
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +110,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     Returns:
         {"scored": int, "errors": int, "elapsed": float, "distribution": list}
     """
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    resume_text = load_resume_text()
     conn = get_connection()
 
     if rescore:

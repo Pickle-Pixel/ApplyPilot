@@ -1,6 +1,6 @@
 """Prompt builder for the autonomous job application agent.
 
-Constructs the full instruction prompt that tells Claude Code / the AI agent
+Constructs the full instruction prompt that tells the AI agent
 how to fill out a job application form using Playwright MCP tools. All
 personal data is loaded from the user's profile -- nothing is hardcoded.
 """
@@ -196,7 +196,6 @@ def _build_hard_rules(profile: dict) -> str:
     display_name = f"{preferred_name} {preferred_last}".strip() if preferred_last else preferred_name
 
     # Build work auth rule dynamically
-    auth_info = work_auth.get("legally_authorized_to_work", "")
     sponsorship = work_auth.get("require_sponsorship", "")
     permit_type = work_auth.get("work_permit_type", "")
 

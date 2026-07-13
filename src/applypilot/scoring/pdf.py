@@ -1,13 +1,15 @@
 """Text-to-PDF conversion for tailored resumes and cover letters.
 
 Parses the structured text resume format, renders via an HTML/CSS template,
-and exports to PDF using headless Chromium via Playwright.
+and exports to PDF using headless Chromium via Playwright. If the source file
+is LaTeX, it is compiled directly with a local LaTeX engine.
 """
 
 import logging
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
+from applypilot.resume import compile_latex_to_pdf
 
 log = logging.getLogger(__name__)
 
@@ -372,6 +374,10 @@ def convert_to_pdf(
         Path to the generated PDF (or HTML) file.
     """
     text_path = Path(text_path)
+    if text_path.suffix.lower() == ".tex":
+        out = output_path or text_path.with_suffix(".pdf")
+        return compile_latex_to_pdf(text_path, out)
+
     text = text_path.read_text(encoding="utf-8")
     resume = parse_resume(text)
     html = build_html(resume)
@@ -407,16 +413,19 @@ def batch_convert(limit: int = 50) -> int:
         return 0
 
     txt_files = sorted(TAILORED_DIR.glob("*.txt"))
-    # Exclude _JOB.txt and _CL.txt files from resume conversion
+    tex_files = sorted(TAILORED_DIR.glob("*.tex"))
+    # Exclude _JOB.txt files from resume conversion
     # (they get their own conversion calls)
-    candidates = [
-        f for f in txt_files
-        if not f.name.endswith("_JOB.txt")
-    ]
+    candidates_by_stem: dict[str, Path] = {}
+    for f in txt_files:
+        if not f.name.endswith("_JOB.txt"):
+            candidates_by_stem[f.stem] = f
+    for f in tex_files:
+        candidates_by_stem[f.stem] = f  # LaTeX wins if both exist
 
     # Filter to those without a corresponding PDF
     to_convert: list[Path] = []
-    for f in candidates:
+    for f in candidates_by_stem.values():
         pdf_path = f.with_suffix(".pdf")
         if not pdf_path.exists():
             to_convert.append(f)
