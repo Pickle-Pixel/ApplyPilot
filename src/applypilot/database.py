@@ -886,7 +886,19 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
         row[1] for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
     }
     if "decision_snapshot_json" not in job_decision_columns:
-        conn.execute("ALTER TABLE job_decisions ADD COLUMN decision_snapshot_json TEXT")
+        try:
+            conn.execute("ALTER TABLE job_decisions ADD COLUMN decision_snapshot_json TEXT")
+        except sqlite3.OperationalError:
+            # Another startup process can complete the same additive migration
+            # after our PRAGMA snapshot but before this ALTER obtains its lock.
+            # Suppress only that successfully completed race; every other DDL
+            # failure remains fatal.
+            concurrent_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+            }
+            if "decision_snapshot_json" not in concurrent_columns:
+                raise
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reviewed_outcomes (
             event_id          TEXT NOT NULL,

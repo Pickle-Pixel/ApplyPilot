@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 
 import pytest
 
@@ -237,6 +238,64 @@ def test_init_db_adds_decision_snapshot_without_rewriting_existing_decisions(tmp
         "SELECT decision_snapshot_json FROM job_decisions WHERE decision_id = ?",
         ("preserved-decision",),
     ).fetchone()[0] == snapshot
+
+
+def test_concurrent_snapshot_migration_is_idempotent(tmp_path) -> None:
+    db_path = tmp_path / "concurrent-canonical.db"
+    previous = _create_previous_canonical_schema(db_path)
+    previous.close()
+
+    pragma_barrier = threading.Barrier(2)
+    results: list[BaseException | None] = []
+    results_lock = threading.Lock()
+
+    class BarrierConnection:
+        def __init__(self, inner: sqlite3.Connection) -> None:
+            self.inner = inner
+            self.synchronized_snapshot = False
+
+        def execute(self, sql: str, parameters=()):
+            cursor = self.inner.execute(sql, parameters)
+            if (
+                not self.synchronized_snapshot
+                and sql.strip().lower() == "pragma table_info(job_decisions)"
+            ):
+                self.synchronized_snapshot = True
+                pragma_barrier.wait(timeout=5)
+            return cursor
+
+        def __getattr__(self, name: str):
+            return getattr(self.inner, name)
+
+    def migrate() -> None:
+        connection = sqlite3.connect(db_path, timeout=10)
+        try:
+            database.ensure_canonical_decision_tables(BarrierConnection(connection))
+            outcome: BaseException | None = None
+        except BaseException as exc:  # captured for an assertion in the controller thread
+            outcome = exc
+        finally:
+            connection.close()
+        with results_lock:
+            results.append(outcome)
+
+    threads = [threading.Thread(target=migrate) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert results == [None, None]
+    inspected = sqlite3.connect(db_path)
+    try:
+        columns = [
+            row[1]
+            for row in inspected.execute("PRAGMA table_info(job_decisions)").fetchall()
+        ]
+    finally:
+        inspected.close()
+    assert columns.count("decision_snapshot_json") == 1
 
 
 def test_upgrade_installs_lane_consistency_triggers(tmp_path) -> None:
