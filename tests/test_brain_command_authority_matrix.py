@@ -48,16 +48,25 @@ def _valid_matrix(real_matrix: dict) -> dict:
     return copy.deepcopy(real_matrix)
 
 
+def _git_env() -> dict:
+    return {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 def _init_git_repo(root: Path) -> None:
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    env = _git_env()
     subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=env)
     subprocess.run(
         ["git", "-C", str(root), "config", "user.email", "t@example.com"], check=True, env=env
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "t"], check=True, env=env)
+    _commit(root, "init")
+
+
+def _commit(root: Path, message: str = "update") -> None:
+    env = _git_env()
     subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, env=env)
     subprocess.run(
-        ["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True, env=env
+        ["git", "-C", str(root), "commit", "-q", "-m", message], check=True, env=env
     )
 
 
@@ -222,29 +231,112 @@ def test_employer_mutating_surfaces_are_flagged(real_matrix):
 
 
 # --------------------------------------------------------------------------- #
-# Determinism
+# Determinism / hermeticity: discovery is a function of the committed tree only
 # --------------------------------------------------------------------------- #
 
 
-def test_discovery_is_deterministic(real_discovered):
-    again = authority.discover(REPO_ROOT)
-    assert authority.canonical_json(real_discovered) == authority.canonical_json(again)
+def test_discovery_ignores_untracked_and_ignored_scratch(tmp_path):
+    """Untracked/ignored scratch of every risky flavor must never enter the
+    discovered surface set or perturb the discovery digest.  This is the exact
+    P1 that leaked pytest scratch and an untracked evil launcher into the matrix.
+    """
+    _complete_fixture_repo(tmp_path)
+    _write(tmp_path / ".gitignore", ".agent-run/\n")
+    _init_git_repo(tmp_path)
+    baseline = authority.discover(tmp_path)
+    baseline_bytes = authority.canonical_json(baseline)
+    baseline_digest = authority.discovery_digest(baseline)
 
-
-def test_receipt_is_byte_identical_across_runs(real_discovered, real_matrix):
-    rows = authority.validate_matrix(real_matrix)
-    kwargs = dict(
-        head="0" * 40,
-        tree="1" * 40,
-        matrix=real_matrix,
-        discovered=real_discovered,
-        rows=rows,
-        matrix_path="config/brain-command-authority-matrix.runtime.json",
-        clean_state=True,
+    # Untracked PowerShell launcher / scheduled task that registers work.
+    _write(
+        tmp_path / "evil-untracked.ps1",
+        "Register-ScheduledTask -TaskName 'evil' -Action $action\n"
+        "$wrapper = 'w.ps1'\nSet-Content -Path $wrapper -Value 'wrapper'\n",
     )
-    first = authority.build_receipt(**kwargs)
-    second = authority.build_receipt(**kwargs)
-    assert authority.canonical_json(first) == authority.canonical_json(second)
+    # Untracked argparse entrypoint naming a hard mutation verb.
+    _write(
+        tmp_path / "evil_untracked_main.py",
+        "import argparse\n"
+        "p = argparse.ArgumentParser()\n"
+        'p.add_subparsers().add_parser("purge")\n'
+        'if __name__ == "__main__":\n    p.parse_args()\n',
+    )
+    # Untracked Typer app exposing a destructive subcommand.
+    _write(
+        tmp_path / "evil_typer.py",
+        "import typer\napp = typer.Typer()\n"
+        "@app.command()\ndef destroy():\n    return None\n",
+    )
+    # Ignored .agent-run scratch with a nested argparse parser (the leak source).
+    _write(
+        tmp_path / ".agent-run" / "scratch" / "nested" / "parser.py",
+        'import argparse\np = argparse.ArgumentParser()\n'
+        'p.add_subparsers().add_parser("wipe")\n',
+    )
+    # Path- and case-variant untracked runnable module.
+    _write(
+        tmp_path / "deep" / "nested" / "Untracked_Worker_Main.py",
+        'if __name__ == "__main__":\n    print("nope")\n',
+    )
+
+    after = authority.discover(tmp_path)
+    assert authority.canonical_json(after) == baseline_bytes
+    assert authority.discovery_digest(after) == baseline_digest
+    ids = {surface["id"] for surface in after}
+    assert not any("evil" in surface_id.lower() for surface_id in ids)
+    assert not any(".agent-run" in surface_id for surface_id in ids)
+    assert not any("Untracked_Worker_Main" in surface_id for surface_id in ids)
+
+
+def test_symlink_is_not_a_command_surface(tmp_path):
+    """A tracked symlink (mode 120000) is never a surface: its *target* must not
+    leak into discovery, and it must not change the exact-tree digest."""
+    _minimal_repo(tmp_path)
+    _init_git_repo(tmp_path)
+    baseline_digest = authority.discovery_digest(authority.discover(tmp_path))
+
+    env = _git_env()
+    # A symlink whose content (target) mimics a runnable python entrypoint.
+    blob = subprocess.run(
+        ["git", "-C", str(tmp_path), "hash-object", "-w", "--stdin"],
+        input=b"src/demo/cli.py",
+        capture_output=True,
+        check=True,
+        env=env,
+    ).stdout.decode().strip()
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "update-index", "--add", "--cacheinfo",
+         f"120000,{blob},link_worker_main.py"],
+        check=True,
+        env=env,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-q", "-m", "add symlink"],
+        check=True,
+        env=env,
+    )
+
+    surfaces = authority.discover(tmp_path)
+    ids = {surface["id"] for surface in surfaces}
+    assert not any("link_worker_main" in surface_id for surface_id in ids)
+    # The committed symlink adds no surface, so discovery is unchanged.
+    assert authority.discovery_digest(surfaces) == baseline_digest
+
+
+def test_missing_committed_file_fails_closed(tmp_path):
+    """Reading an absent committed blob, and a deleted tracked file, both fail
+    closed rather than silently proceeding."""
+    _minimal_repo(tmp_path)
+    _init_git_repo(tmp_path)
+    tree = authority.build_repo_tree(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="committed blob is unavailable"):
+        tree.read_bytes("src/demo/does_not_exist.py")
+
+    # Deleting a tracked file leaves the checkout dirty -> issuance fails closed.
+    (tmp_path / "src" / "demo" / "cli.py").unlink()
+    assert authority.tracked_tree_is_clean(tmp_path) is False
+    with pytest.raises(authority.AuthorityError, match="dirty tree"):
+        authority.assert_clean(tmp_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +353,7 @@ def test_discovers_new_nested_odd_module(tmp_path):
         nested,
         'if __name__ == "__main__":\n    print("odd")\n',
     )
+    _init_git_repo(tmp_path)
     surfaces = {s["id"]: s for s in authority.discover(tmp_path)}
     assert "python-module:demo.a.b.odd_worker_main" in surfaces
     surface = surfaces["python-module:demo.a.b.odd_worker_main"]
@@ -274,6 +367,7 @@ def test_discovers_new_pyproject_console_script(tmp_path):
         pyproject.read_text(encoding="utf-8") + 'demo-extra = "demo.cli:extra"\n',
         encoding="utf-8",
     )
+    _init_git_repo(tmp_path)
     surfaces = {s["id"]: s for s in authority.discover(tmp_path)}
     assert "console-script:demo-extra" in surfaces
     assert surfaces["console-script:demo-extra"]["canonicalTarget"] == "demo.cli:extra"
@@ -315,6 +409,7 @@ def test_runnable_file_without_main_guard_is_discovered(real_discovered):
 
 def test_complete_structural_fixture_discovers_every_supported_kind(tmp_path):
     _complete_fixture_repo(tmp_path)
+    _init_git_repo(tmp_path)
     discovered = authority.discover(tmp_path)
     kinds = {surface["surfaceKind"] for surface in discovered}
     assert kinds == set(authority.INCLUDED_SURFACE_KINDS)
@@ -558,8 +653,9 @@ def test_real_matrix_has_no_forbidden_content(real_matrix):
 
 def _receipt_repo(root: Path) -> tuple[Path, dict, bytes]:
     _minimal_repo(root)
-    matrix_path = _write_fixture_matrix(root)
-    _init_git_repo(root)
+    _init_git_repo(root)  # commit the sources so discovery binds the committed tree
+    matrix_path = _write_fixture_matrix(root)  # discover from the committed tree
+    _commit(root, "add matrix")  # commit the generated matrix; evaluate needs a clean tree
     receipt = authority.evaluate(root, matrix_path)
     return matrix_path, receipt, authority.canonical_json(receipt)
 
@@ -617,9 +713,32 @@ def test_receipt_rejects_dirty_repository_after_issuance(tmp_path):
         authority.verify_receipt(raw, repo_root=tmp_path, matrix_path=matrix_path)
 
 
-def test_receipt_binds_sorted_discovery_digest(real_discovered):
-    shuffled = list(reversed(real_discovered))
-    assert authority.discovery_digest(real_discovered) == authority.discovery_digest(shuffled)
+def test_receipt_is_independent_of_untracked_scratch(tmp_path):
+    """Item-3 property: two clean checkouts of the same tree that differ only in
+    their untracked scratch must issue byte-identical discovery/matrix/receipt
+    results (the receipt binds the committed tree, never working-tree scratch)."""
+    matrix_path, _receipt, raw = _receipt_repo(tmp_path)
+    assert authority.discovery_digest(authority.discover(tmp_path))  # sanity
+
+    # First scratch set: an ignored .agent-run tree plus an untracked executable.
+    _write(tmp_path / ".agent-run" / "logs" / "run.log", "alpha scratch\n")
+    _write(
+        tmp_path / "evil-untracked.ps1",
+        "Register-ScheduledTask -TaskName 'x' -Action $action\n",
+    )
+    _write(
+        tmp_path / "evil_untracked_main.py",
+        "import argparse\np = argparse.ArgumentParser()\n"
+        'p.add_subparsers().add_parser("truncate")\n',
+    )
+    assert authority.tracked_tree_is_clean(tmp_path) is True
+    again = authority.canonical_json(authority.evaluate(tmp_path, matrix_path))
+    assert again == raw
+
+    # A *different* scratch set on the same clean tree yields the identical receipt.
+    _write(tmp_path / "another-scratch.py", "print('hi')\n")
+    third = authority.canonical_json(authority.evaluate(tmp_path, matrix_path))
+    assert third == raw
 
 
 # --------------------------------------------------------------------------- #
@@ -637,15 +756,6 @@ def test_clean_tree_then_dirty_tree(tmp_path):
     assert authority.tracked_tree_is_clean(tmp_path) is False
     with pytest.raises(authority.AuthorityError, match="dirty tree"):
         authority.assert_clean(tmp_path)
-
-
-def test_untracked_scratch_does_not_dirty_tree(tmp_path):
-    _minimal_repo(tmp_path)
-    _init_git_repo(tmp_path)
-    (tmp_path / ".agent-run").mkdir()
-    (tmp_path / ".agent-run" / "scratch.txt").write_text("scratch", encoding="utf-8")
-    # Untracked scratch is ignored: the receipt binds committed content.
-    assert authority.tracked_tree_is_clean(tmp_path) is True
 
 
 # --------------------------------------------------------------------------- #

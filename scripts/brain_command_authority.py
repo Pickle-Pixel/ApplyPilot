@@ -239,27 +239,19 @@ def _reject_constant(value: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _read_text(path: Path) -> str:
-    # ``utf-8-sig`` tolerates a leading BOM that some checked-in sources carry
-    # while still rejecting genuinely non-UTF-8 content.
-    return path.read_bytes().decode("utf-8-sig")
-
-
-def _module_to_source(repo_root: Path, module: str) -> str:
-    """Resolve a dotted module to a repo-relative POSIX source path."""
-    src_root = repo_root / "src"
-    base = src_root / Path(*module.split("."))
-    package_init = base / "__init__.py"
-    module_file = base.with_suffix(".py")
-    if module_file.is_file():
-        chosen = module_file
-    elif package_init.is_file():
-        chosen = package_init
-    else:
-        # Record the would-be module file so the verifier flags a broken /
-        # stale entrypoint rather than silently dropping it.
-        chosen = module_file
-    return chosen.relative_to(repo_root).as_posix()
+def _module_to_source(tree: "_RepoTree", module: str) -> str:
+    """Resolve a dotted module to a repo-relative POSIX source path within the
+    committed tree.  A missing target is still returned (as the would-be module
+    file) so the verifier flags a broken / stale entrypoint rather than silently
+    dropping it."""
+    base = "src/" + "/".join(module.split("."))
+    module_file = f"{base}.py"
+    package_init = f"{base}/__init__.py"
+    if tree.is_regular(module_file):
+        return module_file
+    if tree.is_regular(package_init):
+        return package_init
+    return module_file
 
 
 def _is_main_guard(node: ast.stmt) -> bool:
@@ -327,20 +319,19 @@ def _is_library_module(tree: ast.Module) -> bool:
     return True
 
 
-def _iter_python_files(directory: Path) -> Iterable[Path]:
-    if not directory.is_dir():
-        return
-    yield from sorted(directory.rglob("*.py"), key=lambda p: p.as_posix())
-
-
-def _dotted_module(repo_root: Path, path: Path) -> str:
-    relative = path.relative_to(repo_root / "src")
-    parts = list(relative.parts)
+def _dotted_module(relpath: str) -> str:
+    """Dotted module name for a repo-relative POSIX path under ``src/``."""
+    parts = relpath.split("/")[1:]  # drop the leading "src"
     if parts[-1] in {"__init__.py", "__main__.py"}:
         parts = parts[:-1]
     else:
         parts[-1] = parts[-1][: -len(".py")]
     return ".".join(parts)
+
+
+def _excluded(relpath: str, excluded_parts: set[str]) -> bool:
+    """True when any path component of ``relpath`` is an excluded directory."""
+    return bool(set(relpath.split("/")) & excluded_parts)
 
 
 def _surface(
@@ -367,11 +358,10 @@ def _surface(
     }
 
 
-def _discover_console_scripts(repo_root: Path) -> list[dict[str, Any]]:
-    pyproject = repo_root / "pyproject.toml"
-    if not pyproject.is_file():
+def _discover_console_scripts(tree: "_RepoTree") -> list[dict[str, Any]]:
+    if not tree.is_regular("pyproject.toml"):
         return []
-    data = tomllib.loads(_read_text(pyproject))
+    data = tomllib.loads(tree.read_text("pyproject.toml"))
     scripts = data.get("project", {}).get("scripts", {})
     surfaces: list[dict[str, Any]] = []
     for name in sorted(scripts):
@@ -381,7 +371,7 @@ def _discover_console_scripts(repo_root: Path) -> list[dict[str, Any]]:
             raise AuthorityError(
                 f"console script {name!r} has a non-canonical target: {target!r}"
             )
-        source_path = _module_to_source(repo_root, module)
+        source_path = _module_to_source(tree, module)
         surfaces.append(
             _surface(
                 surface_id=f"console-script:{name}",
@@ -401,14 +391,14 @@ def _discover_console_scripts(repo_root: Path) -> list[dict[str, Any]]:
     return surfaces
 
 
-def _discover_python_modules(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_python_modules(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
-    for path in _iter_python_files(repo_root / "src"):
-        tree = ast.parse(_read_text(path))
-        if path.name != "__main__.py" and not _has_main_guard(tree):
+    for relative in tree.python_paths_under("src"):
+        module_ast = ast.parse(tree.read_text(relative))
+        name = relative.rsplit("/", 1)[-1]
+        if name != "__main__.py" and not _has_main_guard(module_ast):
             continue
-        dotted = _dotted_module(repo_root, path)
-        relative = path.relative_to(repo_root).as_posix()
+        dotted = _dotted_module(relative)
         surfaces.append(
             _surface(
                 surface_id=f"python-module:{dotted}",
@@ -424,7 +414,7 @@ def _discover_python_modules(repo_root: Path) -> list[dict[str, Any]]:
     return surfaces
 
 
-def _discover_python_files(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_python_files(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
     excluded_parts = {
         ".agent-run",
@@ -442,21 +432,18 @@ def _discover_python_files(repo_root: Path) -> list[dict[str, Any]]:
         "tests",
         "venv",
     }
-    candidates = sorted(
-        (
-            path
-            for path in repo_root.rglob("*.py")
-            if not set(path.relative_to(repo_root).parts) & excluded_parts
-            and not path.is_relative_to(repo_root / "src")
-        ),
-        key=lambda path: path.relative_to(repo_root).as_posix(),
-    )
-    for path in candidates:
-        tree = ast.parse(_read_text(path))
-        if _is_library_module(tree):
+    candidates = [
+        relative
+        for relative in tree.all_python_paths()
+        if not _excluded(relative, excluded_parts)
+        and relative != "src"
+        and not relative.startswith("src/")
+    ]
+    for relative in candidates:
+        module_ast = ast.parse(tree.read_text(relative))
+        if _is_library_module(module_ast):
             continue
-        relative = path.relative_to(repo_root).as_posix()
-        symbol = _MAIN_GUARD_TARGET if _has_main_guard(tree) else "<module-body>"
+        symbol = _MAIN_GUARD_TARGET if _has_main_guard(module_ast) else "<module-body>"
         surfaces.append(
             _surface(
                 surface_id=f"python-file:{relative}",
@@ -493,14 +480,13 @@ def _walk_statements(tree: ast.AST) -> Iterable[ast.AST]:
     return sorted(ast.walk(tree), key=lambda node: (getattr(node, "lineno", -1), getattr(node, "col_offset", -1)))
 
 
-def _discover_mcp_tools(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_mcp_tools(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
-    for path in _iter_python_files(repo_root / "src"):
-        tree = ast.parse(_read_text(path))
-        dotted = _dotted_module(repo_root, path)
-        relative = path.relative_to(repo_root).as_posix()
+    for relative in tree.python_paths_under("src"):
+        module_ast = ast.parse(tree.read_text(relative))
+        dotted = _dotted_module(relative)
         server_names: set[str] = set()
-        for node in _walk_statements(tree):
+        for node in _walk_statements(module_ast):
             if not isinstance(node, (ast.Assign, ast.AnnAssign)):
                 continue
             value = node.value
@@ -522,7 +508,7 @@ def _discover_mcp_tools(repo_root: Path) -> list[dict[str, Any]]:
                 )
             tools[key] = (symbol, line)
 
-        for node in _walk_statements(tree):
+        for node in _walk_statements(module_ast):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 for decorator in node.decorator_list:
                     target = decorator.func if isinstance(decorator, ast.Call) else decorator
@@ -586,19 +572,18 @@ def _discover_mcp_tools(repo_root: Path) -> list[dict[str, Any]]:
     return surfaces
 
 
-def _module_or_file_target(repo_root: Path, path: Path) -> str:
-    if path.is_relative_to(repo_root / "src"):
-        return _dotted_module(repo_root, path)
-    return path.relative_to(repo_root).as_posix()
+def _module_or_file_target(relpath: str) -> str:
+    if relpath == "src" or relpath.startswith("src/"):
+        return _dotted_module(relpath)
+    return relpath
 
 
-def _discover_typer_subcommands(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_typer_subcommands(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
-    for path in _iter_python_files(repo_root / "src"):
-        tree = ast.parse(_read_text(path))
-        relative = path.relative_to(repo_root).as_posix()
+    for relative in tree.python_paths_under("src"):
+        module_ast = ast.parse(tree.read_text(relative))
         typer_vars: set[str] = set()
-        for node in _walk_statements(tree):
+        for node in _walk_statements(module_ast):
             if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
                 continue
             if (_call_name(node.value) or "").split(".")[-1] != "Typer":
@@ -609,7 +594,7 @@ def _discover_typer_subcommands(repo_root: Path) -> list[dict[str, Any]]:
             continue
 
         parents: dict[str, tuple[str, str]] = {}
-        for node in _walk_statements(tree):
+        for node in _walk_statements(module_ast):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "add_typer":
                 continue
             parent = _expr_name(node.func.value)
@@ -636,8 +621,8 @@ def _discover_typer_subcommands(repo_root: Path) -> list[dict[str, Any]]:
                 result.append(name)
             return list(reversed(result))
 
-        target_base = _module_or_file_target(repo_root, path)
-        for node in _walk_statements(tree):
+        target_base = _module_or_file_target(relative)
+        for node in _walk_statements(module_ast):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
@@ -676,17 +661,16 @@ def _discover_typer_subcommands(repo_root: Path) -> list[dict[str, Any]]:
     return surfaces
 
 
-def _discover_argparse_subcommands(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_argparse_subcommands(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
     excluded = {".git", ".venv", "venv", "tests", "docs", "node_modules", "__pycache__"}
-    for path in sorted(repo_root.rglob("*.py"), key=lambda item: item.relative_to(repo_root).as_posix()):
-        if set(path.relative_to(repo_root).parts) & excluded:
+    for relative in tree.all_python_paths():
+        if _excluded(relative, excluded):
             continue
-        tree = ast.parse(_read_text(path))
-        relative = path.relative_to(repo_root).as_posix()
-        target_base = _module_or_file_target(repo_root, path)
+        module_ast = ast.parse(tree.read_text(relative))
+        target_base = _module_or_file_target(relative)
         commands: dict[str, int] = {}
-        for node in _walk_statements(tree):
+        for node in _walk_statements(module_ast):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "add_parser" or not node.args:
                 continue
             command = _constant_string(node.args[0])
@@ -710,14 +694,13 @@ def _discover_argparse_subcommands(repo_root: Path) -> list[dict[str, Any]]:
     return surfaces
 
 
-def _discover_http_actions(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_http_actions(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
     methods = {"delete", "get", "patch", "post", "put"}
-    for path in _iter_python_files(repo_root / "src"):
-        tree = ast.parse(_read_text(path))
-        relative = path.relative_to(repo_root).as_posix()
-        dotted = _dotted_module(repo_root, path)
-        for node in _walk_statements(tree):
+    for relative in tree.python_paths_under("src"):
+        module_ast = ast.parse(tree.read_text(relative))
+        dotted = _dotted_module(relative)
+        for node in _walk_statements(module_ast):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
@@ -744,22 +727,16 @@ def _discover_http_actions(repo_root: Path) -> list[dict[str, Any]]:
     return surfaces
 
 
-def _repo_files(repo_root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+def _repo_files(tree: "_RepoTree", suffixes: tuple[str, ...]) -> list[str]:
     excluded = {".agent-run", ".git", ".venv", "venv", "node_modules", "__pycache__"}
-    return sorted(
-        (
-            path
-            for path in repo_root.rglob("*")
-            if path.is_file()
-            and path.name.lower().endswith(suffixes)
-            and not set(path.relative_to(repo_root).parts) & excluded
-        ),
-        key=lambda path: path.relative_to(repo_root).as_posix(),
-    )
+    return [
+        relpath
+        for relpath in tree.paths_with_suffix(suffixes)
+        if not _excluded(relpath, excluded)
+    ]
 
 
-def _file_surface(repo_root: Path, path: Path, kind: str, launcher: str) -> dict[str, Any]:
-    relative = path.relative_to(repo_root).as_posix()
+def _file_surface(relative: str, kind: str, launcher: str) -> dict[str, Any]:
     return _surface(
         surface_id=f"{kind}:{relative}",
         source_path=relative,
@@ -772,28 +749,27 @@ def _file_surface(repo_root: Path, path: Path, kind: str, launcher: str) -> dict
     )
 
 
-def _discover_launchers(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_launchers(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
-    for path in _repo_files(repo_root, (".ps1",)):
-        surfaces.append(_file_surface(repo_root, path, "powershell-launcher", "powershell -File"))
-    for path in _repo_files(repo_root, (".psm1",)):
-        surfaces.append(_file_surface(repo_root, path, "powershell-module", "Import-Module"))
-    for path in _repo_files(repo_root, (".sh",)):
-        surfaces.append(_file_surface(repo_root, path, "shell-launcher", "sh"))
-    for path in _repo_files(repo_root, (".bat", ".cmd")):
-        surfaces.append(_file_surface(repo_root, path, "batch-launcher", "cmd /c"))
-    for path in _repo_files(repo_root, (".service", ".timer")):
-        surfaces.append(_file_surface(repo_root, path, "service-unit", "service-unit"))
-    for path in _repo_files(repo_root, (".plist",)):
-        surfaces.append(_file_surface(repo_root, path, "launchd-plist", "launchctl load"))
+    for relpath in _repo_files(tree, (".ps1",)):
+        surfaces.append(_file_surface(relpath, "powershell-launcher", "powershell -File"))
+    for relpath in _repo_files(tree, (".psm1",)):
+        surfaces.append(_file_surface(relpath, "powershell-module", "Import-Module"))
+    for relpath in _repo_files(tree, (".sh",)):
+        surfaces.append(_file_surface(relpath, "shell-launcher", "sh"))
+    for relpath in _repo_files(tree, (".bat", ".cmd")):
+        surfaces.append(_file_surface(relpath, "batch-launcher", "cmd /c"))
+    for relpath in _repo_files(tree, (".service", ".timer")):
+        surfaces.append(_file_surface(relpath, "service-unit", "service-unit"))
+    for relpath in _repo_files(tree, (".plist",)):
+        surfaces.append(_file_surface(relpath, "launchd-plist", "launchctl load"))
     return surfaces
 
 
-def _discover_scheduled_tasks_and_wrappers(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_scheduled_tasks_and_wrappers(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
-    for path in _repo_files(repo_root, (".ps1", ".psm1")):
-        relative = path.relative_to(repo_root).as_posix()
-        text = _read_text(path)
+    for relative in _repo_files(tree, (".ps1", ".psm1")):
+        text = tree.read_text(relative)
         registrations = list(re.finditer(r"(?im)^\s*(?!#).*\b(?:Register-ScheduledTask|schtasks(?:\.exe)?\s+/Create)\b", text))
         actions = list(re.finditer(r"(?im)^\s*(?!#).*\bNew-ScheduledTaskAction\b", text))
         for kind, matches in (("scheduled-task-identity", registrations), ("scheduled-task-action", actions)):
@@ -832,21 +808,18 @@ def _discover_scheduled_tasks_and_wrappers(repo_root: Path) -> list[dict[str, An
     return surfaces
 
 
-def _discover_container_entrypoints(repo_root: Path) -> list[dict[str, Any]]:
+def _discover_container_entrypoints(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
-    dockerfiles = sorted(
-        (
-            path
-            for path in repo_root.rglob("Dockerfile*")
-            if path.is_file() and ".git" not in path.relative_to(repo_root).parts
-        ),
-        key=lambda path: path.relative_to(repo_root).as_posix(),
-    )
-    for path in dockerfiles:
-        relative = path.relative_to(repo_root).as_posix()
+    dockerfiles = [
+        relpath
+        for relpath in tree.regular_paths()
+        if relpath.rsplit("/", 1)[-1].startswith("Dockerfile")
+        and not _excluded(relpath, {".git"})
+    ]
+    for relative in dockerfiles:
         instructions = [
             (match.group(1).upper(), " ".join(match.group(2).split()))
-            for match in re.finditer(r"(?im)^\s*(ENTRYPOINT|CMD)\s+(.+)$", _read_text(path))
+            for match in re.finditer(r"(?im)^\s*(ENTRYPOINT|CMD)\s+(.+)$", tree.read_text(relative))
         ]
         for ordinal, (instruction, value) in enumerate(instructions, 1):
             surfaces.append(
@@ -864,25 +837,146 @@ def _discover_container_entrypoints(repo_root: Path) -> list[dict[str, Any]]:
     return surfaces
 
 
-def discover(repo_root: Path) -> list[dict[str, Any]]:
-    """Return the sorted, canonical list of discovered Runtime surfaces.
+_PARSEABLE_EXTENSIONS = (".py", ".ps1", ".psm1")
 
-    Deterministic: the same tree always yields byte-identical output.  Raises
-    :class:`AuthorityError` on a duplicate surface id (a collision that must not
-    be silently coalesced).
+
+def _is_parseable_path(relpath: str) -> bool:
+    """Committed blobs whose *bytes* discovery must read (not merely enumerate)."""
+    name = relpath.rsplit("/", 1)[-1]
+    return (
+        relpath.endswith(_PARSEABLE_EXTENSIONS)
+        or relpath == "pyproject.toml"
+        or name.startswith("Dockerfile")
+    )
+
+
+class _RepoTree:
+    """A read-only, committed-tree view of one repository at an exact HEAD/tree.
+
+    Every candidate path is enumerated from ``git ls-tree`` and every byte
+    discovery parses is the *committed blob* (via ``git cat-file``), so untracked
+    or ignored scratch, working-tree caches, symlink targets, filesystem case,
+    and checkout-specific files can never enter the discovered surface set.
     """
+
+    def __init__(
+        self,
+        repo_root: Path,
+        head: str,
+        tree: str,
+        regular: dict[str, str],
+        symlinks: dict[str, str],
+        blobs: dict[str, bytes],
+    ) -> None:
+        self.repo_root = Path(repo_root)
+        self.head = head
+        self.tree = tree
+        self._regular = regular  # repo-relative POSIX path -> blob sha (files)
+        self._symlinks = symlinks  # repo-relative POSIX path -> blob sha (symlinks)
+        self._blobs = blobs  # repo-relative POSIX path -> committed bytes
+
+    def is_regular(self, relpath: str) -> bool:
+        return relpath in self._regular
+
+    def is_symlink(self, relpath: str) -> bool:
+        return relpath in self._symlinks
+
+    def regular_paths(self) -> list[str]:
+        return sorted(self._regular)
+
+    def all_python_paths(self) -> list[str]:
+        return [relpath for relpath in sorted(self._regular) if relpath.endswith(".py")]
+
+    def python_paths_under(self, prefix: str) -> list[str]:
+        prefix = prefix.rstrip("/") + "/"
+        return [relpath for relpath in self.all_python_paths() if relpath.startswith(prefix)]
+
+    def paths_with_suffix(self, suffixes: tuple[str, ...]) -> list[str]:
+        return [
+            relpath
+            for relpath in sorted(self._regular)
+            if relpath.lower().endswith(suffixes)
+        ]
+
+    def read_bytes(self, relpath: str) -> bytes:
+        try:
+            return self._blobs[relpath]
+        except KeyError as exc:  # missing committed blob -> fail closed
+            raise AuthorityError(
+                f"committed blob is unavailable for tracked path {relpath!r}"
+            ) from exc
+
+    def read_text(self, relpath: str) -> str:
+        # ``utf-8-sig`` tolerates a leading BOM that some checked-in sources carry
+        # while still rejecting genuinely non-UTF-8 content.
+        return self.read_bytes(relpath).decode("utf-8-sig")
+
+
+def build_repo_tree(repo_root: Path) -> _RepoTree:
+    """Enumerate the committed tree at the exact HEAD and read the parseable
+    blobs.  Fails closed on head/tree movement, a malformed object listing, a
+    non-UTF-8 tracked path, a duplicate path, or any Git command failure."""
     repo_root = Path(repo_root)
+    head, tree = git_identity(repo_root)
+    raw = _git_bytes(repo_root, "ls-tree", "-r", "-z", tree)
+    regular: dict[str, str] = {}
+    symlinks: dict[str, str] = {}
+    for record in raw.split(b"\x00"):
+        if not record:
+            continue
+        meta, tab, path_bytes = record.partition(b"\t")
+        if not tab:
+            raise AuthorityError("malformed git ls-tree record (no path separator)")
+        fields = meta.decode("ascii", "strict").split(" ")
+        if len(fields) != 3:
+            raise AuthorityError("malformed git ls-tree metadata")
+        mode, obj_type, sha = fields
+        try:
+            path = path_bytes.decode("utf-8", "strict")
+        except UnicodeDecodeError as exc:
+            raise AuthorityError("non-UTF-8 tracked path is not permitted") from exc
+        if obj_type == "blob" and mode in ("100644", "100755"):
+            if path in regular or path in symlinks:
+                raise AuthorityError(f"duplicate tracked path from git ls-tree: {path}")
+            regular[path] = sha
+        elif obj_type == "blob" and mode == "120000":
+            # A symlink is *not* a command surface: its target must never affect
+            # the discovered set.  Record it only so type mismatches are visible.
+            if path in regular or path in symlinks:
+                raise AuthorityError(f"duplicate tracked path from git ls-tree: {path}")
+            symlinks[path] = sha
+        # trees / gitlinks / other modes contribute no command surface
+
+    read_shas = {sha for path, sha in regular.items() if _is_parseable_path(path)}
+    sha_bytes = _cat_file_batch(repo_root, read_shas)
+    blobs = {
+        path: sha_bytes[sha]
+        for path, sha in regular.items()
+        if _is_parseable_path(path)
+    }
+
+    # Guard against HEAD/tree movement in between the identity read and the
+    # object enumeration: a shifting repository must never yield a receipt.
+    head_again, tree_again = git_identity(repo_root)
+    if (head, tree) != (head_again, tree_again):
+        raise AuthorityError("git HEAD/tree moved during discovery")
+    return _RepoTree(repo_root, head, tree, regular, symlinks, blobs)
+
+
+def discover_from_tree(tree: _RepoTree) -> list[dict[str, Any]]:
+    """Return the sorted, canonical list of discovered Runtime surfaces for an
+    already-built committed-tree view."""
     surfaces: list[dict[str, Any]] = []
-    surfaces += _discover_console_scripts(repo_root)
-    surfaces += _discover_python_modules(repo_root)
-    surfaces += _discover_python_files(repo_root)
-    surfaces += _discover_mcp_tools(repo_root)
-    surfaces += _discover_typer_subcommands(repo_root)
-    surfaces += _discover_argparse_subcommands(repo_root)
-    surfaces += _discover_http_actions(repo_root)
-    surfaces += _discover_launchers(repo_root)
-    surfaces += _discover_scheduled_tasks_and_wrappers(repo_root)
-    surfaces += _discover_container_entrypoints(repo_root)
+    surfaces += _discover_console_scripts(tree)
+    surfaces += _discover_python_modules(tree)
+    surfaces += _discover_python_files(tree)
+    surfaces += _discover_mcp_tools(tree)
+    surfaces += _discover_typer_subcommands(tree)
+    surfaces += _discover_argparse_subcommands(tree)
+    surfaces += _discover_http_actions(tree)
+    surfaces += _discover_launchers(tree)
+    surfaces += _discover_scheduled_tasks_and_wrappers(tree)
+    surfaces += _discover_container_entrypoints(tree)
 
     seen: dict[str, dict[str, Any]] = {}
     for surface in surfaces:
@@ -891,6 +985,18 @@ def discover(repo_root: Path) -> list[dict[str, Any]]:
             raise AuthorityError(f"duplicate discovered surface id: {surface_id}")
         seen[surface_id] = surface
     return [seen[key] for key in sorted(seen)]
+
+
+def discover(repo_root: Path) -> list[dict[str, Any]]:
+    """Return the sorted, canonical list of discovered Runtime surfaces.
+
+    Discovery is a deterministic function of the pinned Git HEAD/tree: candidate
+    paths come from ``git ls-tree`` at the exact committed tree and every parsed
+    byte is the committed blob, so the same tree always yields byte-identical
+    output regardless of untracked/ignored scratch or checkout-specific files.
+    Raises :class:`AuthorityError` on a duplicate surface id.
+    """
+    return discover_from_tree(build_repo_tree(repo_root))
 
 
 def discovery_digest(surfaces: list[dict[str, Any]]) -> str:
@@ -1030,10 +1136,11 @@ def _validate_authority_rules(row: dict[str, Any], index: int) -> None:
 
 _MUTATION_TOKENS = re.compile(
     r"(?:^|[-_:/# ])(?:ack|activate|apply|approve|arm|backfill|backup|blackout|blocklist|canary|cleanup|"
-    r"clear|contain|create|dedupe|delete|deploy|discover|halt|import|insert|kill|lease|lift|mark|migrate|"
-    r"normalize|park|poll|promote|push|quarantine|reenrich|register|repair|reset|resolve|restart|restore|"
-    r"result|resume|retire|retry|revert|rollback|run|score|set|setup|split|stop|supervise|swap|sync|"
-    r"track|unguard|update|validate|worker|write)(?:$|[-_:/# ])",
+    r"clear|contain|create|dedupe|delete|deploy|destroy|discover|drop|erase|grant|halt|import|insert|kill|"
+    r"lease|lift|mark|migrate|normalize|park|poll|promote|purge|push|quarantine|reenrich|register|repair|"
+    r"reset|resolve|restart|restore|result|resume|retire|retry|revert|revoke|rollback|run|score|set|setup|"
+    r"split|stop|supervise|swap|sync|track|truncate|unguard|update|validate|wipe|worker|write)"
+    r"(?:$|[-_:/# ])",
     re.IGNORECASE,
 )
 _READ_ONLY_TOKENS = re.compile(
@@ -1166,13 +1273,76 @@ def count_by_kind(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _git(repo_root: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), *arguments],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:  # fail closed on Git failure
+        raise AuthorityError(f"git {' '.join(arguments)} failed") from exc
     return result.stdout.strip()
+
+
+def _git_bytes(repo_root: Path, *arguments: str) -> bytes:
+    """Like :func:`_git` but returns raw stdout bytes (for NUL-delimited / binary
+    plumbing output).  Fails closed on any Git command failure."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *arguments],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise AuthorityError(f"git {' '.join(arguments)} failed") from exc
+    return result.stdout
+
+
+def _cat_file_batch(repo_root: Path, shas: Iterable[str]) -> dict[str, bytes]:
+    """Read the committed content of every requested blob in a single
+    ``git cat-file --batch`` process.  Fails closed on a missing object, a
+    malformed batch stream, or any Git command failure."""
+    ordered = sorted(set(shas))
+    if not ordered:
+        return {}
+    for sha in ordered:
+        if not _COMMIT_RE.fullmatch(sha):
+            raise AuthorityError(f"refusing to read non-canonical object id: {sha!r}")
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "cat-file", "--batch"],
+            input=("\n".join(ordered) + "\n").encode("ascii"),
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise AuthorityError("git cat-file --batch failed") from exc
+
+    out = completed.stdout
+    result: dict[str, bytes] = {}
+    position = 0
+    for sha in ordered:
+        newline = out.find(b"\n", position)
+        if newline == -1:
+            raise AuthorityError("malformed git cat-file batch stream")
+        header = out[position:newline].decode("ascii", "strict")
+        position = newline + 1
+        parts = header.split(" ")
+        if len(parts) == 2 and parts[1] == "missing":
+            raise AuthorityError(f"committed blob is missing: {sha}")
+        if len(parts) != 3 or parts[0] != sha or parts[1] != "blob":
+            raise AuthorityError(f"unexpected git cat-file header: {header!r}")
+        size = int(parts[2])
+        content = out[position : position + size]
+        if len(content) != size:
+            raise AuthorityError("truncated git cat-file batch content")
+        position += size
+        if out[position : position + 1] != b"\n":
+            raise AuthorityError("malformed git cat-file batch record terminator")
+        position += 1
+        result[sha] = content
+    return result
 
 
 def git_identity(repo_root: Path) -> tuple[str, str]:
@@ -1347,15 +1517,18 @@ def load_matrix_document(path: Path) -> tuple[dict[str, Any], bytes]:
 
 
 def _evaluate_unverified(repo_root: Path, matrix_path: Path) -> dict[str, Any]:
+    # Gate on a clean tracked tree first: even though discovery binds committed
+    # blob bytes, the receipt asserts that the *checkout* matches those bytes, so
+    # any tracked modification/staging/deletion/type-change must fail issuance.
     assert_clean(repo_root)
-    head, tree = git_identity(repo_root)
+    repo_tree = build_repo_tree(repo_root)
     matrix, _content = load_matrix_document(matrix_path)
     rows = validate_matrix(matrix)
-    discovered = discover(repo_root)
+    discovered = discover_from_tree(repo_tree)
     check_coverage(discovered, rows)
     return build_receipt(
-        head=head,
-        tree=tree,
+        head=repo_tree.head,
+        tree=repo_tree.tree,
         matrix=matrix,
         discovered=discovered,
         rows=rows,
