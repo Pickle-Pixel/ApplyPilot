@@ -108,6 +108,7 @@ def test_scanner_flags_every_forbidden_principal_form():
         "generic_dsn_help_default",  # help text advertising the retired generic fallbacks
         "raw_psql_fleet_config_write",  # raw psql mutation of fleet_config (unapproved DB channel)
         "powershell_generic_dsn_env_source",  # bare $env:DATABASE_URL/$env:APPLYPILOT_FLEET_DSN source
+        "database_client_admin_parameter_flow",  # admin/default variable reaching psql/pg_dump
     } <= patterns
     # EVERY non-comment sentinel line is flagged -- no forbidden form silently slips through.
     non_comment_lines = [
@@ -262,6 +263,52 @@ def test_scanner_ignores_generic_dsn_env_alias_write_target(line):
 )
 def test_scanner_flags_multiline_or_indirected_raw_psql_fleet_config_write(text):
     assert "raw_psql_fleet_config_write" in {f.pattern for f in scanner.scan_text(text)}, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'param([string]$PgUser = "postgres")\n& $pgDump -U $PgUser -d applypilot_fleet',
+        "param(\n [string]$DatabaseLogin = 'fleet_worker'\n)\n& $psql `\n --username $DatabaseLogin `\n -c 'SELECT 1'",
+        '[string]$PgUser = "postgres"\n$selected = $PgUser\n& $pgDump --username=$selected -Fc',
+        '$admin = "POSTGRES"\n$alias = "${admin}"\n& pg_dump.exe -U ${alias} -Fc',
+        '& pg_dump -U postgres -d applypilot_fleet',
+    ],
+)
+def test_scanner_flags_admin_parameter_and_variable_dataflow_into_database_clients(text):
+    assert "database_client_admin_parameter_flow" in {
+        finding.pattern for finding in scanner.scan_text(text)
+    }, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "PGDUMP_USER=postgres\npg_dump -U $PGDUMP_USER -d applypilot_fleet",
+        "export BACKUP_USER=fleet_worker\npg_dump --username=${BACKUP_USER} -Fc",
+        "ADMIN_USER=postgres\nDUMP_USER=$ADMIN_USER\npg_dump --username=$DUMP_USER -Fc",
+        "export ADMIN_USER=fleet_worker\nexport DUMP_USER=${ADMIN_USER}\npg_dump -U ${DUMP_USER} -Fc",
+    ],
+)
+def test_scanner_flags_shell_admin_assignment_aliases_and_database_client_sink(text):
+    findings = [
+        finding
+        for finding in scanner.scan_text(text)
+        if finding.pattern == "database_client_admin_parameter_flow"
+    ]
+    assert {finding.line for finding in findings} == set(range(1, len(text.splitlines()) + 1))
+
+
+def test_scanner_allows_explicit_non_admin_backup_service_channel():
+    text = (
+        'param([string]$ExpectedPgPrincipal)\n'
+        '$serviceReference = "service=$PgService"\n'
+        '& $psql --dbname=$serviceReference -c "SELECT current_user"\n'
+        '& $pgDump --dbname=$serviceReference -Fc -f $dest\n'
+    )
+    assert "database_client_admin_parameter_flow" not in {
+        finding.pattern for finding in scanner.scan_text(text)
+    }
 
 
 def test_scanner_does_not_join_unrelated_psql_read_and_later_safe_python_text():
