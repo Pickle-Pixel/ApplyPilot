@@ -26,9 +26,19 @@ class _SchemaConnection:
 
 
 def _mock_schema_startup(monkeypatch):
+    def _connect(_dsn, *, autocommit=False):
+        # Startup opens a runtime-principal connection in transactional mode; assert the
+        # production keyword rather than merely tolerating it.
+        assert autocommit is False
+        return _SchemaConnection()
+
+    monkeypatch.setattr("applypilot.apply.pgqueue.connect", _connect)
+    # main() now reaches the DB through pgqueue.connect_runtime(), which authenticates the
+    # mapped worker principal before returning. That path is not under test here, so keep the
+    # fake connection and neutralize the principal check.
     monkeypatch.setattr(
-        "applypilot.apply.pgqueue.connect",
-        lambda _dsn: _SchemaConnection(),
+        "applypilot.fleet.pg_roles.validate_runtime_principal",
+        lambda _conn, *, worker_id, contract: None,
     )
     monkeypatch.setattr(
         "applypilot.fleet.schema.ensure_schema_v3",

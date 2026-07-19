@@ -252,9 +252,19 @@ def test_linkedin_entrypoint_rejects_control_plane_owner_mismatch_before_lock_or
         def rollback(self):
             return None
 
+    from applypilot.fleet import pg_roles
+
     monkeypatch.setenv("APPLYPILOT_FLEET_LABEL", "owner-node")
     monkeypatch.setattr(worker, "_setup_apply_env", lambda: None)
-    monkeypatch.setattr(pgqueue, "connect", lambda _dsn: Connection())
+    # main() reaches the DB through pgqueue.connect_runtime(), which passes autocommit into
+    # pgqueue.connect() and authenticates the mapped worker principal before returning. Accept
+    # the production keyword and neutralize the principal check; the host boundary is the seam
+    # under test.
+    monkeypatch.setattr(pgqueue, "connect", lambda _dsn, *, autocommit=False: Connection())
+    monkeypatch.setattr(
+        pg_roles, "validate_runtime_principal",
+        lambda _conn, *, worker_id, contract: None,
+    )
     monkeypatch.setattr(emergency_admission, "linkedin_worker_admission", lambda _conn: object())
     monkeypatch.setattr(emergency_admission, "require_allowed", lambda _decision: None)
     monkeypatch.setattr(schema, "require_apply_result_event_schema", lambda _conn: None)
@@ -322,9 +332,17 @@ def test_linkedin_entrypoint_allows_valid_owner_through_single_driver_lock(monke
         def close(self):
             calls.append("lock-closed")
 
+    from applypilot.fleet import pg_roles
+
     monkeypatch.setenv("APPLYPILOT_FLEET_LABEL", "owner-node")
     monkeypatch.setattr(worker, "_setup_apply_env", lambda: calls.append("setup"))
-    monkeypatch.setattr(pgqueue, "connect", lambda _dsn: Connection())
+    # connect_runtime() passes autocommit into pgqueue.connect() and authenticates the mapped
+    # worker principal before returning; accept the keyword and neutralize the principal check.
+    monkeypatch.setattr(pgqueue, "connect", lambda _dsn, *, autocommit=False: Connection())
+    monkeypatch.setattr(
+        pg_roles, "validate_runtime_principal",
+        lambda _conn, *, worker_id, contract: None,
+    )
     monkeypatch.setattr(emergency_admission, "linkedin_worker_admission", lambda _conn: object())
     monkeypatch.setattr(emergency_admission, "require_allowed", lambda _decision: None)
     monkeypatch.setattr(schema, "require_apply_result_event_schema", lambda _conn: None)

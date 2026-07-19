@@ -25,7 +25,17 @@ def test_linkedin_worker_startup_denies_after_server_admission_before_schema(mon
 
     monkeypatch.setattr(worker, "_setup_apply_env", lambda: None)
     monkeypatch.setenv("APPLYPILOT_FLEET_LABEL", "home")
-    monkeypatch.setattr(pgqueue, "connect", lambda _dsn: Connection())
+    # main() connects through pgqueue.connect_runtime(), which passes autocommit into
+    # pgqueue.connect() and then authenticates the mapped worker principal. Accept the
+    # production keyword and neutralize the principal check so the admission gate under
+    # test is the seam that actually denies.
+    monkeypatch.setattr(pgqueue, "connect", lambda _dsn, *, autocommit=False: Connection())
+    from applypilot.fleet import pg_roles
+
+    monkeypatch.setattr(
+        pg_roles, "validate_runtime_principal",
+        lambda _conn, *, worker_id, contract: None,
+    )
     monkeypatch.setattr(
         schema, "require_apply_result_event_schema",
         lambda *_args: pytest.fail("schema validation reached after denied admission"),
