@@ -921,22 +921,25 @@ def _database_inventory(cur, *, role_name: str, manifest: RegrantManifest) -> di
 
     cur.execute(
         "SELECT r.rolname AS owner, COALESCE(n.nspname,'*') AS schema_name, "
-        "d.defaclobjtype,CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee,"
+        "d.defaclobjtype,acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name,"
         "acl.privilege_type,acl.is_grantable "
         "FROM pg_catalog.pg_default_acl d JOIN pg_catalog.pg_roles r ON r.oid=d.defaclrole "
         "LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace "
         "CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) acl "
         "LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee "
-        "ORDER BY r.rolname,schema_name,d.defaclobjtype,grantee,acl.privilege_type"
+        "ORDER BY r.rolname,schema_name,d.defaclobjtype,acl.grantee,acl.privilege_type"
     )
     default_acls = tuple(
         {
             "owner": _row_value(row, "owner"),
             "schema": _row_value(row, "schema_name", 1),
             "object_type": _row_value(row, "defaclobjtype", 2),
-            "grantee": _row_value(row, "grantee", 3),
-            "privilege": _row_value(row, "privilege_type", 4),
-            "grantable": _row_value(row, "is_grantable", 5),
+            "grantee_oid": int(_row_value(row, "grantee_oid", 3)),
+            "is_public": bool(_row_value(row, "is_public", 4)),
+            "grantee_name": _row_value(row, "grantee_name", 5),
+            "privilege": _row_value(row, "privilege_type", 6),
+            "grantable": _row_value(row, "is_grantable", 7),
         }
         for row in cur.fetchall()
     )
@@ -2138,18 +2141,26 @@ def _validate_post_password_boundary(
     if not _row_value(positive, "db_ok") or not _row_value(positive, "schema_ok", 1):
         raise RuntimeError("fleet worker required database/schema privileges are missing")
     cur.execute(
-        "SELECT CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee "
+        "SELECT acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name "
         "FROM pg_catalog.pg_database d "
         "CROSS JOIN LATERAL pg_catalog.aclexplode(d.datacl) acl "
         "LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee "
         "WHERE d.datname=current_database() AND acl.privilege_type='CONNECT' "
-        "ORDER BY grantee"
+        "ORDER BY acl.grantee"
     )
-    actual_connect = tuple(_row_value(row, "grantee") for row in cur.fetchall())
-    if set(actual_connect) != set(connect_allowlist):
+    actual_connect_rows = tuple(cur.fetchall())
+    actual_connect = {
+        _row_value(row, "grantee_name", 2)
+        for row in actual_connect_rows
+        if not bool(_row_value(row, "is_public", 1))
+    }
+    has_public_connect = any(bool(_row_value(row, "is_public", 1)) for row in actual_connect_rows)
+    if has_public_connect or actual_connect != set(connect_allowlist):
         raise RuntimeError(
             "database CONNECT ACL does not match controller/verifier/mapped role allowlist: "
-            f"expected={sorted(connect_allowlist)!r}, actual={sorted(actual_connect)!r}"
+            f"expected={sorted(connect_allowlist)!r}, actual={sorted(actual_connect)!r}, "
+            f"public={has_public_connect!r}"
         )
     cur.execute(
         "SELECT owner.rolname,owner.rolcanlogin,owner.rolsuper "
@@ -3343,7 +3354,8 @@ def _catalog_derived_authority_containment_sql(
         "    SELECT CASE WHEN function.prokind='p' THEN 'PROCEDURE' ELSE 'FUNCTION' END "
         "AS object_kind,pg_catalog.format('%I.%I(%s)',namespace.nspname,function.proname,"
         "pg_catalog.pg_get_function_identity_arguments(function.oid)) AS signature,\n"
-        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "           acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name\n"
         "    FROM pg_catalog.pg_proc function\n"
         "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
         "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(function.proacl,"
@@ -3355,20 +3367,21 @@ def _catalog_derived_authority_containment_sql(
         "AND acl.grantee<>function.proowner\n"
         "    ORDER BY function.oid,acl.grantee\n"
         "  LOOP\n"
-        "    IF function_acl.grantee='PUBLIC' THEN\n"
+        "    IF function_acl.is_public THEN\n"
         "      EXECUTE pg_catalog.format("
         "'REVOKE ALL PRIVILEGES ON %s %s FROM PUBLIC',"
         "function_acl.object_kind,function_acl.signature);\n"
         "    ELSE\n"
         "      EXECUTE pg_catalog.format("
         "'REVOKE ALL PRIVILEGES ON %s %s FROM %I',"
-        "function_acl.object_kind,function_acl.signature,function_acl.grantee);\n"
+        "function_acl.object_kind,function_acl.signature,function_acl.grantee_name);\n"
         "    END IF;\n"
         "  END LOOP;\n"
         "  FOR relation_acl IN\n"
         "    SELECT CASE WHEN relation.relkind='S' THEN 'SEQUENCE' ELSE 'TABLE' END AS object_kind,\n"
         "           pg_catalog.format('%I.%I',namespace.nspname,relation.relname) AS identity,\n"
-        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "           acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name\n"
         "    FROM pg_catalog.pg_class relation\n"
         "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
         "    CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) acl\n"
@@ -3379,23 +3392,24 @@ def _catalog_derived_authority_containment_sql(
         "    ORDER BY relation.oid,acl.grantee\n"
         "  LOOP\n"
         "    IF relation_acl.object_kind='SEQUENCE' THEN\n"
-        "      IF relation_acl.grantee='PUBLIC' THEN\n"
+        "      IF relation_acl.is_public THEN\n"
         "        EXECUTE pg_catalog.format('REVOKE ALL ON SEQUENCE %s FROM PUBLIC',relation_acl.identity);\n"
         "      ELSE\n"
         "        EXECUTE pg_catalog.format('REVOKE ALL ON SEQUENCE %s FROM %I',"
-        "relation_acl.identity,relation_acl.grantee);\n"
+        "relation_acl.identity,relation_acl.grantee_name);\n"
         "      END IF;\n"
-        "    ELSIF relation_acl.grantee='PUBLIC' THEN\n"
+        "    ELSIF relation_acl.is_public THEN\n"
         "      EXECUTE pg_catalog.format('REVOKE ALL ON TABLE %s FROM PUBLIC',relation_acl.identity);\n"
         "    ELSE\n"
         "      EXECUTE pg_catalog.format('REVOKE ALL ON TABLE %s FROM %I',"
-        "relation_acl.identity,relation_acl.grantee);\n"
+        "relation_acl.identity,relation_acl.grantee_name);\n"
         "    END IF;\n"
         "  END LOOP;\n"
         "  FOR column_acl IN\n"
         "    SELECT pg_catalog.format('%I.%I',namespace.nspname,relation.relname) AS identity,\n"
         "           attribute.attname AS column_name,\n"
-        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "           acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name\n"
         "    FROM pg_catalog.pg_attribute attribute\n"
         "    JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid\n"
         "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
@@ -3405,17 +3419,18 @@ def _catalog_derived_authority_containment_sql(
         "OR namespace.nspname='brain_archive') AND acl.grantee<>relation.relowner\n"
         "    ORDER BY relation.oid,attribute.attnum,acl.grantee\n"
         "  LOOP\n"
-        "    IF column_acl.grantee='PUBLIC' THEN\n"
+        "    IF column_acl.is_public THEN\n"
         "      EXECUTE pg_catalog.format('REVOKE ALL PRIVILEGES (%I) ON TABLE %s FROM PUBLIC',"
         "column_acl.column_name,column_acl.identity);\n"
         "    ELSE\n"
         "      EXECUTE pg_catalog.format('REVOKE ALL PRIVILEGES (%I) ON TABLE %s FROM %I',"
-        "column_acl.column_name,column_acl.identity,column_acl.grantee);\n"
+        "column_acl.column_name,column_acl.identity,column_acl.grantee_name);\n"
         "    END IF;\n"
         "  END LOOP;\n"
         "  FOR type_acl IN\n"
         "    SELECT pg_catalog.format('%I.%I',namespace.nspname,type.typname) AS identity,\n"
-        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "           acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name\n"
         "    FROM pg_catalog.pg_type type\n"
         "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=type.typnamespace\n"
         "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(type.typacl,"
@@ -3426,17 +3441,18 @@ def _catalog_derived_authority_containment_sql(
         "AND acl.grantee<>type.typowner\n"
         "    ORDER BY type.oid,acl.grantee\n"
         "  LOOP\n"
-        "    IF type_acl.grantee='PUBLIC' THEN\n"
+        "    IF type_acl.is_public THEN\n"
         "      EXECUTE pg_catalog.format('REVOKE ALL PRIVILEGES ON TYPE %s FROM PUBLIC',"
         "type_acl.identity);\n"
         "    ELSE\n"
         "      EXECUTE pg_catalog.format('REVOKE ALL PRIVILEGES ON TYPE %s FROM %I',"
-        "type_acl.identity,type_acl.grantee);\n"
+        "type_acl.identity,type_acl.grantee_name);\n"
         "    END IF;\n"
         "  END LOOP;\n"
         "  FOR schema_acl IN\n"
         "    SELECT namespace.nspname AS schema_name,\n"
-        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "           acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name\n"
         "    FROM pg_catalog.pg_namespace namespace\n"
         "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(namespace.nspacl,"
         "pg_catalog.acldefault('n',namespace.nspowner))) acl\n"
@@ -3445,12 +3461,12 @@ def _catalog_derived_authority_containment_sql(
         "OR left(namespace.nspname,6)='brain_') AND acl.grantee<>namespace.nspowner\n"
         "    ORDER BY namespace.oid,acl.grantee\n"
         "  LOOP\n"
-        "    IF schema_acl.grantee='PUBLIC' THEN\n"
+        "    IF schema_acl.is_public THEN\n"
         "      EXECUTE pg_catalog.format('REVOKE ALL ON SCHEMA %I FROM PUBLIC',"
         "schema_acl.schema_name);\n"
         "    ELSE\n"
         "      EXECUTE pg_catalog.format('REVOKE ALL ON SCHEMA %I FROM %I',"
-        "schema_acl.schema_name,schema_acl.grantee);\n"
+        "schema_acl.schema_name,schema_acl.grantee_name);\n"
         "    END IF;\n"
         "  END LOOP;\n"
         "  FOR default_acl IN\n"
@@ -3458,7 +3474,8 @@ def _catalog_derived_authority_containment_sql(
         "           CASE default_privileges.defaclobjtype WHEN 'r' THEN 'TABLES' "
         "WHEN 'S' THEN 'SEQUENCES' WHEN 'f' THEN 'FUNCTIONS' WHEN 'T' THEN 'TYPES' "
         "WHEN 'n' THEN 'SCHEMAS' END AS object_kind,\n"
-        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "           acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name\n"
         "    FROM pg_catalog.pg_default_acl default_privileges\n"
         "    JOIN pg_catalog.pg_roles owner ON owner.oid=default_privileges.defaclrole\n"
         "    LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=default_privileges.defaclnamespace\n"
@@ -3470,7 +3487,7 @@ def _catalog_derived_authority_containment_sql(
         "      AND acl.grantee<>default_privileges.defaclrole\n"
         "    ORDER BY owner.rolname,namespace.nspname,object_kind,acl.grantee\n"
         "  LOOP\n"
-        "    IF default_acl.grantee='PUBLIC' THEN\n"
+        "    IF default_acl.is_public THEN\n"
         "      EXECUTE pg_catalog.format('ALTER DEFAULT PRIVILEGES FOR ROLE %I%s "
         "REVOKE ALL PRIVILEGES ON %s FROM PUBLIC',default_acl.owner_name,\n"
         "        CASE WHEN default_acl.schema_name IS NULL OR default_acl.object_kind='SCHEMAS' "
@@ -3481,7 +3498,7 @@ def _catalog_derived_authority_containment_sql(
         "REVOKE ALL PRIVILEGES ON %s FROM %I',default_acl.owner_name,\n"
         "        CASE WHEN default_acl.schema_name IS NULL OR default_acl.object_kind='SCHEMAS' "
         "THEN '' ELSE pg_catalog.format(' IN SCHEMA %I',default_acl.schema_name) END,\n"
-        "        default_acl.object_kind,default_acl.grantee);\n"
+        "        default_acl.object_kind,default_acl.grantee_name);\n"
         "    END IF;\n"
         "  END LOOP;\n"
         "  FOR edge IN\n"
@@ -3779,23 +3796,25 @@ def _other_database_inventory(
         sessions_by_database[database_name].append(session)
 
     cur.execute(
-        "SELECT database.datname AS database_name,"
-        "CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee,"
+        "SELECT database.datname AS database_name,acl.grantee AS grantee_oid,"
+        "acl.grantee=0 AS is_public,grantee.rolname AS grantee_name,"
         "acl.privilege_type,acl.is_grantable "
         "FROM pg_database database "
         "CROSS JOIN LATERAL aclexplode(COALESCE(database.datacl,acldefault('d',database.datdba))) acl "
         "LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee "
         "WHERE database.datname=ANY(%s) AND acl.privilege_type=ANY(%s) "
-        "ORDER BY database.datname,grantee,acl.privilege_type,acl.is_grantable",
+        "ORDER BY database.datname,acl.grantee,acl.privilege_type,acl.is_grantable",
         (database_names, ["CONNECT", "CREATE", "TEMPORARY"]),
     )
     grants_by_database: dict[str, list[dict[str, Any]]] = {name: [] for name in database_names}
     for row in cur.fetchall():
         grants_by_database[_row_value(row, "database_name")].append(
             {
-                "grantee": _row_value(row, "grantee", 1),
-                "privilege": _row_value(row, "privilege_type", 2),
-                "grantable": _row_value(row, "is_grantable", 3),
+                "grantee_oid": int(_row_value(row, "grantee_oid", 1)),
+                "is_public": bool(_row_value(row, "is_public", 2)),
+                "grantee_name": _row_value(row, "grantee_name", 3),
+                "privilege": _row_value(row, "privilege_type", 4),
+                "grantable": _row_value(row, "is_grantable", 5),
             }
         )
     return tuple(
@@ -3830,7 +3849,11 @@ def _other_database_connect_rollback_sql(
         touched_roles = {
             database["owner_role"],
             *infrastructure_superuser_roles,
-            *(grant["grantee"] for grant in database["acl_grants_before"] if grant["grantee"] != "PUBLIC"),
+            *(
+                grant["grantee_name"]
+                for grant in database["acl_grants_before"]
+                if not grant["is_public"]
+            ),
         }
         statements.append(
             sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM PUBLIC;")
@@ -3844,7 +3867,11 @@ def _other_database_connect_rollback_sql(
                 .as_string(cur.connection)
             )
         for grant in database["acl_grants_before"]:
-            grantee = sql.SQL("PUBLIC") if grant["grantee"] == "PUBLIC" else sql.Identifier(grant["grantee"])
+            grantee = (
+                sql.SQL("PUBLIC")
+                if grant["is_public"]
+                else sql.Identifier(grant["grantee_name"])
+            )
             statement = sql.SQL("GRANT {} ON DATABASE {} TO {}").format(
                 sql.SQL(grant["privilege"]), database_identifier, grantee
             )
@@ -4061,24 +4088,32 @@ def _validate_other_database_inventory_unchanged(
                 )
             )
             cur.execute(
-                "SELECT DISTINCT CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee "
+                "SELECT DISTINCT acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+                "grantee.rolname AS grantee_name "
                 "FROM pg_catalog.pg_database database "
                 "CROSS JOIN LATERAL pg_catalog.aclexplode("
                 "COALESCE(database.datacl,pg_catalog.acldefault('d',database.datdba))) acl "
                 "LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee "
-                "WHERE database.datname=%s AND acl.privilege_type=ANY(%s) ORDER BY grantee",
+                "WHERE database.datname=%s AND acl.privilege_type=ANY(%s) ORDER BY acl.grantee",
                 (database_name, ["CONNECT", "CREATE", "TEMPORARY"]),
             )
             for row in cur.fetchall():
-                grantee_name = _row_value(row, "grantee")
-                grantee = sql.SQL("PUBLIC") if grantee_name == "PUBLIC" else sql.Identifier(grantee_name)
+                grantee = (
+                    sql.SQL("PUBLIC")
+                    if bool(_row_value(row, "is_public", 1))
+                    else sql.Identifier(_row_value(row, "grantee_name", 2))
+                )
                 cur.execute(
                     sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM {}").format(
                         sql.Identifier(database_name), grantee
                     )
                 )
             for grant in original["acl_grants_before"]:
-                grantee = sql.SQL("PUBLIC") if grant["grantee"] == "PUBLIC" else sql.Identifier(grant["grantee"])
+                grantee = (
+                    sql.SQL("PUBLIC")
+                    if grant["is_public"]
+                    else sql.Identifier(grant["grantee_name"])
+                )
                 statement = sql.SQL("GRANT {} ON DATABASE {} TO {}").format(
                     sql.SQL(grant["privilege"]), sql.Identifier(database_name), grantee
                 )
@@ -4107,11 +4142,13 @@ def _isolate_other_databases(
         allowed = {database["owner_role"], *infrastructure_superuser_roles}
         cur.execute(sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM PUBLIC").format(database_identifier))
         for grant in database["acl_grants_before"]:
-            grantee = grant["grantee"]
-            if grantee != "PUBLIC" and grantee not in allowed:
+            grantee_name = grant["grantee_name"]
+            if not grant["is_public"] and grantee_name not in allowed:
                 cur.execute(
                     sql.SQL("REVOKE {} ON DATABASE {} FROM {}").format(
-                        sql.SQL(grant["privilege"]), database_identifier, sql.Identifier(grantee)
+                        sql.SQL(grant["privilege"]),
+                        database_identifier,
+                        sql.Identifier(grantee_name),
                     )
                 )
         for role_name in sorted(allowed):
@@ -4326,14 +4363,28 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
         )
 
     cur.execute(
-        "SELECT CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee "
+        "SELECT acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name "
         "FROM pg_database d CROSS JOIN LATERAL aclexplode(COALESCE(d.datacl,acldefault('d',d.datdba))) acl "
         "LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee "
         "WHERE d.datname=current_database() AND acl.privilege_type='CONNECT' "
-        "AND (acl.grantee=0 OR acl.grantee<>d.datdba) ORDER BY grantee"
+        "AND (acl.grantee=0 OR acl.grantee<>d.datdba) ORDER BY acl.grantee"
     )
-    direct_connect = tuple(_row_value(row, "grantee") for row in cur.fetchall())
-    unknown_connect = sorted(set(direct_connect) - {"PUBLIC"} - set(topology.retired_admin_roles) - infrastructure)
+    direct_connect_rows = tuple(cur.fetchall())
+    direct_connect = tuple(
+        {
+            "grantee_oid": int(_row_value(row, "grantee_oid")),
+            "is_public": bool(_row_value(row, "is_public", 1)),
+            "grantee_name": _row_value(row, "grantee_name", 2),
+        }
+        for row in direct_connect_rows
+    )
+    unknown_connect = sorted(
+        row["grantee_name"]
+        for row in direct_connect
+        if not row["is_public"]
+        and row["grantee_name"] not in set(topology.retired_admin_roles) | infrastructure
+    )
     if unknown_connect:
         raise RuntimeError("unknown explicit CONNECT dependencies block bootstrap: " + ", ".join(unknown_connect))
 
@@ -4454,21 +4505,29 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
     if _row_value(cur.fetchone(), "rolname") != topology.database_owner_role:
         raise RuntimeError("bootstrap database ownership transfer failed")
     cur.execute(
-        "SELECT CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee "
+        "SELECT acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name "
         "FROM pg_database d CROSS JOIN LATERAL aclexplode(d.datacl) acl "
         "LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee "
-        "WHERE d.datname=current_database() AND acl.privilege_type='CONNECT' ORDER BY grantee"
+        "WHERE d.datname=current_database() AND acl.privilege_type='CONNECT' ORDER BY acl.grantee"
     )
-    actual_connect = {_row_value(row, "grantee") for row in cur.fetchall()}
+    actual_connect_rows = tuple(cur.fetchall())
+    actual_connect = {
+        _row_value(row, "grantee_name", 2)
+        for row in actual_connect_rows
+        if not bool(_row_value(row, "is_public", 1))
+    }
+    has_public_connect = any(bool(_row_value(row, "is_public", 1)) for row in actual_connect_rows)
     expected_connect = {
         topology.database_owner_role,
         topology.controller_role,
         topology.verifier_role,
         *topology.infrastructure_superuser_roles,
     }
-    if actual_connect != expected_connect:
+    if has_public_connect or actual_connect != expected_connect:
         raise RuntimeError(
-            f"bootstrap CONNECT ACL mismatch: expected={sorted(expected_connect)!r}, actual={sorted(actual_connect)!r}"
+            f"bootstrap CONNECT ACL mismatch: expected={sorted(expected_connect)!r}, "
+            f"actual={sorted(actual_connect)!r}, public={has_public_connect!r}"
         )
     cur.execute(
         "SELECT acl.privilege_type FROM pg_database d "

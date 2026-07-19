@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -12,10 +13,11 @@ import os
 from pathlib import Path
 import secrets
 import stat
-import tempfile
+import sys
 import time
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 
 from applypilot.fleet.pg_roles import authenticate_evidence_receipt, verify_evidence_receipt
@@ -34,14 +36,34 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _hba_restore_supported(*, platform_name: str | None = None) -> bool:
-    """HBA replacement requires descriptor-relative filesystem operations."""
+    """HBA replacement requires Linux atomic path exchange and dirfd operations."""
     effective_platform = os.name if platform_name is None else platform_name
     return (
         effective_platform != "nt"
+        and sys.platform.startswith("linux")
         and os.open in os.supports_dir_fd
-        and os.replace in os.supports_dir_fd
         and os.unlink in os.supports_dir_fd
+        and hasattr(ctypes.CDLL(None), "renameat2")
     )
+
+
+def _rename_exchange(parent_descriptor: int, first_name: str, second_name: str) -> None:
+    """Atomically exchange two entries in one opened Linux directory."""
+    if not _hba_restore_supported():
+        raise RuntimeError("atomic HBA path exchange is unsupported on this platform")
+    renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        parent_descriptor,
+        os.fsencode(first_name),
+        parent_descriptor,
+        os.fsencode(second_name),
+        2,  # RENAME_EXCHANGE
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
 
 
 def _read_bound_regular_file(path: Path, *, label: str) -> tuple[bytes, os.stat_result]:
@@ -213,15 +235,19 @@ def _write_database_containment_marker(
     phase: str = "phase1",
     approved_break_glass_roles: set[str] | None = None,
 ) -> None:
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS public.applypilot_rollback_commit_markers("
-        "marker_id text PRIMARY KEY,database_name text NOT NULL,system_identifier text NOT NULL,"
-        "database_oid oid NOT NULL,"
-        "executed_by text NOT NULL,affected_role_names text[] NOT NULL,affected_role_oids oid[] NOT NULL,"
-        "completed_phases text[] NOT NULL,"
-        "rollback_sql_sha256 text NOT NULL,source_receipt_digest text NOT NULL,"
-        "committed_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp())"
-    )
+    relation_exists = conn.execute(
+        "SELECT pg_catalog.to_regclass('public.applypilot_rollback_commit_markers') AS relation"
+    ).fetchone()["relation"]
+    if relation_exists is None:
+        conn.execute(
+            "CREATE TABLE public.applypilot_rollback_commit_markers("
+            "marker_id text PRIMARY KEY,database_name text NOT NULL,system_identifier text NOT NULL,"
+            "database_oid oid NOT NULL,executed_by text NOT NULL,"
+            "affected_role_names text[] NOT NULL,affected_role_oids oid[] NOT NULL,"
+            "completed_phases text[] NOT NULL,rollback_sql_sha256 text NOT NULL,"
+            "source_receipt_digest text NOT NULL,committed_at timestamptz NOT NULL "
+            "DEFAULT pg_catalog.clock_timestamp())"
+        )
     relation = conn.execute(
         "SELECT relation.relkind,relation.relpersistence,relation.relrowsecurity,"
         "relation.relforcerowsecurity,owner.rolname AS owner_name,"
@@ -229,9 +255,18 @@ def _write_database_containment_marker(
         "AND NOT trigger.tgisinternal) AS trigger_count,"
         "(SELECT count(*) FROM pg_catalog.pg_policy policy "
         "WHERE policy.polrelid=relation.oid) AS policy_count,"
-        "(SELECT count(*) FROM pg_catalog.aclexplode(COALESCE(relation.relacl,"
-        "pg_catalog.acldefault('r',relation.relowner))) acl "
-        "WHERE acl.grantee<>relation.relowner) AS nonowner_acl_count "
+        "(SELECT count(*) FROM pg_catalog.pg_constraint marker_constraint "
+        "WHERE marker_constraint.conrelid="
+        "'public.applypilot_rollback_commit_markers'::pg_catalog.regclass "
+        "AND marker_constraint.contype<>'n') AS constraint_count,"
+        "(SELECT pg_catalog.array_agg(attribute.attname ORDER BY key.ordinality) "
+        "FROM pg_catalog.pg_constraint marker_constraint "
+        "CROSS JOIN LATERAL pg_catalog.unnest(marker_constraint.conkey) "
+        "WITH ORDINALITY key(attnum,ordinality) "
+        "JOIN pg_catalog.pg_attribute attribute ON attribute.attrelid=relation.oid "
+        "AND attribute.attnum=key.attnum WHERE marker_constraint.conrelid="
+        "'public.applypilot_rollback_commit_markers'::pg_catalog.regclass "
+        "AND marker_constraint.contype='p') AS primary_key_columns "
         "FROM pg_catalog.pg_class relation JOIN pg_catalog.pg_namespace namespace "
         "ON namespace.oid=relation.relnamespace "
         "JOIN pg_catalog.pg_roles owner ON owner.oid=relation.relowner "
@@ -245,7 +280,8 @@ def _write_database_containment_marker(
         "relforcerowsecurity": False,
         "trigger_count": 0,
         "policy_count": 0,
-        "nonowner_acl_count": 0,
+        "constraint_count": 1,
+        "primary_key_columns": ["marker_id"],
     }
     if (
         relation is None
@@ -255,25 +291,134 @@ def _write_database_containment_marker(
         raise RuntimeError(f"database containment marker relation is unsafe: {relation!r}")
     columns = conn.execute(
         "SELECT attribute.attname,pg_catalog.format_type(attribute.atttypid,attribute.atttypmod) "
-        "AS data_type,attribute.attnotnull FROM pg_catalog.pg_attribute attribute "
+        "AS data_type,attribute.attnotnull,attribute.attidentity,attribute.attgenerated,"
+        "pg_catalog.pg_get_expr(default_value.adbin,default_value.adrelid) AS default_expression "
+        "FROM pg_catalog.pg_attribute attribute "
+        "LEFT JOIN pg_catalog.pg_attrdef default_value ON default_value.adrelid=attribute.attrelid "
+        "AND default_value.adnum=attribute.attnum "
         "WHERE attribute.attrelid='public.applypilot_rollback_commit_markers'::pg_catalog.regclass "
         "AND attribute.attnum>0 AND NOT attribute.attisdropped ORDER BY attribute.attnum"
     ).fetchall()
     expected_columns = [
-        {"attname": "marker_id", "data_type": "text", "attnotnull": True},
-        {"attname": "database_name", "data_type": "text", "attnotnull": True},
-        {"attname": "system_identifier", "data_type": "text", "attnotnull": True},
-        {"attname": "database_oid", "data_type": "oid", "attnotnull": True},
-        {"attname": "executed_by", "data_type": "text", "attnotnull": True},
-        {"attname": "affected_role_names", "data_type": "text[]", "attnotnull": True},
-        {"attname": "affected_role_oids", "data_type": "oid[]", "attnotnull": True},
-        {"attname": "completed_phases", "data_type": "text[]", "attnotnull": True},
-        {"attname": "rollback_sql_sha256", "data_type": "text", "attnotnull": True},
-        {"attname": "source_receipt_digest", "data_type": "text", "attnotnull": True},
-        {"attname": "committed_at", "data_type": "timestamp with time zone", "attnotnull": True},
+        {
+            "attname": name,
+            "data_type": data_type,
+            "attnotnull": True,
+            "attidentity": "",
+            "attgenerated": "",
+            "default_expression": default_expression,
+        }
+        for name, data_type, default_expression in (
+            ("marker_id", "text", None),
+            ("database_name", "text", None),
+            ("system_identifier", "text", None),
+            ("database_oid", "oid", None),
+            ("executed_by", "text", None),
+            ("affected_role_names", "text[]", None),
+            ("affected_role_oids", "oid[]", None),
+            ("completed_phases", "text[]", None),
+            ("rollback_sql_sha256", "text", None),
+            ("source_receipt_digest", "text", None),
+            ("committed_at", "timestamp with time zone", "clock_timestamp()"),
+        )
     ]
-    if columns != expected_columns:
+    legacy_columns = [column for column in expected_columns if column["attname"] != "completed_phases"]
+    column_contract = {
+        tuple(column.items())
+        for column in columns
+    }
+    expected_contract = {
+        tuple(column.items())
+        for column in expected_columns
+    }
+    legacy_contract = {
+        tuple(column.items())
+        for column in legacy_columns
+    }
+    if len(columns) not in (len(legacy_columns), len(expected_columns)) or column_contract not in (
+        legacy_contract,
+        expected_contract,
+    ):
         raise RuntimeError(f"database containment marker column contract mismatch: {columns!r}")
+    if column_contract == legacy_contract:
+        conn.execute(
+            "ALTER TABLE public.applypilot_rollback_commit_markers "
+            "ADD COLUMN completed_phases text[]"
+        )
+        conn.execute(
+            "UPDATE public.applypilot_rollback_commit_markers "
+            "SET completed_phases=ARRAY['phase1']::pg_catalog.text[]"
+        )
+        conn.execute(
+            "ALTER TABLE public.applypilot_rollback_commit_markers "
+            "ALTER COLUMN completed_phases SET NOT NULL"
+        )
+        columns = conn.execute(
+            "SELECT attribute.attname,pg_catalog.format_type(attribute.atttypid,attribute.atttypmod) "
+            "AS data_type,attribute.attnotnull,attribute.attidentity,attribute.attgenerated,"
+            "pg_catalog.pg_get_expr(default_value.adbin,default_value.adrelid) AS default_expression "
+            "FROM pg_catalog.pg_attribute attribute "
+            "LEFT JOIN pg_catalog.pg_attrdef default_value ON default_value.adrelid=attribute.attrelid "
+            "AND default_value.adnum=attribute.attnum "
+            "WHERE attribute.attrelid='public.applypilot_rollback_commit_markers'::pg_catalog.regclass "
+            "AND attribute.attnum>0 AND NOT attribute.attisdropped ORDER BY attribute.attnum"
+        ).fetchall()
+        upgraded_contract = {
+            tuple(column.items())
+            for column in columns
+        }
+        if len(columns) != len(expected_columns) or upgraded_contract != expected_contract:
+            raise RuntimeError(
+                f"database containment marker upgraded column contract mismatch: {columns!r}"
+            )
+    acl_rows = conn.execute(
+        "SELECT acl.grantee AS grantee_oid,acl.grantee=0 AS is_public,"
+        "grantee.rolname AS grantee_name FROM pg_catalog.pg_class relation "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(relation.relacl,"
+        "pg_catalog.acldefault('r',relation.relowner))) acl "
+        "LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE relation.oid='public.applypilot_rollback_commit_markers'::pg_catalog.regclass "
+        "AND acl.grantee<>relation.relowner ORDER BY acl.grantee"
+    ).fetchall()
+    for acl_row in acl_rows:
+        if acl_row["is_public"]:
+            conn.execute(
+                "REVOKE ALL PRIVILEGES ON TABLE public.applypilot_rollback_commit_markers "
+                "FROM PUBLIC"
+            )
+        else:
+            conn.execute(
+                sql.SQL(
+                    "REVOKE ALL PRIVILEGES ON TABLE "
+                    "public.applypilot_rollback_commit_markers FROM {}"
+                ).format(sql.Identifier(acl_row["grantee_name"]))
+            )
+    nonowner_acl_count = conn.execute(
+        "SELECT count(*) AS count FROM pg_catalog.pg_class relation "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(relation.relacl,"
+        "pg_catalog.acldefault('r',relation.relowner))) acl "
+        "WHERE relation.oid='public.applypilot_rollback_commit_markers'::pg_catalog.regclass "
+        "AND acl.grantee<>relation.relowner"
+    ).fetchone()["count"]
+    if nonowner_acl_count != 0:
+        raise RuntimeError(
+            "database containment marker relation retains nonowner ACL routes: "
+            f"{nonowner_acl_count!r}"
+        )
+    existing = conn.execute(
+        "SELECT database_name,system_identifier,database_oid,rollback_sql_sha256,"
+        "source_receipt_digest FROM public.applypilot_rollback_commit_markers WHERE marker_id=%s",
+        (marker["marker_id"],),
+    ).fetchone()
+    stable_keys = (
+        "database_name",
+        "system_identifier",
+        "database_oid",
+        "rollback_sql_sha256",
+        "source_receipt_digest",
+    )
+    if existing is not None and any(existing[key] != marker[key] for key in stable_keys):
+        raise RuntimeError("database containment marker stable binding conflict")
     conn.execute(
         "INSERT INTO public.applypilot_rollback_commit_markers("
         "marker_id,database_name,system_identifier,database_oid,executed_by,affected_role_names,affected_role_oids,completed_phases,"
@@ -332,6 +477,14 @@ class ContainmentCommitReconciledConnectionLost(RuntimeError):
         super().__init__("database containment committed but its executor connection was lost")
         self.marker = marker
         self.evidence_errors = evidence_errors
+
+
+class AuthenticatedCheckpointRequired(RuntimeError):
+    """Rollback stopped after writing an authenticated durable checkpoint."""
+
+
+class AuthenticatedCheckpointFailure(RuntimeError):
+    """Rollback stopped because required checkpoint creation also failed."""
 
 
 def _affected_authority_roles(conn, *, protected_roles: set[str]) -> tuple[list[str], list[int]]:
@@ -913,6 +1066,62 @@ def _emit_partial_state_receipt(
     return destination
 
 
+def _emit_database_phase_failure_receipt(
+    requested_path: Path,
+    *,
+    source_receipt: dict,
+    source_receipt_evidence: dict,
+    rollback_sql_path: Path,
+    rollback_sql: str,
+    target_identity: dict,
+    database_containment: dict,
+    attempted_phase: str,
+    failure: BaseException,
+    authentication_key: bytes,
+    authentication_key_id: str,
+    partial_parent_identity: tuple[str, int, int],
+) -> Path:
+    destination, predecessor = _partial_state_destination(
+        requested_path,
+        authentication_key=authentication_key,
+        expected_key_id=authentication_key_id,
+    )
+    _require_matching_partial_state_predecessor(
+        predecessor,
+        marker_id=database_containment["marker_id"],
+        target_identity=target_identity,
+        source_receipt_authentication=source_receipt.get("receipt_authentication"),
+    )
+    partial = {
+        "format": "applypilot-database-containment-phase-partial-state-v1",
+        "status": "database_containment_phase_failed",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "attempted_phase": attempted_phase,
+        "target_identity": target_identity,
+        "database_containment": database_containment,
+        "rollback_sql": {
+            "path": str(rollback_sql_path),
+            "sha256": hashlib.sha256(rollback_sql.encode("utf-8")).hexdigest(),
+        },
+        "failure": {"type": type(failure).__name__, "message": str(failure)},
+        "evidence": {
+            **source_receipt_evidence,
+            "predecessor_partial_state_receipt": predecessor,
+        },
+    }
+    authenticated = authenticate_evidence_receipt(
+        partial,
+        authentication_key=authentication_key,
+        authentication_key_id=authentication_key_id,
+    )
+    _write_exclusive_durable(
+        destination,
+        (json.dumps(authenticated, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        expected_parent_identity=partial_parent_identity,
+    )
+    return destination
+
+
 def _emit_commit_unknown_receipt(
     requested_path: Path,
     *,
@@ -926,6 +1135,7 @@ def _emit_commit_unknown_receipt(
     authentication_key: bytes,
     authentication_key_id: str,
     partial_parent_identity: tuple[str, int, int],
+    attempted_phase: str = "phase1",
 ) -> Path:
     destination, predecessor = _partial_state_destination(
         requested_path,
@@ -946,6 +1156,7 @@ def _emit_commit_unknown_receipt(
         "format": "applypilot-database-containment-commit-unknown-v1",
         "status": "database_containment_commit_outcome_unknown",
         "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "attempted_phase": attempted_phase,
         "target_identity": target_identity,
         "database_containment": {**marker, "visible": False, "commit_outcome": "unknown"},
         "rollback_sql": {
@@ -983,6 +1194,7 @@ def _emit_commit_reconciled_receipt(
     authentication_key: bytes,
     authentication_key_id: str,
     partial_parent_identity: tuple[str, int, int],
+    attempted_phase: str = "phase1",
 ) -> Path:
     destination, predecessor = _partial_state_destination(
         requested_path,
@@ -1003,6 +1215,7 @@ def _emit_commit_reconciled_receipt(
         "format": "applypilot-database-containment-commit-reconciled-v1",
         "status": "database_containment_committed_executor_connection_lost",
         "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "attempted_phase": attempted_phase,
         "target_identity": target_identity,
         "database_containment": {
             **failure.marker,
@@ -1073,102 +1286,143 @@ def _replace_atomic(
         raise RuntimeError("HBA target must be a regular non-symlink file")
     if (target_before.st_dev, target_before.st_ino) != expected_identity:
         raise RuntimeError("HBA target changed after validation")
-    parent_descriptor: int | None = None
-    temporary: Path
-    if os.open in os.supports_dir_fd and os.replace in os.supports_dir_fd:
+    parent_descriptor = -1
+    target_descriptor = -1
+    temporary = Path(f".applypilot-hba-rollback-{secrets.token_hex(16)}")
+    preserve_displaced_entry = False
+    try:
+        if os.open not in os.supports_dir_fd or os.unlink not in os.supports_dir_fd:
+            raise RuntimeError("descriptor-relative HBA replacement is unsupported")
         parent_descriptor = os.open(
             path.parent,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         opened_parent = os.fstat(parent_descriptor)
-        if (opened_parent.st_dev, opened_parent.st_ino) != (parent_before.st_dev, parent_before.st_ino):
-            os.close(parent_descriptor)
+        if (opened_parent.st_dev, opened_parent.st_ino) != (
+            parent_before.st_dev,
+            parent_before.st_ino,
+        ):
             raise RuntimeError("HBA parent changed while being opened")
-        temporary = Path(f".applypilot-hba-rollback-{secrets.token_hex(16)}")
         descriptor = os.open(
             temporary.name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
             0o600,
             dir_fd=parent_descriptor,
         )
-    else:
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".applypilot-hba-rollback-", dir=path.parent)
-        temporary = Path(temporary_name)
-    try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(payload)
             stream.flush()
-            os.fchmod(stream.fileno(), replacement_mode)
             if hasattr(os, "fchown"):
                 os.fchown(stream.fileno(), *replacement_owner)
+            os.fchmod(stream.fileno(), replacement_mode)
             os.fsync(stream.fileno())
         parent_after = os.lstat(path.parent)
         if (parent_after.st_dev, parent_after.st_ino) != (parent_before.st_dev, parent_before.st_ino):
             raise RuntimeError("HBA parent changed before replacement")
-        if parent_descriptor is not None:
-            target_descriptor = os.open(
+        target_descriptor = os.open(
+            path.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened_target = os.fstat(target_descriptor)
+        if (opened_target.st_dev, opened_target.st_ino) != expected_identity:
+            raise RuntimeError("HBA target changed before replacement")
+        observed_content = os.read(target_descriptor, max(len(expected_content), 1) + 1)
+        if observed_content != expected_content or not hmac.compare_digest(
+            hashlib.sha256(observed_content).hexdigest(), expected_sha256
+        ):
+            raise RuntimeError("HBA target content changed after authenticated validation")
+        directory_target = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (directory_target.st_dev, directory_target.st_ino) != expected_identity:
+            raise RuntimeError("HBA directory entry changed before replacement")
+        _rename_exchange(parent_descriptor, temporary.name, path.name)
+
+        try:
+            displaced = os.stat(
+                temporary.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            opened_after_exchange = os.fstat(target_descriptor)
+            os.lseek(target_descriptor, 0, os.SEEK_SET)
+            displaced_content = os.read(
+                target_descriptor, max(len(expected_content), 1) + 1
+            )
+            if not (
+                (displaced.st_dev, displaced.st_ino) == expected_identity
+                and (opened_after_exchange.st_dev, opened_after_exchange.st_ino)
+                == expected_identity
+                and displaced_content == expected_content
+                and hmac.compare_digest(
+                    hashlib.sha256(displaced_content).hexdigest(), expected_sha256
+                )
+            ):
+                raise RuntimeError(
+                    "HBA target content changed immediately before atomic exchange"
+                )
+        except BaseException as drift_error:
+            try:
+                _rename_exchange(parent_descriptor, temporary.name, path.name)
+                os.fsync(parent_descriptor)
+            except BaseException as rollback_error:
+                preserve_displaced_entry = True
+                raise RuntimeError(
+                    "HBA drift was detected after exchange and atomic restoration failed"
+                ) from BaseExceptionGroup(
+                    "HBA exchange authentication and restoration failures",
+                    [drift_error, rollback_error],
+                )
+            raise drift_error
+        os.fsync(parent_descriptor)
+        try:
+            replacement_descriptor = os.open(
                 path.name,
                 os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=parent_descriptor,
             )
-        else:
-            target_descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        try:
-            opened_target = os.fstat(target_descriptor)
-            if (opened_target.st_dev, opened_target.st_ino) != expected_identity:
-                raise RuntimeError("HBA target changed before replacement")
-            with os.fdopen(target_descriptor, "rb", closefd=False) as target_stream:
-                observed_content = target_stream.read()
-            if (
-                observed_content != expected_content
-                or not hmac.compare_digest(
-                    hashlib.sha256(observed_content).hexdigest(), expected_sha256
-                )
-            ):
-                raise RuntimeError("HBA target content changed after authenticated validation")
-            opened_target_after_read = os.fstat(target_descriptor)
-            if (
-                opened_target_after_read.st_dev,
-                opened_target_after_read.st_ino,
-            ) != expected_identity:
-                raise RuntimeError("HBA target changed while authenticated content was read")
-            if parent_descriptor is not None:
-                directory_target = os.stat(
-                    path.name,
-                    dir_fd=parent_descriptor,
-                    follow_symlinks=False,
-                )
-            else:
-                directory_target = os.lstat(path)
-            if (directory_target.st_dev, directory_target.st_ino) != expected_identity:
-                raise RuntimeError("HBA directory entry changed before replacement")
-            if parent_descriptor is not None:
-                os.replace(
-                    temporary.name,
-                    path.name,
-                    src_dir_fd=parent_descriptor,
-                    dst_dir_fd=parent_descriptor,
-                )
-                os.fsync(parent_descriptor)
-            else:
-                os.replace(temporary, path)
-                _fsync_parent(path)
-        finally:
-            os.close(target_descriptor)
-        replaced = os.lstat(path)
-        if stat.S_IMODE(replaced.st_mode) != replacement_mode:
-            raise RuntimeError("HBA replacement mode verification failed")
-        if (replaced.st_uid, replaced.st_gid) != replacement_owner:
-            raise RuntimeError("HBA replacement ownership verification failed")
-    finally:
-        if parent_descriptor is not None:
             try:
-                os.unlink(temporary.name, dir_fd=parent_descriptor)
+                replaced = os.fstat(replacement_descriptor)
+                replacement_content = os.read(
+                    replacement_descriptor, max(len(payload), 1) + 1
+                )
+            finally:
+                os.close(replacement_descriptor)
+            if not stat.S_ISREG(replaced.st_mode) or stat.S_ISLNK(replaced.st_mode):
+                raise RuntimeError("HBA replacement is not a regular non-symlink file")
+            if replacement_content != payload:
+                raise RuntimeError("HBA replacement payload verification failed")
+            if stat.S_IMODE(replaced.st_mode) != replacement_mode:
+                raise RuntimeError("HBA replacement mode verification failed")
+            if (replaced.st_uid, replaced.st_gid) != replacement_owner:
+                raise RuntimeError("HBA replacement ownership verification failed")
+        except BaseException as verification_error:
+            try:
+                _rename_exchange(parent_descriptor, temporary.name, path.name)
+                os.fsync(parent_descriptor)
+            except BaseException as rollback_error:
+                preserve_displaced_entry = True
+                raise RuntimeError(
+                    "HBA replacement verification failed and atomic restoration failed"
+                ) from BaseExceptionGroup(
+                    "HBA replacement verification and restoration failures",
+                    [verification_error, rollback_error],
+                )
+            raise
+    finally:
+        if target_descriptor >= 0:
+            os.close(target_descriptor)
+        if parent_descriptor >= 0:
+            try:
+                if not preserve_displaced_entry:
+                    os.unlink(temporary.name, dir_fd=parent_descriptor)
+                    os.fsync(parent_descriptor)
             except FileNotFoundError:
                 pass
             os.close(parent_descriptor)
-        else:
-            temporary.unlink(missing_ok=True)
 
 
 def _validated_hba_restore(
@@ -1324,7 +1578,7 @@ def main() -> int:
             target_identity=target_identity,
             source_receipt_authentication=receipt.get("receipt_authentication"),
         )
-        def commit_phase(phase: str) -> dict:
+        def commit_phase(phase: str, *, durable_marker: dict | None = None) -> dict:
             try:
                 return _commit_with_authenticated_reconciliation(
                     conn,
@@ -1348,15 +1602,16 @@ def main() -> int:
                         authentication_key=authentication_key,
                         authentication_key_id=expected_key_id,
                         partial_parent_identity=partial_parent_identity,
+                        attempted_phase=phase,
                     )
                 except BaseException as receipt_error:
-                    raise RuntimeError(
+                    raise AuthenticatedCheckpointFailure(
                         "database containment commit was reconciled, the executor connection was "
                         "lost, and authenticated checkpoint creation failed"
                     ) from BaseExceptionGroup(
                         "reconciled commit and checkpoint failures", [error, receipt_error]
                     )
-                raise RuntimeError(
+                raise AuthenticatedCheckpointRequired(
                     "database containment commit was reconciled but the executor connection was "
                     f"lost; retry required from authenticated checkpoint={partial_receipt}"
                 ) from error
@@ -1369,41 +1624,97 @@ def main() -> int:
                         rollback_sql_path=rollback_path,
                         rollback_sql=rollback_sql,
                         target_identity=target_identity,
-                        marker=marker,
+                        marker=durable_marker or marker,
                         failure=error,
                         authentication_key=authentication_key,
                         authentication_key_id=expected_key_id,
                         partial_parent_identity=partial_parent_identity,
+                        attempted_phase=phase,
                     )
                 except BaseException as receipt_error:
-                    raise RuntimeError(
+                    raise AuthenticatedCheckpointFailure(
                         "database containment COMMIT outcome is unknown and authenticated "
                         "checkpoint creation also failed"
                     ) from BaseExceptionGroup(
                         "commit ambiguity and checkpoint failures", [error, receipt_error]
                     )
-                raise RuntimeError(
+                raise AuthenticatedCheckpointRequired(
                     "database containment COMMIT outcome is unknown; authenticated checkpoint="
                     f"{partial_receipt}"
                 ) from error
 
+        def raise_phase_checkpoint(
+            *, attempted_phase: str, durable_marker: dict, failure: BaseException
+        ) -> None:
+            try:
+                partial_receipt = _emit_database_phase_failure_receipt(
+                    partial_state_path,
+                    source_receipt=receipt,
+                    source_receipt_evidence=source_receipt_evidence,
+                    rollback_sql_path=rollback_path,
+                    rollback_sql=rollback_sql,
+                    target_identity=target_identity,
+                    database_containment=durable_marker,
+                    attempted_phase=attempted_phase,
+                    failure=failure,
+                    authentication_key=authentication_key,
+                    authentication_key_id=expected_key_id,
+                    partial_parent_identity=partial_parent_identity,
+                )
+            except BaseException as receipt_error:
+                raise RuntimeError(
+                    "database rollback failed after durable containment and authenticated "
+                    "checkpoint creation also failed"
+                ) from BaseExceptionGroup(
+                    "post-containment failure and checkpoint failure", [failure, receipt_error]
+                )
+            raise AuthenticatedCheckpointRequired(
+                f"database rollback stopped during {attempted_phase}; "
+                f"authenticated checkpoint={partial_receipt}"
+            ) from failure
+
         database_containment = commit_phase("phase1")
         print("database_containment_phase1_committed")
-        terminated_sessions = _terminate_affected_sessions(
-            conn,
-            affected_role_names=database_containment["affected_role_names"],
-            affected_role_oids=database_containment["affected_role_oids"],
-            protected_roles=protected_roles,
-        )
-        database_containment = commit_phase("phase2")
+        try:
+            terminated_sessions = _terminate_affected_sessions(
+                conn,
+                affected_role_names=database_containment["affected_role_names"],
+                affected_role_oids=database_containment["affected_role_oids"],
+                protected_roles=protected_roles,
+            )
+        except BaseException as error:
+            raise_phase_checkpoint(
+                attempted_phase="session_termination",
+                durable_marker=database_containment,
+                failure=error,
+            )
+        try:
+            database_containment = commit_phase(
+                "phase2", durable_marker=database_containment
+            )
+        except (AuthenticatedCheckpointRequired, AuthenticatedCheckpointFailure):
+            raise
+        except BaseException as error:
+            raise_phase_checkpoint(
+                attempted_phase="phase2",
+                durable_marker=database_containment,
+                failure=error,
+            )
         database_containment["terminated_sessions"] = terminated_sessions
         print("database_rollback_committed")
-        containment_postcondition = _assert_candidate_artifact_containment(
-            conn,
-            break_glass_roles=protected_roles,
-            affected_role_names=database_containment["affected_role_names"],
-            affected_role_oids=database_containment["affected_role_oids"],
-        )
+        try:
+            containment_postcondition = _assert_candidate_artifact_containment(
+                conn,
+                break_glass_roles=protected_roles,
+                affected_role_names=database_containment["affected_role_names"],
+                affected_role_oids=database_containment["affected_role_oids"],
+            )
+        except BaseException as error:
+            raise_phase_checkpoint(
+                attempted_phase="postcondition",
+                durable_marker=database_containment,
+                failure=error,
+            )
         if args.restore_hba:
             print("hba_restore_started")
             try:

@@ -31,8 +31,16 @@ If a later approved break-glass superuser retries, it reuses the stable marker a
 
 ## HBA mutation
 
-HBA validation returns authenticated expected live bytes and their digest. `_replace_atomic` opens the target immediately before replacement, verifies inode/device, reads the opened descriptor, and compares exact bytes and SHA-256 to the authenticated expectation. A same-inode edit therefore aborts before mutation.
+HBA validation returns authenticated expected live bytes and their digest. On Linux, replacement uses `renameat2(RENAME_EXCHANGE)` to atomically exchange the prepared replacement with the live path. The displaced live inode remains reachable through the temporary pathname and the already-open descriptor. The implementation authenticates both identities and rereads that displaced inode after the exchange. If its bytes or digest changed, it atomically exchanges the paths back and fails closed, preserving the concurrent edit. Platforms without a verified exchange primitive do not offer HBA restoration.
+
+## Round-two hardening
+
+ACL inventory carries the catalog grantee OID, nullable role name, and an explicit `is_public` flag. Pseudo-role `PUBLIC` is identified only by `acl.grantee = 0`; a real quoted role named `"PUBLIC"` is always quoted and handled as an ordinary role. This representation is used consistently for functions, relations, columns, types, schemas, default ACLs, assertions, and cross-database containment.
+
+The database marker supports exactly two authenticated schemas. The legacy ten-column schema is upgraded transactionally by adding `completed_phases`, conservatively recording `phase1`, and then validating the exact current schema. Any other column contract fails before alteration. Marker creation and upgrade revoke inherited default ACLs before the zero-nonowner-ACL postcondition is accepted.
+
+Every failure after durable phase one emits an authenticated, phase-specific partial receipt. The receipt records the attempted phase and the latest authenticated durable marker. Ambiguous commit evidence uses that same durable state and cannot report an empty completed-phase set once phase one is known committed.
 
 ## Verification
 
-Real PostgreSQL 18 regressions cover hostile `public.pg_roles` and `public.pg_database` shadows, persistent database-owner regrant races, controller and break-glass preservation, procedures, archive ownership, bounded cyclic closure, commit acknowledgement loss, rollback-error preservation, and alternate break-glass retry. A real filesystem test covers an in-place HBA edit between preflight and replacement. Mock/source-search checks are replaced where a real boundary is available.
+Real PostgreSQL 18 regressions cover hostile `public.pg_roles` and `public.pg_database` shadows, persistent database-owner regrant races, controller and break-glass preservation, procedures, archive ownership, bounded cyclic closure, quoted `"PUBLIC"` plus pseudo-role `PUBLIC`, legacy-marker resume, marker default ACL neutralization, phase-specific partial receipts, commit acknowledgement loss, rollback-error preservation, and alternate break-glass retry. A Linux filesystem test covers an in-place HBA edit immediately before atomic exchange. Mock/source-search checks are replaced where a real boundary is available.

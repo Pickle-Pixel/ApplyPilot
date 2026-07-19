@@ -82,3 +82,55 @@
 - [ ] Run `python -m py_compile` over all five owned Python files.
 - [ ] Run Ruff over the four configured files and `git diff --check`.
 - [ ] Review the full diff against every quality finding, commit the cumulative repair, and repeat the exact verification after commit.
+
+### Task 7: Preserve ACL grantee identity
+
+**Files:**
+- Modify: `src/applypilot/fleet/pg_roles.py`
+- Test: `tests/test_pg_role_bootstrap.py`
+
+- [ ] Add a real PG18 regression containing both pseudo-role `PUBLIC` grants and grants to a quoted real role named `"PUBLIC"` across practical ACL classes.
+- [ ] Prove the string-sentinel implementation misroutes the quoted role.
+- [ ] Carry `grantee_oid`, `grantee_name`, and `is_public` through inventory and branch only on `is_public` in local and cross-database revocation.
+- [ ] Re-run the regression twice and assert neither authority route remains.
+
+### Task 8: Upgrade legacy markers and neutralize default ACLs
+
+**Files:**
+- Modify: `scripts/rollback-fleet-pg-role.py`
+- Test: `tests/test_pg_role_bootstrap.py`
+
+- [ ] Add real PG18 tests for an interrupted exact ten-column legacy marker and for marker creation under inherited default table ACLs.
+- [ ] Add wrong-shape tests and require failure before schema mutation.
+- [ ] Accept only the exact legacy or current contract; upgrade legacy markers transactionally with conservative `completed_phases = ARRAY['phase1']`.
+- [ ] Revoke inherited marker ACLs using explicit OID/public identity, then validate the exact current contract and zero nonowner ACLs.
+- [ ] Resume phase two from the upgraded authenticated marker without evidence loss.
+
+### Task 9: Emit durable phase-specific failure evidence
+
+**Files:**
+- Modify: `scripts/rollback-fleet-pg-role.py`
+- Test: `tests/test_pg_role_bootstrap.py`
+
+- [ ] Add regressions for ordinary termination, phase-two, and postcondition failures after durable phase one.
+- [ ] Emit an authenticated partial receipt containing the attempted phase and latest authenticated durable marker for each failure.
+- [ ] Make commit-unknown evidence consume the known durable marker so phase one is never represented by an empty completed-phase set.
+- [ ] Verify receipt signatures and target/source bindings in tests.
+
+### Task 10: Close the same-inode HBA replacement race
+
+**Files:**
+- Modify: `scripts/rollback-fleet-pg-role.py`
+- Test: `tests/test_pg_role_bootstrap.py`
+
+- [ ] Add a Linux/WSL regression that writes to the authenticated inode immediately before replacement.
+- [ ] Implement same-directory `renameat2(RENAME_EXCHANGE)`, authenticate the displaced live inode after exchange, and atomically exchange back on drift.
+- [ ] Fail closed without mutation when atomic exchange is unavailable or cannot be authenticated.
+- [ ] Verify concurrent bytes survive the rejected operation and the successful path preserves mode, ownership, and requested payload.
+
+### Task 11: Round-two cumulative gate
+
+- [ ] Run the complete PG18 suite, including interrupted legacy resume and quoted-role containment.
+- [ ] Run the real POSIX HBA regression under WSL/Linux.
+- [ ] Run Ruff, `py_compile`, and `git diff --check`.
+- [ ] Inspect the final diff for unrelated changes and create one consolidated clean commit only after every P0-P2 gate is green.
