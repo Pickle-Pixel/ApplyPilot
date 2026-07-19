@@ -1842,7 +1842,7 @@ def test_pg18_catalog_pins_match_authoritative_fresh_fixtures() -> None:
         "current_v5": "903d96ec8c9f0da427771ceae78a5c4d4b39fb38bb72a39bd8894e75b3b05bb1",
         "v6": "413fdaacc60793dab624b7d12def0362d9539521be055d716bc9320450362329",
         "v7": "b8bcc3e3fedea82fe0149d3dd0372332e24b94579c692e949d9b9c3dce8a0ee5",
-        "v8": "3a7912fcd9dd47b3869ff9a8644a3d33e0dc668a60b59c795d45e78f2dd50b01",
+        "v8": "b1ae7f1df9e7c902d4954b4f1fa29c3fdf9d4c55516ff1f5011375b23163cebf",
     }
 
 
@@ -4526,16 +4526,21 @@ def test_v8_authority_requires_current_retention_attestation_lifecycle(brain_pg)
             "SELECT brain_attest_artifact_retention("
             "%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz) AS id"
         )
-        window = connection.execute(
-            "SELECT (clock_timestamp()-interval '1 second') AS verified_at,"
-            "(clock_timestamp()+interval '1 second') AS retain_until,"
-            "(clock_timestamp()+interval '1 hour') AS lease_expires"
-        ).fetchone()
+        # verified_at is bound to the exact verified location observation; the live
+        # lease must sit at or before the COMPLIANCE retention deadline.
+        location_verified_at = connection.execute(
+            "SELECT verified_at FROM public.brain_artifact_locations "
+            "WHERE artifact_hash=%s AND object_key=%s",
+            (artifact_hash, location["object_key"]),
+        ).fetchone()["verified_at"]
+        retain_until = connection.execute(
+            "SELECT (clock_timestamp()+interval '1 second') AS retain_until"
+        ).fetchone()["retain_until"]
         connection.commit()
         attest_args = (
             artifact_hash, location["backend"], location["bucket_or_container"],
             location["object_key"], location["provider_version_id"], location["provider_checksum"],
-            window["retain_until"], window["verified_at"], "lease-token-1", window["lease_expires"],
+            retain_until, location_verified_at, "lease-token-1", retain_until,
         )
         connection.execute("SET ROLE brain_artifact_authority_writer")
         first_id = connection.execute(attest_sql, attest_args).fetchone()["id"]
@@ -4559,16 +4564,14 @@ def test_v8_authority_requires_current_retention_attestation_lifecycle(brain_pg)
         connection.commit()
 
         # Extension requires a NEW append-only attestation (a new row, not a mutation).
-        extended = connection.execute(
-            "SELECT (clock_timestamp()-interval '1 second') AS verified_at,"
-            "(clock_timestamp()+interval '1 hour') AS retain_until,"
-            "(clock_timestamp()+interval '2 hours') AS lease_expires"
-        ).fetchone()
+        extend_retain = connection.execute(
+            "SELECT (clock_timestamp()+interval '1 hour') AS retain_until"
+        ).fetchone()["retain_until"]
         connection.commit()
         extend_args = (
             artifact_hash, location["backend"], location["bucket_or_container"],
             location["object_key"], location["provider_version_id"], location["provider_checksum"],
-            extended["retain_until"], extended["verified_at"], "lease-token-2", extended["lease_expires"],
+            extend_retain, location_verified_at, "lease-token-2", extend_retain,
         )
         connection.execute("SET ROLE brain_artifact_authority_writer")
         extended_id = connection.execute(attest_sql, extend_args).fetchone()["id"]
@@ -4593,7 +4596,7 @@ def test_v8_authority_requires_current_retention_attestation_lifecycle(brain_pg)
                     attest_sql,
                     ("f" * 64, "s3", "immutable", "sha256/" + "f" * 64,
                      "version-ffffffff", "checksum-ffffffff",
-                     extended["retain_until"], extended["verified_at"], "lease-x", extended["lease_expires"]),
+                     extend_retain, location_verified_at, "lease-x", extend_retain),
                 )
         connection.execute("RESET ROLE")
         connection.commit()
@@ -4693,3 +4696,502 @@ def test_v8_rejects_known_historical_checksum_over_the_wrong_catalog(brain_pg) -
                 schema.verify_brain_schema_v8_in_transaction(cursor)
         connection.rollback()
         schema.verify_brain_schema_v8(connection)
+
+
+# --- Runtime Packet S5 repair: V8 adversarial coverage ------------------------
+
+_V8_ATTEST_SQL = (
+    "SELECT brain_attest_artifact_retention("
+    "%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz) AS id"
+)
+_V8_ATTESTATION_COLUMNS = (
+    "database_incarnation_id,artifact_hash,backend,bucket_or_container,object_key,"
+    "provider_version_id,provider_checksum,retention_mode,retain_until,verified_at,"
+    "verification_lease_id,verification_lease_expires_at"
+)
+
+
+def _v8_current_incarnation(connection) -> str:
+    return connection.execute(
+        "SELECT database_incarnation_id::text AS id "
+        "FROM public.applypilot_database_identity WHERE singleton_id=1"
+    ).fetchone()["id"]
+
+
+def _v8_location_verified_at(connection, artifact_hash: str, object_key: str):
+    return connection.execute(
+        "SELECT verified_at FROM public.brain_artifact_locations "
+        "WHERE artifact_hash=%s AND object_key=%s",
+        (artifact_hash, object_key),
+    ).fetchone()["verified_at"]
+
+
+def _v8_attest_args(location, *, artifact_hash, retain_until, verified_at, lease_id, lease_expires):
+    return (
+        artifact_hash, location["backend"], location["bucket_or_container"],
+        location["object_key"], location["provider_version_id"], location["provider_checksum"],
+        retain_until, verified_at, lease_id, lease_expires,
+    )
+
+
+def test_schema_history_fixtures_are_exact_raw_blobs() -> None:
+    history = _load_schema_history()
+    committed = {
+        1: schema._SCHEMA_SQL,
+        2: schema._SCHEMA_V2_SQL,
+        5: schema._SCHEMA_V5_SQL,
+        7: schema._SCHEMA_V7_SQL,
+    }
+    for version, record in history.items():
+        committed_bytes = committed[version].read_bytes()
+        assert record["current_committed"]["sha256"] == hashlib.sha256(committed_bytes).hexdigest()
+        for variant in record["historical_variants"]:
+            if "blob" not in variant:
+                continue
+            blob_path = _SCHEMA_HISTORY_DIR / variant["blob"]
+            blob_bytes = blob_path.read_bytes()
+            # The stored fixture is the exact raw historical migration bytes -- never a
+            # reconstruction, never a truncated prefix used as authority.
+            assert hashlib.sha256(blob_bytes).hexdigest() == variant["sha256"]
+            if "sha256_prefix" in variant:
+                assert variant["sha256"].startswith(variant["sha256_prefix"])
+            # It is a genuinely earlier, behaviourally different variant, not the
+            # current committed bytes wearing a historical label.
+            assert blob_bytes != committed_bytes
+            assert variant["sha256"] != record["current_committed"]["sha256"]
+
+
+def test_v8_rejects_every_historical_variant_checksum_over_the_current_catalog(brain_pg) -> None:
+    history = _load_schema_history()
+    reject_message = {
+        1: "unrecognized version 1 checksum",
+        2: "unrecognized version 2 checksum",
+        5: "invalid version 5 contract",
+        7: "invalid version 7 contract",
+    }
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        connection.commit()
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+        substitutions = [
+            (version, variant["sha256"])
+            for version, record in history.items()
+            for variant in record["historical_variants"]
+            if variant.get("blob") and not variant.get("ledger_accepted")
+        ]
+        # Every prefix-published historical variant now has a full, exact digest.
+        assert len(substitutions) == 5
+        for version, wrong_checksum in substitutions:
+            with pytest.raises(RuntimeError, match=reject_message[version]):
+                with connection.transaction():
+                    connection.execute("SET LOCAL session_replication_role=replica")
+                    connection.execute(
+                        "UPDATE public.brain_schema_versions SET migration_checksum=%s WHERE version=%s",
+                        (wrong_checksum, version),
+                    )
+                    with connection.cursor() as cursor:
+                        schema.verify_brain_schema_v8_in_transaction(cursor)
+            connection.rollback()
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_expired_lease_is_nonauthoritative_and_lease_beyond_retention_is_rejected(brain_pg) -> None:
+    artifact_hash = "3" * 64
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        location = _register_v8_artifact(
+            connection,
+            request_id="83333333-3333-3333-3333-333333333333",
+            digest="1" * 64,
+            artifact_hash=artifact_hash,
+        )
+        loc_verified = _v8_location_verified_at(connection, artifact_hash, location["object_key"])
+        window = connection.execute(
+            "SELECT (clock_timestamp()+interval '1 hour') AS retain_until,"
+            "(clock_timestamp()+interval '2 hours') AS beyond_retention"
+        ).fetchone()
+        connection.commit()
+
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        # (b) A lease that outlives its COMPLIANCE retention deadline is rejected outright.
+        with pytest.raises(psycopg.errors.CheckViolation, match="lease_within_retention"):
+            with connection.transaction():
+                connection.execute(
+                    _V8_ATTEST_SQL,
+                    _v8_attest_args(
+                        location, artifact_hash=artifact_hash,
+                        retain_until=window["retain_until"], verified_at=loc_verified,
+                        lease_id="lease-over", lease_expires=window["beyond_retention"],
+                    ),
+                )
+        # (a) A lease already expired while retention is still in the future is
+        #     insertable but NON-authoritative.
+        connection.execute(
+            _V8_ATTEST_SQL,
+            _v8_attest_args(
+                location, artifact_hash=artifact_hash,
+                retain_until=window["retain_until"], verified_at=loc_verified,
+                lease_id="lease-dead", lease_expires=loc_verified,
+            ),
+        )
+        connection.execute("RESET ROLE")
+        connection.commit()
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS a", (artifact_hash,)
+        ).fetchone()["a"] is False
+
+        # A distinct attestation whose lease is live and retention is future is authoritative.
+        live = connection.execute(
+            "SELECT (clock_timestamp()+interval '3 hours') AS retain_until,"
+            "(clock_timestamp()+interval '90 minutes') AS lease_expires"
+        ).fetchone()
+        connection.commit()
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        connection.execute(
+            _V8_ATTEST_SQL,
+            _v8_attest_args(
+                location, artifact_hash=artifact_hash,
+                retain_until=live["retain_until"], verified_at=loc_verified,
+                lease_id="lease-live", lease_expires=live["lease_expires"],
+            ),
+        )
+        connection.execute("RESET ROLE")
+        connection.commit()
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS a", (artifact_hash,)
+        ).fetchone()["a"] is True
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_future_and_unbound_verified_at_are_rejected(brain_pg) -> None:
+    artifact_hash = "4" * 64
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        location = _register_v8_artifact(
+            connection,
+            request_id="84444444-4444-4444-4444-444444444444",
+            digest="1" * 64,
+            artifact_hash=artifact_hash,
+        )
+        loc_verified = _v8_location_verified_at(connection, artifact_hash, location["object_key"])
+        times = connection.execute(
+            "SELECT (clock_timestamp()+interval '1 hour') AS retain_until,"
+            "(clock_timestamp()+interval '1 hour') AS future_verified,"
+            "(%s::timestamptz - interval '1 second') AS before_observation",
+            (loc_verified,),
+        ).fetchone()
+        connection.commit()
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        # Future-dated verified_at is rejected.
+        with pytest.raises(psycopg.errors.CheckViolation, match="verified_at cannot be in the future"):
+            with connection.transaction():
+                connection.execute(
+                    _V8_ATTEST_SQL,
+                    _v8_attest_args(
+                        location, artifact_hash=artifact_hash,
+                        retain_until=times["retain_until"], verified_at=times["future_verified"],
+                        lease_id="lease-fut", lease_expires=times["retain_until"],
+                    ),
+                )
+        # verified_at unbound from (predating) the location observation is rejected.
+        with pytest.raises(psycopg.errors.CheckViolation, match="verified registered artifact location"):
+            with connection.transaction():
+                connection.execute(
+                    _V8_ATTEST_SQL,
+                    _v8_attest_args(
+                        location, artifact_hash=artifact_hash,
+                        retain_until=times["retain_until"], verified_at=times["before_observation"],
+                        lease_id="lease-unbound", lease_expires=times["retain_until"],
+                    ),
+                )
+        connection.execute("RESET ROLE")
+        connection.commit()
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_retention_replay_is_exact_and_same_identity_conflicts_fail_closed(brain_pg) -> None:
+    artifact_hash = "5" * 64
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        location = _register_v8_artifact(
+            connection,
+            request_id="85555555-5555-5555-5555-555555555555",
+            digest="1" * 64,
+            artifact_hash=artifact_hash,
+        )
+        loc_verified = _v8_location_verified_at(connection, artifact_hash, location["object_key"])
+        retain_until = connection.execute(
+            "SELECT (clock_timestamp()+interval '1 hour') AS r"
+        ).fetchone()["r"]
+        later_verified = connection.execute(
+            "SELECT (clock_timestamp()-interval '1 millisecond') AS v"
+        ).fetchone()["v"]
+        connection.commit()
+
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        first_id = connection.execute(
+            _V8_ATTEST_SQL,
+            _v8_attest_args(
+                location, artifact_hash=artifact_hash, retain_until=retain_until,
+                verified_at=loc_verified, lease_id="lease-a", lease_expires=retain_until,
+            ),
+        ).fetchone()["id"]
+        # Exact payload replay returns the same durable row.
+        assert connection.execute(
+            _V8_ATTEST_SQL,
+            _v8_attest_args(
+                location, artifact_hash=artifact_hash, retain_until=retain_until,
+                verified_at=loc_verified, lease_id="lease-a", lease_expires=retain_until,
+            ),
+        ).fetchone()["id"] == first_id
+
+        # Same retention identity, different observed payload -> fail closed.
+        for verified_at, lease_id, lease_expires in (
+            (loc_verified, "lease-b", retain_until),
+            (later_verified, "lease-a", retain_until),
+        ):
+            with pytest.raises(psycopg.errors.UniqueViolation, match="conflicting retention attestation replay"):
+                with connection.transaction():
+                    connection.execute(
+                        _V8_ATTEST_SQL,
+                        _v8_attest_args(
+                            location, artifact_hash=artifact_hash, retain_until=retain_until,
+                            verified_at=verified_at, lease_id=lease_id, lease_expires=lease_expires,
+                        ),
+                    )
+        connection.execute("RESET ROLE")
+        connection.commit()
+        assert connection.execute(
+            "SELECT count(*) AS c FROM public.brain_artifact_retention_attestations WHERE artifact_hash=%s",
+            (artifact_hash,),
+        ).fetchone()["c"] == 1
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_old_incarnation_row_never_aliases_or_authorizes(brain_pg) -> None:
+    artifact_hash = "6" * 64
+    stale_incarnation = "00000000-0000-0000-0000-0000000000aa"
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        location = _register_v8_artifact(
+            connection,
+            request_id="86666666-6666-6666-6666-666666666666",
+            digest="1" * 64,
+            artifact_hash=artifact_hash,
+        )
+        loc_verified = _v8_location_verified_at(connection, artifact_hash, location["object_key"])
+        current = _v8_current_incarnation(connection)
+        assert stale_incarnation != current
+        retain_until = connection.execute(
+            "SELECT (clock_timestamp()+interval '1 hour') AS r"
+        ).fetchone()["r"]
+        connection.commit()
+
+        # Forge an old-incarnation attestation (bypassing the incarnation-guard trigger)
+        # with an otherwise-live lease and future retention.
+        connection.execute("SET session_replication_role=replica")
+        connection.execute(
+            "INSERT INTO public.brain_artifact_retention_attestations (" + _V8_ATTESTATION_COLUMNS + ") "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,'COMPLIANCE',%s::timestamptz,%s::timestamptz,%s,%s::timestamptz)",
+            (
+                stale_incarnation, artifact_hash, location["backend"], location["bucket_or_container"],
+                location["object_key"], location["provider_version_id"], location["provider_checksum"],
+                retain_until, loc_verified, "stale-lease", retain_until,
+            ),
+        )
+        connection.execute("SET session_replication_role=origin")
+        connection.commit()
+        stale_id = connection.execute(
+            "SELECT retention_attestation_id AS id FROM public.brain_artifact_retention_attestations "
+            "WHERE database_incarnation_id=%s",
+            (stale_incarnation,),
+        ).fetchone()["id"]
+
+        # Old-incarnation data never confers authority.
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS a", (artifact_hash,)
+        ).fetchone()["a"] is False
+
+        # Re-attesting the same logical identity under the current incarnation must NOT
+        # alias the stale row -- it appends a fresh current-incarnation row.
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        current_id = connection.execute(
+            _V8_ATTEST_SQL,
+            _v8_attest_args(
+                location, artifact_hash=artifact_hash, retain_until=retain_until,
+                verified_at=loc_verified, lease_id="current-lease", lease_expires=retain_until,
+            ),
+        ).fetchone()["id"]
+        connection.execute("RESET ROLE")
+        connection.commit()
+        assert current_id != stale_id
+        assert connection.execute(
+            "SELECT count(*) AS c FROM public.brain_artifact_retention_attestations WHERE artifact_hash=%s",
+            (artifact_hash,),
+        ).fetchone()["c"] == 2
+        # Now the current-incarnation attestation authorizes.
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS a", (artifact_hash,)
+        ).fetchone()["a"] is True
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_authority_requires_the_exact_attested_location(brain_pg) -> None:
+    artifact_hash = "7" * 64
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        location = _register_v8_artifact(
+            connection,
+            request_id="87777777-7777-7777-7777-777777777777",
+            digest="1" * 64,
+            artifact_hash=artifact_hash,
+        )
+        loc_verified = _v8_location_verified_at(connection, artifact_hash, location["object_key"])
+        current = _v8_current_incarnation(connection)
+        retain_until = connection.execute(
+            "SELECT (clock_timestamp()+interval '1 hour') AS r"
+        ).fetchone()["r"]
+        connection.commit()
+
+        # Forge an attestation that names a DIFFERENT object key than the sole verified
+        # location for this hash holds. Pre-repair the predicate joined location by hash
+        # alone and would have returned authoritative from that unrelated location.
+        connection.execute("SET session_replication_role=replica")
+        connection.execute(
+            "INSERT INTO public.brain_artifact_retention_attestations (" + _V8_ATTESTATION_COLUMNS + ") "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,'COMPLIANCE',%s::timestamptz,%s::timestamptz,%s,%s::timestamptz)",
+            (
+                current, artifact_hash, location["backend"], location["bucket_or_container"],
+                "sha256/" + artifact_hash + "-ghost", location["provider_version_id"],
+                location["provider_checksum"], retain_until, loc_verified, "ghost-lease", retain_until,
+            ),
+        )
+        connection.execute("SET session_replication_role=origin")
+        connection.commit()
+        # An unrelated verified location cannot satisfy authority for the named object.
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS a", (artifact_hash,)
+        ).fetchone()["a"] is False
+
+        # An attestation bound to the exact verified location IS authoritative.
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        connection.execute(
+            _V8_ATTEST_SQL,
+            _v8_attest_args(
+                location, artifact_hash=artifact_hash, retain_until=retain_until,
+                verified_at=loc_verified, lease_id="exact-lease", lease_expires=retain_until,
+            ),
+        )
+        connection.execute("RESET ROLE")
+        connection.commit()
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS a", (artifact_hash,)
+        ).fetchone()["a"] is True
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_null_bucket_attestation_dedupes_and_authorizes(brain_pg) -> None:
+    artifact_hash = "a" * 64
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        _register_v8_artifact(
+            connection,
+            request_id="8aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            digest="1" * 64,
+            artifact_hash=artifact_hash,
+        )
+        # Add a second verified location for the same hash with a NULL bucket_or_container.
+        null_location = {
+            "backend": "filesystem",
+            "bucket_or_container": None,
+            "object_key": "local/" + artifact_hash,
+            "provider_version_id": "version-" + artifact_hash[:8],
+            "provider_checksum": "checksum-" + artifact_hash[:8],
+        }
+        connection.execute(
+            "INSERT INTO public.brain_artifact_locations "
+            "(artifact_hash,backend,bucket_or_container,object_key,provider_version_id,"
+            "provider_checksum,storage_immutable,encryption_mode,encryption_key_id,durability,verified_at) "
+            "VALUES (%s,%s,NULL,%s,%s,%s,true,'customer_managed','kms-key-1','verified',clock_timestamp())",
+            (
+                artifact_hash, null_location["backend"], null_location["object_key"],
+                null_location["provider_version_id"], null_location["provider_checksum"],
+            ),
+        )
+        connection.commit()
+        loc_verified = _v8_location_verified_at(connection, artifact_hash, null_location["object_key"])
+        retain_until = connection.execute(
+            "SELECT (clock_timestamp()+interval '1 hour') AS r"
+        ).fetchone()["r"]
+        connection.commit()
+
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        args = _v8_attest_args(
+            null_location, artifact_hash=artifact_hash, retain_until=retain_until,
+            verified_at=loc_verified, lease_id="null-lease", lease_expires=retain_until,
+        )
+        first_id = connection.execute(_V8_ATTEST_SQL, args).fetchone()["id"]
+        # NULLS NOT DISTINCT + IS NOT DISTINCT FROM: a null-bucket replay dedupes.
+        assert connection.execute(_V8_ATTEST_SQL, args).fetchone()["id"] == first_id
+        connection.execute("RESET ROLE")
+        connection.commit()
+        assert connection.execute(
+            "SELECT count(*) AS c FROM public.brain_artifact_retention_attestations "
+            "WHERE artifact_hash=%s AND bucket_or_container IS NULL",
+            (artifact_hash,),
+        ).fetchone()["c"] == 1
+        # The predicate resolves the null-bucket location join correctly.
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS a", (artifact_hash,)
+        ).fetchone()["a"] is True
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_concurrent_identical_attestation_is_idempotent(brain_pg) -> None:
+    artifact_hash = "b" * 64
+    with psycopg.connect(brain_pg, row_factory=dict_row) as setup:
+        _install_v8_authority(setup)
+        location = _register_v8_artifact(
+            setup,
+            request_id="8bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            digest="1" * 64,
+            artifact_hash=artifact_hash,
+        )
+        loc_verified = _v8_location_verified_at(setup, artifact_hash, location["object_key"])
+        retain_until = setup.execute(
+            "SELECT (clock_timestamp()+interval '1 hour') AS r"
+        ).fetchone()["r"]
+        setup.commit()
+    args = _v8_attest_args(
+        location, artifact_hash=artifact_hash, retain_until=retain_until,
+        verified_at=loc_verified, lease_id="concurrent-lease", lease_expires=retain_until,
+    )
+
+    barrier = Barrier(2)
+
+    def attest():
+        with psycopg.connect(brain_pg, row_factory=dict_row) as contender:
+            contender.execute("SET ROLE brain_artifact_authority_writer")
+            barrier.wait()
+            attest_id = contender.execute(_V8_ATTEST_SQL, args).fetchone()["id"]
+            contender.commit()
+            return attest_id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ids = [future.result() for future in (pool.submit(attest), pool.submit(attest))]
+    assert ids[0] == ids[1]
+    with psycopg.connect(brain_pg, row_factory=dict_row) as verifier:
+        assert verifier.execute(
+            "SELECT count(*) AS c FROM public.brain_artifact_retention_attestations WHERE artifact_hash=%s",
+            (artifact_hash,),
+        ).fetchone()["c"] == 1
+        verifier.commit()
+        schema.verify_brain_schema_v8(verifier)

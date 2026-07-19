@@ -35,7 +35,7 @@ _EXPECTED_V4_CHECKSUM = "51c61d0035cd7e503a7824539b56a505727bce8496f70e48f9d8e25
 _EXPECTED_V5_CHECKSUM = "52d1726bb13df54591fcd6343884ec8f6f7d18ab7fbf74b4dc33ba509cb0e559"
 _EXPECTED_V6_CHECKSUM = "74503db87872670bb7db61498fe0f870f0de13928286dc58c6049d57f8dd2955"
 _EXPECTED_V7_CHECKSUM = "d76b037dee1bfd285026ab2503b16be2a39b0c6726eac80a099e3f825ccdfc9f"
-_EXPECTED_V8_CHECKSUM = "356da6cd401091111a91e18af99924ed7d7f3b30b17fc9efec967e3507471239"
+_EXPECTED_V8_CHECKSUM = "9af16b97aea9da1ad83755543cbe5da40062f37d942ad64fcf918e8bd70271f3"
 _LEGACY_V1_CHECKSUMS = frozenset({
     # Canonical V1 ledger value emitted before the PG18 catalog fingerprint
     # pin correction. The deep catalog verifier below remains mandatory.
@@ -52,7 +52,7 @@ _PG_CATALOG_HASHES = MappingProxyType({
         "current_v5": "903d96ec8c9f0da427771ceae78a5c4d4b39fb38bb72a39bd8894e75b3b05bb1",
         "v6": "413fdaacc60793dab624b7d12def0362d9539521be055d716bc9320450362329",
         "v7": "b8bcc3e3fedea82fe0149d3dd0372332e24b94579c692e949d9b9c3dce8a0ee5",
-        "v8": "3a7912fcd9dd47b3869ff9a8644a3d33e0dc668a60b59c795d45e78f2dd50b01",
+        "v8": "b1ae7f1df9e7c902d4954b4f1fa29c3fdf9d4c55516ff1f5011375b23163cebf",
     })
 })
 _PG18_CATALOG_SHAPES = MappingProxyType({
@@ -4487,6 +4487,13 @@ def _verify_v8_contract(cur) -> None:
         or "applypilot_database_identity" not in predicate["prosrc"]
         or "retain_until" not in predicate["prosrc"]
         or "now()" not in predicate["prosrc"]
+        # The live verification lease must gate authority alongside retention.
+        or "verification_lease_expires_at" not in predicate["prosrc"]
+        # Authority is bound to the exact still-valid storage object the attestation
+        # names, not merely to any verified location for the artifact hash.
+        or "location.object_key = attestation.object_key" not in predicate["prosrc"]
+        or "location.backend = attestation.backend" not in predicate["prosrc"]
+        or "location.provider_checksum = attestation.provider_checksum" not in predicate["prosrc"]
     ):
         raise RuntimeError("brain schema v8 authority predicate contract mismatch")
     attest = v8_functions.get("brain_attest_artifact_retention")
@@ -4495,11 +4502,37 @@ def _verify_v8_contract(cur) -> None:
         or attest["owner_name"] != "brain_artifact_authority_owner"
         or not attest["prosecdef"]
         or attest["proconfig"] != ["search_path=pg_catalog, public"]
+        # Idempotent replay is scoped to the current incarnation and the observed
+        # payload, and a same-identity conflict fails closed.
+        or "database_incarnation_id = current_incarnation" not in attest["prosrc"]
+        or "IS DISTINCT FROM brain_attest_artifact_retention.verified_at" not in attest["prosrc"]
+        or "verification_lease_id" not in attest["prosrc"]
+        or "conflicting retention attestation replay" not in attest["prosrc"]
+        or "unique_violation" not in attest["prosrc"]
     ):
         raise RuntimeError("brain schema v8 retention writer contract mismatch")
     validator = v8_functions.get("brain_check_retention_attestation")
-    if validator is None or validator["owner_name"] != _MIGRATION_ROLE:
+    if (
+        validator is None
+        or validator["owner_name"] != _MIGRATION_ROLE
+        # verified_at must be non-future and bound to the location observation.
+        or "cannot be in the future" not in validator["prosrc"]
+        or "location.verified_at <= NEW.verified_at" not in validator["prosrc"]
+    ):
         raise RuntimeError("brain schema v8 retention validator contract mismatch")
+    # The lease-within-retention guard must be present as an enforced CHECK so an
+    # attestation whose lease outlives its retention deadline is rejected at write time.
+    cur.execute(
+        "SELECT pg_get_constraintdef(con.oid) AS definition FROM pg_constraint con "
+        "WHERE con.conrelid='public.brain_artifact_retention_attestations'::regclass "
+        "AND con.conname='brain_artifact_retention_attestations_lease_within_retention'"
+    )
+    lease_constraint = cur.fetchone()
+    if (
+        lease_constraint is None
+        or "verification_lease_expires_at <= retain_until" not in lease_constraint["definition"]
+    ):
+        raise RuntimeError("brain schema v8 lease-within-retention constraint contract mismatch")
     cur.execute(
         "SELECT p.proname,COALESCE(grantee.rolname,'PUBLIC') AS grantee,acl.privilege_type "
         "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "

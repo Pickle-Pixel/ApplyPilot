@@ -8,7 +8,11 @@
   "historical_variants": [
     {
       "label": "prior",
-      "sha256_prefix": "cff6d6a4"
+      "sha256_prefix": "cff6d6a4",
+      "sha256": "cff6d6a4ca539d21e6a09b18c74bb1c0a45b3d819ba75bc781bd22096ed6c339",
+      "blob": "blobs/v2_prior.sql",
+      "source_commit": "80b807a53ee7eed3669c79788b4891efba89c01a",
+      "git_blob": "857b99e5e8d59b85181a3cf6e2bfb19be80c694c"
     }
   ]
 }

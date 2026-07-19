@@ -58,10 +58,18 @@ CREATE TABLE public.brain_artifact_retention_attestations (
         CHECK (retain_until > verified_at),
     CONSTRAINT brain_artifact_retention_attestations_lease
         CHECK (verification_lease_expires_at >= verified_at),
+    -- A verification lease can never outlive the COMPLIANCE retention it guards: an
+    -- attestation whose lease expiry is later than retain_until is rejected outright.
+    CONSTRAINT brain_artifact_retention_attestations_lease_within_retention
+        CHECK (verification_lease_expires_at <= retain_until),
     CONSTRAINT brain_artifact_retention_attestations_artifact_fk
         FOREIGN KEY (artifact_hash) REFERENCES public.brain_artifacts(artifact_hash),
-    CONSTRAINT brain_artifact_retention_attestations_identity UNIQUE
-        (artifact_hash, backend, bucket_or_container, object_key,
+    -- The retention identity is scoped to the database incarnation so a restored or
+    -- re-provisioned server can re-attest the same logical location/deadline without
+    -- aliasing an old-incarnation row, while NULLS NOT DISTINCT keeps a null
+    -- bucket_or_container from silently minting duplicate attestations.
+    CONSTRAINT brain_artifact_retention_attestations_identity UNIQUE NULLS NOT DISTINCT
+        (database_incarnation_id, artifact_hash, backend, bucket_or_container, object_key,
          provider_version_id, provider_checksum, retain_until)
 );
 
@@ -88,6 +96,12 @@ BEGIN
     IF NEW.database_incarnation_id IS DISTINCT FROM current_incarnation THEN
         RAISE EXCEPTION 'retention attestation incarnation mismatch' USING ERRCODE = '23514';
     END IF;
+    -- verified_at is the moment a live HEAD verification observed the provider
+    -- version/checksum at this location; it can never be dated in the future.
+    IF NEW.verified_at > now() THEN
+        RAISE EXCEPTION 'retention attestation verified_at cannot be in the future'
+            USING ERRCODE = '23514';
+    END IF;
     IF NOT EXISTS (
         SELECT 1
         FROM public.brain_artifact_authority_registrations registration
@@ -105,6 +119,9 @@ BEGIN
           AND location.storage_immutable
           AND location.verified_at IS NOT NULL
           AND location.encryption_mode <> 'none'
+          -- Bind verified_at to the exact verified location observation: the live
+          -- HEAD re-verification cannot predate the location's own verification.
+          AND location.verified_at <= NEW.verified_at
     ) THEN
         RAISE EXCEPTION 'retention attestation requires a verified registered artifact location'
             USING ERRCODE = '23514';
@@ -170,14 +187,27 @@ AS $$
 DECLARE
     current_incarnation uuid;
     existing_id bigint;
+    existing_verified_at timestamptz;
+    existing_lease_id text;
+    existing_lease_expires timestamptz;
 BEGIN
     SELECT database_incarnation_id INTO current_incarnation
     FROM public.applypilot_database_identity WHERE singleton_id = 1;
-    -- Idempotent replay of an identical attestation returns the durable row and
-    -- can never move an already-published retain-until deadline.
-    SELECT retention_attestation_id INTO existing_id
+    IF current_incarnation IS NULL THEN
+        RAISE EXCEPTION 'retention attestation requires an initialized database incarnation'
+            USING ERRCODE = '23514';
+    END IF;
+    -- Idempotent replay is scoped to the CURRENT incarnation and the full retention
+    -- identity (an old-incarnation row can never alias a current attestation). An exact
+    -- replay returns the durable row and can never move an already-published deadline;
+    -- any same-identity replay whose observed payload (verified_at / lease id / lease
+    -- expiry) differs fails closed rather than silently returning the prior id.
+    SELECT attestation.retention_attestation_id, attestation.verified_at,
+           attestation.verification_lease_id, attestation.verification_lease_expires_at
+      INTO existing_id, existing_verified_at, existing_lease_id, existing_lease_expires
     FROM public.brain_artifact_retention_attestations attestation
-    WHERE attestation.artifact_hash = brain_attest_artifact_retention.artifact_hash
+    WHERE attestation.database_incarnation_id = current_incarnation
+      AND attestation.artifact_hash = brain_attest_artifact_retention.artifact_hash
       AND attestation.backend = brain_attest_artifact_retention.backend
       AND attestation.bucket_or_container IS NOT DISTINCT FROM
           brain_attest_artifact_retention.bucket_or_container
@@ -186,6 +216,13 @@ BEGIN
       AND attestation.provider_checksum = brain_attest_artifact_retention.provider_checksum
       AND attestation.retain_until = brain_attest_artifact_retention.retain_until;
     IF existing_id IS NOT NULL THEN
+        IF existing_verified_at IS DISTINCT FROM brain_attest_artifact_retention.verified_at
+           OR existing_lease_id IS DISTINCT FROM brain_attest_artifact_retention.verification_lease_id
+           OR existing_lease_expires IS DISTINCT FROM
+              brain_attest_artifact_retention.verification_lease_expires_at THEN
+            RAISE EXCEPTION 'conflicting retention attestation replay for an identical retention identity'
+                USING ERRCODE = '23505';
+        END IF;
         RETURN existing_id;
     END IF;
     INSERT INTO public.brain_artifact_retention_attestations (
@@ -197,6 +234,31 @@ BEGIN
         provider_version_id, provider_checksum, 'COMPLIANCE', retain_until, verified_at,
         verification_lease_id, verification_lease_expires_at
     ) RETURNING retention_attestation_id INTO existing_id;
+    RETURN existing_id;
+EXCEPTION WHEN unique_violation THEN
+    -- A concurrent writer committed the same retention identity first. Converge to an
+    -- idempotent replay when the observed payload matches; otherwise re-raise so a
+    -- conflicting concurrent attestation still fails closed.
+    SELECT attestation.retention_attestation_id, attestation.verified_at,
+           attestation.verification_lease_id, attestation.verification_lease_expires_at
+      INTO existing_id, existing_verified_at, existing_lease_id, existing_lease_expires
+    FROM public.brain_artifact_retention_attestations attestation
+    WHERE attestation.database_incarnation_id = current_incarnation
+      AND attestation.artifact_hash = brain_attest_artifact_retention.artifact_hash
+      AND attestation.backend = brain_attest_artifact_retention.backend
+      AND attestation.bucket_or_container IS NOT DISTINCT FROM
+          brain_attest_artifact_retention.bucket_or_container
+      AND attestation.object_key = brain_attest_artifact_retention.object_key
+      AND attestation.provider_version_id = brain_attest_artifact_retention.provider_version_id
+      AND attestation.provider_checksum = brain_attest_artifact_retention.provider_checksum
+      AND attestation.retain_until = brain_attest_artifact_retention.retain_until;
+    IF existing_id IS NULL
+       OR existing_verified_at IS DISTINCT FROM brain_attest_artifact_retention.verified_at
+       OR existing_lease_id IS DISTINCT FROM brain_attest_artifact_retention.verification_lease_id
+       OR existing_lease_expires IS DISTINCT FROM
+          brain_attest_artifact_retention.verification_lease_expires_at THEN
+        RAISE;
+    END IF;
     RETURN existing_id;
 END;
 $$;
@@ -215,12 +277,20 @@ AS $$
     SELECT EXISTS (
         SELECT 1
         FROM public.brain_artifact_authority_registrations registration
-        JOIN public.brain_artifact_locations location
-          ON location.artifact_hash = registration.artifact_hash
         JOIN public.brain_artifact_retention_attestations attestation
           ON attestation.artifact_hash = registration.artifact_hash
          AND attestation.provider_version_id = registration.provider_version_id
          AND attestation.provider_checksum = registration.provider_checksum
+        -- The location must be the exact still-valid storage object the attestation
+        -- names (backend/bucket/object key/provider version/provider checksum): an
+        -- unrelated second verified location for the same hash cannot confer authority.
+        JOIN public.brain_artifact_locations location
+          ON location.artifact_hash = attestation.artifact_hash
+         AND location.backend = attestation.backend
+         AND location.bucket_or_container IS NOT DISTINCT FROM attestation.bucket_or_container
+         AND location.object_key = attestation.object_key
+         AND location.provider_version_id = attestation.provider_version_id
+         AND location.provider_checksum = attestation.provider_checksum
         WHERE registration.artifact_hash = candidate_hash
           AND location.durability = 'verified'
           AND location.storage_immutable
@@ -230,6 +300,9 @@ AS $$
           AND location.verified_at IS NOT NULL
           AND attestation.retention_mode = 'COMPLIANCE'
           AND attestation.retain_until > now()
+          -- The verification lease must still be live: an expired lease is
+          -- non-authoritative even while the COMPLIANCE retention deadline is future.
+          AND attestation.verification_lease_expires_at > now()
           AND attestation.database_incarnation_id = (
               SELECT database_incarnation_id
               FROM public.applypilot_database_identity WHERE singleton_id = 1

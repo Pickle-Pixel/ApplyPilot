@@ -12,7 +12,11 @@
     },
     {
       "label": "initial",
-      "sha256_prefix": "f6b84e13"
+      "sha256_prefix": "f6b84e13",
+      "sha256": "f6b84e13a057bc5b0fcb5de74f4627fc01e4f308d577771b17400587e02b6834",
+      "blob": "blobs/v7_initial.sql",
+      "source_commit": "75c050aa6c18094ea8434bc31d1e83bc7af88c49",
+      "git_blob": "7ab5234371d0e80120eb7d100b1ba5fbe562608e"
     }
   ]
 }

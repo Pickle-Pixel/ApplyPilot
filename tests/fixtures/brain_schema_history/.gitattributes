@@ -1,0 +1,7 @@
+# The raw historical schema blobs are exact byte-for-byte extractions from Git
+# history. They MUST NOT be normalized (CRLF/LF or otherwise) or their pinned
+# SHA-256 digests -- the authority the deep verifier rejects over the wrong
+# catalog -- would no longer match. Treat them as opaque bytes.
+blobs/*.sql -text
+*.json text eol=lf
+*.md text eol=lf

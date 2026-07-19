@@ -8,7 +8,11 @@
   "historical_variants": [
     {
       "label": "initial",
-      "sha256_prefix": "ca3324b1"
+      "sha256_prefix": "ca3324b1",
+      "sha256": "ca3324b18a41777abd34ca5abbcf0c081ed9db686310213639e72b2746e553d2",
+      "blob": "blobs/v1_initial.sql",
+      "source_commit": "75f03c819d2a4576f79d57864ae04ec8ba942c0f",
+      "git_blob": "8f79855f56a6e9b80ae9a81c1d597b66402762fe"
     },
     {
       "label": "supported_live_legacy",

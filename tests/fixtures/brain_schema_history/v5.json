@@ -8,11 +8,19 @@
   "historical_variants": [
     {
       "label": "prior",
-      "sha256_prefix": "39fd21da"
+      "sha256_prefix": "39fd21da",
+      "sha256": "39fd21da6b829e22d5c2e890a978d0c92de96c92691e205024314f5ca154fb09",
+      "blob": "blobs/v5_prior.sql",
+      "source_commit": "6d78e94cd58a684e4c1a90c6edb31acb7117a214",
+      "git_blob": "453908b97704f374bb1423bbe5a020d98e7036dd"
     },
     {
       "label": "initial",
-      "sha256_prefix": "744167e2"
+      "sha256_prefix": "744167e2",
+      "sha256": "744167e23155b10fdd5b8f494d64b8baf5b3959111f0f5568615d922f2006976",
+      "blob": "blobs/v5_initial.sql",
+      "source_commit": "32f99519dc8f0b9d0df5ae88653d754bb6d6a7a8",
+      "git_blob": "78b64058a92dc24d2ac915397d58d552fb9d6348"
     }
   ]
 }
