@@ -40,7 +40,7 @@
 #   Examples:
 #     .\register-fleet-tasks.ps1 -Machine home                     # register home's full task set
 #     .\register-fleet-tasks.ps1 -Machine m2                       # register m2's task set
-#     .\register-fleet-tasks.ps1 -Machine m4 -Dsn "host=100.90.104.99 port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+#     .\register-fleet-tasks.ps1 -Machine m4 -Dsn "host=100.90.104.99 port=5432 dbname=applypilot_fleet user=<mapped-fleet-role> connect_timeout=5"
 #     .\register-fleet-tasks.ps1 -Machine home -Unregister         # remove this machine's tasks
 #     .\register-fleet-tasks.ps1 -Machine home -SetDesired "home=1,m2=6,m4=2"   # one-shot PG write, no task changes
 #
@@ -71,15 +71,19 @@ if (-not $isAdmin) {
   exit 1
 }
 
-# ---- default DSN per machine (mirrors fleet-agent.ps1 header lines 1-14) ----
-function Get-DefaultDsn([string]$m) {
-  switch ($m) {
-    "home" { return "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5" }
-    "m2"   { return "host=100.90.104.99 port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5" }
-    "m4"   { return "host=100.90.104.99 port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5" }
+# ---- fleet DSN: explicit -Dsn or FLEET_PG_DSN, an explicit mapped fleet DSN. There is NO
+# ---- per-machine local-admin default anymore: a postgres/fleet_worker DSN would bypass the
+# ---- mapped-role topology. Resolve it here but only REQUIRE it on the paths that touch the
+# ---- database or register tasks (Assert-FleetDsn); -Unregister needs no DSN. ----
+$effectiveDsn = if ($Dsn) { $Dsn } elseif ($env:FLEET_PG_DSN) { $env:FLEET_PG_DSN } else { $null }
+function Assert-FleetDsn {
+  if (-not $effectiveDsn) {
+    throw "register-fleet-tasks: no fleet DSN for machine '$Machine'. Pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to touch the database or register tasks."
+  }
+  if ($effectiveDsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+    throw "register-fleet-tasks: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
   }
 }
-$effectiveDsn = if ($Dsn) { $Dsn } else { Get-DefaultDsn $Machine }
 
 function Get-Psql {
   $p = Get-ChildItem "C:\Program Files\PostgreSQL\*\bin\psql.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
@@ -91,6 +95,7 @@ function Get-Psql {
 # -SetDesired MODE (S1): one-shot PG write, runs INSTEAD of task registration. No task changes.
 # ============================================================================================
 if ($SetDesired) {
+  Assert-FleetDsn
   $psql = Get-Psql
   Write-Host "[register-fleet-tasks] -SetDesired mode: writing fleet_desired_state via DSN '$effectiveDsn'" -ForegroundColor Cyan
   $pairs = $SetDesired -split "," | Where-Object { $_.Trim() -ne "" }
@@ -144,6 +149,7 @@ if ($Unregister) {
 # ============================================================================================
 # REGISTRATION MODE
 # ============================================================================================
+Assert-FleetDsn
 Write-Host "=================================================================================" -ForegroundColor Cyan
 Write-Host " NEVER co-locate canary loaders (load-canary-*.ps1) with fleet-agent on one machine" -ForegroundColor Red
 Write-Host " -- they will kill-fight over the same <Label>-<Slot> worker-id namespace (S1)." -ForegroundColor Red

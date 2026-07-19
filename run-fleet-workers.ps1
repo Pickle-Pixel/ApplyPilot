@@ -23,14 +23,12 @@ if ($StartSlot -lt 0 -or ($StartSlot + $Count - 1) -gt 9) { throw "-StartSlot pl
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
 
-# DSN: inherit a persisted FLEET_PG_DSN (worker boxes set it at User scope). Only the home
-# label may fall back to localhost. Remote worker label m2/m4 + missing DSN used to spawn
-# workers that looped forever on Postgres connection timeouts.
+# DSN: inherit a persisted FLEET_PG_DSN (an explicit mapped per-node fleet DSN, set at User
+# scope by the setup script). There is NO local-admin fallback: a missing DSN used to spawn
+# workers that looped forever on Postgres connection timeouts, and a postgres/fleet_worker
+# fallback would bypass the mapped-role topology. Fail closed instead.
 if (-not $env:FLEET_PG_DSN) {
-  if ($Label -ne "home") {
-    throw "FLEET_PG_DSN is not set for Remote worker label '$Label'. Set it to host=<home Tailscale IP> port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5 before launching remote workers."
-  }
-  $env:FLEET_PG_DSN = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+  throw "FLEET_PG_DSN is not set for worker label '$Label'. Set it to an explicit mapped per-node fleet DSN (never the postgres admin or the shared fleet_worker role) before launching workers."
 }
 $env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN
 

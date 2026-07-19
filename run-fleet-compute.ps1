@@ -39,7 +39,7 @@ if (-not $exe) { throw "applypilot-fleet-compute not found in .conda-env or .ven
 
 # DSN: inherit a persisted FLEET_PG_DSN (setup sets it at User scope -> home box over LAN/Tailscale),
 # else default to the home box's local Postgres. Set in THIS process so child windows inherit it.
-if (-not $env:FLEET_PG_DSN) { $env:FLEET_PG_DSN = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5" }
+if (-not $env:FLEET_PG_DSN) { throw "FLEET_PG_DSN is not set. Supply an explicit mapped per-node fleet DSN (never the postgres admin or the shared fleet_worker role); refusing to start before any database action." }
 $env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN
 $env:LLM_SCORE_PROVIDER = $Providers
 $env:PYTHONUTF8 = "1"; $env:PYTHONIOENCODING = "utf-8"

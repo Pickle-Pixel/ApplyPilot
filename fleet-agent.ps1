@@ -6,9 +6,9 @@
 #   m2=4 from the home box makes this agent bring m2 to 4 workers; setting m2=0 stops them.
 #
 #   Enroll once per box (ideally as a Task Scheduler "At log on" task so it auto-starts):
-#     m2:  $env:FLEET_PG_DSN="host=100.90.104.99 port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+#     m2:  $env:FLEET_PG_DSN="host=100.90.104.99 port=5432 dbname=applypilot_fleet user=<mapped-fleet-role> connect_timeout=5"
 #          cd C:\ApplyPilot ;  .\fleet-agent.ps1 -Label m2 -AutoUpdate
-#     m4:  $env:FLEET_PG_DSN="host=100.90.104.99 port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+#     m4:  $env:FLEET_PG_DSN="host=100.90.104.99 port=5432 dbname=applypilot_fleet user=<mapped-fleet-role> connect_timeout=5"
 #          cd C:\ApplyPilot ;  .\fleet-agent.ps1 -Label m4 -AutoUpdate
 #
 #   -AutoUpdate (worker boxes ONLY, never home -- home is the dev origin and pushes, never pulls):
@@ -80,10 +80,7 @@ foreach ($d in @(".\.conda-env\Scripts", ".\.venv\Scripts")) {
   if (Test-Path $cand) { $applypilotCli = (Resolve-Path $cand).Path; break }
 }
 if (-not $env:FLEET_PG_DSN) {
-  if ($Label -ne "home") {
-    throw "FLEET_PG_DSN is not set for Remote fleet-agent label '$Label'. Set it to host=<home Tailscale IP> port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5 before starting this agent."
-  }
-  $env:FLEET_PG_DSN = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+  throw "FLEET_PG_DSN is not set for fleet-agent label '$Label'. Set it to an explicit mapped per-node fleet DSN (host=<home Tailscale IP or localhost> port=5432 dbname=applypilot_fleet user=<mapped-fleet-role> ...; never the postgres admin or the shared fleet_worker role) before starting this agent."
 }
 $worker = Join-Path $repo "run-fleet-worker.ps1"
 if (-not (Test-Path $worker)) { throw "run-fleet-worker.ps1 not found next to fleet-agent.ps1 ($worker)" }

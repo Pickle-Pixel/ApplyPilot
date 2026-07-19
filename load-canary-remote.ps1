@@ -32,8 +32,12 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
 # --- 1. point at the HOME Postgres over the LAN (NOT localhost) -----------------------------
-$Dsn = "host=$HomeIp port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
-$env:FLEET_PG_DSN = $Dsn
+# The mapped per-node fleet DSN (with its own credential) must be supplied in FLEET_PG_DSN.
+# Never construct a local-admin (the postgres admin) or shared fleet_worker DSN here.
+if (-not $env:FLEET_PG_DSN) {
+  throw "FLEET_PG_DSN is not set. Export an explicit mapped per-node fleet DSN (never the postgres admin or the shared fleet_worker role) before starting remote workers."
+}
+$Dsn = $env:FLEET_PG_DSN
 $env:APPLYPILOT_FLEET_DSN = $Dsn
 
 Write-Host "Checking home Postgres at ${HomeIp}:5432 ..." -ForegroundColor Cyan

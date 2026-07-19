@@ -201,14 +201,14 @@ install_python_runtime() {
 }
 
 prompt_runtime_values() {
-  printf 'Home box Tailscale IP (100.x.x.x): '
-  read -r HOME_TS_IP
-  [ -n "$HOME_TS_IP" ] || die "Home Tailscale IP is required."
-
-  printf 'PG password for role fleet_worker: '
-  read -rs PG_PW
-  echo
-  [ -n "$PG_PW" ] || die "fleet_worker PG password is required."
+  # The unique mapped per-node fleet DSN (with its own credential) is supplied whole via
+  # FLEET_PG_DSN. This installer never prompts for the shared fleet_worker/postgres password
+  # and never constructs a shared-role DSN. Fail closed before any database action.
+  DSN="${FLEET_PG_DSN:-}"
+  [ -n "$DSN" ] || die "FLEET_PG_DSN is not set. Export an explicit mapped per-node fleet DSN (with its own password; never the postgres admin or the shared fleet_worker role) before running this installer."
+  if printf '%s' "$DSN" | grep -qiE 'user=(postgres|fleet_worker)'; then
+    die "FLEET_PG_DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+  fi
 
   printf 'ANTHROPIC_API_KEY (optional; leave blank for Claude subscription login or Codex-only): '
   read -rs ANTHROPIC_KEY
@@ -231,21 +231,12 @@ prompt_runtime_values() {
   printf 'CAPSOLVER_API_KEY (optional; press Enter to skip): '
   read -rs CAPSOLVER_KEY
   echo
-
-  DSN="host=$HOME_TS_IP port=5432 dbname=applypilot_fleet user=fleet_worker connect_timeout=5"
 }
 
 write_pgpass() {
-  local pgpass tmp
-  pgpass="$HOME/.pgpass"
-  tmp="$(mktemp)"
-  touch "$pgpass"
-  chmod 600 "$pgpass"
-  grep -v "^$HOME_TS_IP:5432:applypilot_fleet:fleet_worker:" "$pgpass" > "$tmp" 2>/dev/null || true
-  printf '%s:5432:applypilot_fleet:fleet_worker:%s\n' "$HOME_TS_IP" "$PG_PW" >> "$tmp"
-  mv "$tmp" "$pgpass"
-  chmod 600 "$pgpass"
-  unset PG_PW
+  # The mapped per-node credential lives in FLEET_PG_DSN itself; no shared fleet_worker
+  # pgpass entry is written. Retained as a no-op so callers stay unchanged.
+  :
 }
 
 write_env_file() {

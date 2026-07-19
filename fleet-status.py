@@ -2,17 +2,18 @@
 
 Print live fleet status from the home Postgres: worker heartbeats (LIVE if beat < 2.5
 min old), and -- when a label prefix is given (e.g. m4) -- that machine's desired apply
-workers and the compute_queue depth. Reads FLEET_PG_DSN / APPLYPILOT_FLEET_DSN /
-DATABASE_URL from the env (set by the fleet setup, or default localhost)."""
+workers and the compute_queue depth. Requires FLEET_PG_DSN to be an explicit mapped fleet
+DSN (never the postgres admin or the shared fleet_worker role); refuses to run without it."""
 import os
 import sys
 
 label = sys.argv[1] if len(sys.argv) > 1 else ""
-os.environ.setdefault(
-    "FLEET_PG_DSN",
-    "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5")
+if not os.environ.get("FLEET_PG_DSN"):
+    sys.exit(
+        "FLEET_PG_DSN is not set: export an explicit mapped fleet DSN "
+        "(never the postgres admin or the shared fleet_worker role). Refusing to read fleet status.")
 
-from applypilot.apply import pgqueue
+from applypilot.apply import pgqueue  # noqa: E402  (import deferred until FLEET_PG_DSN is verified)
 
 c = pgqueue.connect()
 cur = c.cursor()

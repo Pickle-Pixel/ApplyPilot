@@ -16,7 +16,7 @@ if (-not $Dsn) {
   if ($env:FLEET_PG_DSN) {
     $Dsn = $env:FLEET_PG_DSN
   } else {
-    $Dsn = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+    throw "No fleet DSN: pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to read fleet health without it."
   }
 }
 if (-not $KeyPath) {

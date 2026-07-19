@@ -63,18 +63,21 @@ say "Creating venv + installing applypilot (editable)..."
 say "Installing Playwright chromium (project-local)..."
 PLAYWRIGHT_BROWSERS_PATH="$INSTALL_DIR/.playwright-browsers" ./.venv/bin/python -m playwright install chromium
 
-# --- 4. prompts (values printed by setup-fleet-pg-tailscale.ps1 on the home box)
-printf 'Home box Tailscale IP (100.x.x.x): '; read -r HOME_TS_IP
-printf 'PG password for role fleet_worker: '; read -rs PG_PW; echo
+# --- 4. mapped fleet DSN + prompts ---------------------------------------------
+# The unique mapped per-node fleet DSN (with its own credential) is supplied whole via
+# FLEET_PG_DSN. This installer never prompts for the shared fleet_worker/postgres password
+# and never constructs a shared-role DSN. Fail closed before any database action.
+DSN="${FLEET_PG_DSN:-}"
+if [ -z "$DSN" ]; then
+  echo "setup-mac-worker: FLEET_PG_DSN is not set. Export an explicit mapped per-node fleet DSN (with its own password; never the postgres admin or the shared fleet_worker role) before running this installer." >&2
+  exit 78
+fi
+if printf '%s' "$DSN" | grep -qiE 'user=(postgres|fleet_worker)'; then
+  echo "setup-mac-worker: FLEET_PG_DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN." >&2
+  exit 78
+fi
 printf 'ANTHROPIC_API_KEY: '; read -rs ANTHROPIC_KEY; echo
 printf 'DEEPSEEK_API_KEY: '; read -rs DEEPSEEK_KEY; echo
-DSN="host=$HOME_TS_IP port=5432 dbname=applypilot_fleet user=fleet_worker connect_timeout=5"
-
-# --- 5. pgpass (password lives HERE, chmod 600 -- never in the DSN/env file) ---
-touch "$HOME/.pgpass" && chmod 600 "$HOME/.pgpass"
-grep -q "^$HOME_TS_IP:5432:applypilot_fleet:fleet_worker:" "$HOME/.pgpass" 2>/dev/null || \
-  printf '%s:5432:applypilot_fleet:fleet_worker:%s\n' "$HOME_TS_IP" "$PG_PW" >> "$HOME/.pgpass"
-unset PG_PW
 
 # --- 6. env file (everything run-worker-mac.sh needs) --------------------------
 mkdir -p "$INSTALL_DIR/.applypilot" "$INSTALL_DIR/logs"

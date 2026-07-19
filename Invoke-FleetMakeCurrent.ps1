@@ -9,7 +9,7 @@
 param(
   [string]$PublicBranch = "codex/fleet-applier-hardening",
   [string]$MacBranch = "applypilot-hardening-and-brainstorm-integration",
-  [string]$Dsn = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5",
+  [string]$Dsn = $env:FLEET_PG_DSN,
   [switch]$SkipPaloma,
   [switch]$RequirePaloma,
   [int]$SshTimeoutSeconds = 20,
@@ -20,6 +20,13 @@ $ErrorActionPreference = "Stop"
 $repo = $PSScriptRoot
 if (-not $repo) { $repo = Split-Path -Parent $MyInvocation.MyCommand.Path }
 Set-Location $repo
+
+if (-not $Dsn) {
+  throw "No fleet DSN: pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to pin/reconcile the fleet without it."
+}
+if ($Dsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+  throw "Invoke-FleetMakeCurrent: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+}
 
 function Write-Section([string]$Title) {
   Write-Host ""

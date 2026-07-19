@@ -28,7 +28,7 @@ foreach ($d in @(".\.conda-env\Scripts", ".\.venv\Scripts")) {
 }
 if (-not $exe) { throw "applypilot-fleet-compute-home not found in .conda-env or .venv." }
 
-if (-not $env:FLEET_PG_DSN) { $env:FLEET_PG_DSN = "host=localhost port=5432 dbname=applypilot_fleet user=postgres" }
+if (-not $env:FLEET_PG_DSN) { throw "FLEET_PG_DSN is not set. Supply an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role); refusing to start before any database action." }
 $env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN
 $env:PYTHONUTF8 = "1"; $env:PYTHONIOENCODING = "utf-8"
 

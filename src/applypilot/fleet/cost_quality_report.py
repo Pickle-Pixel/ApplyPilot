@@ -290,9 +290,12 @@ def build_report(
     pg_dsn: str | None = None,
     sqlite_path: str | Path | None = None,
 ) -> CostQualityReport:
-    pg_dsn = pg_dsn or os.environ.get("FLEET_PG_DSN") or (
-        "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
-    )
+    pg_dsn = pg_dsn or os.environ.get("FLEET_PG_DSN")
+    if not pg_dsn:
+        raise RuntimeError(
+            "FLEET_PG_DSN is not set: the cost/quality report requires an explicit mapped "
+            "fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to connect."
+        )
     local_path = sqlite_path if sqlite_path is not None else default_sqlite_path()
     event_rows, route_metrics_available = fetch_fleet_result_event_rows(pg_dsn)
     return CostQualityReport(

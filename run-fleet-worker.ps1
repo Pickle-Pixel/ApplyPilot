@@ -107,7 +107,7 @@ Write-Host "[fleet-worker] checking fleet Postgres connectivity ..."
 $probeLines = @(& $py (Join-Path $ProjectRoot "fleet-agent-query.py") $Label 2>&1)
 $probe = "$($probeLines | Select-Object -Last 1)"
 if ($probe -notmatch '^\d+\|') {
-  throw "Cannot reach fleet Postgres over FLEET_PG_DSN before starting worker '$WorkerId' (probe='$($probeLines -join ' ')'). On m2/m4 set FLEET_PG_DSN to host=<home Tailscale IP> port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5."
+  throw "Cannot reach fleet Postgres over FLEET_PG_DSN before starting worker '$WorkerId' (probe='$($probeLines -join ' ')'). On m2/m4 set FLEET_PG_DSN to your mapped per-node fleet DSN (host=<home Tailscale IP> port=5432 dbname=applypilot_fleet ...; never the postgres admin or the shared fleet_worker role)."
 }
 Write-Host "[fleet-worker] checking CapSolver fleet readiness ..."
 $capProbe = & $applypilotCli fleet-capsolver-check --json 2>&1

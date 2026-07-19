@@ -32,19 +32,20 @@ def test_multi_worker_launcher_supports_non_overlapping_slot_ranges():
 def test_remote_multi_worker_launcher_requires_explicit_fleet_dsn():
     script = Path("run-fleet-workers.ps1").read_text(encoding="utf-8")
 
-    assert "Remote worker label" in script
-    assert "FLEET_PG_DSN is not set" in script
-    assert "$Label -ne \"home\"" in script
-    assert "host=<home Tailscale IP> port=5432" in script
+    # Fail closed for EVERY label: no home localhost fallback, no admin/shared principal.
+    assert 'throw "FLEET_PG_DSN is not set for worker label' in script
+    assert "user=postgres" not in script
+    assert "user=fleet_worker" not in script
+    assert "host=localhost" not in script
 
 
 def test_remote_fleet_agent_requires_explicit_fleet_dsn():
     script = Path("fleet-agent.ps1").read_text(encoding="utf-8")
 
-    assert "Remote fleet-agent label" in script
-    assert "FLEET_PG_DSN is not set" in script
-    assert "$Label -ne \"home\"" in script
-    assert "host=<home Tailscale IP> port=5432" in script
+    # Fail closed for EVERY label: fleet-agent no longer defaults home to a localhost admin DSN.
+    assert 'throw "FLEET_PG_DSN is not set for fleet-agent label' in script
+    assert "user=postgres" not in script
+    assert "user=fleet_worker" not in script
 
 
 def test_fleet_agent_applies_m4_work_hours_blackout_before_reconcile():

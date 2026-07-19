@@ -8,7 +8,7 @@ def test_fleet_health_script_covers_current_fleet_topology() -> None:
     script = (REPO / "fleet-health.ps1").read_text(encoding="utf-8")
 
     for text in (
-        "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5",
+        "$env:FLEET_PG_DSN",
         "rstal@tarpon",
         "backoffice@gggtower",
         "palomaperez@palomas-macbook-air",
@@ -39,6 +39,13 @@ def test_fleet_health_script_covers_current_fleet_topology() -> None:
         "git rev-parse --short HEAD",
     ):
         assert text in script
+
+    # Launch-principal contract: the read-only health report must not silently acquire a
+    # local-admin (user=postgres) DSN. It requires an explicit mapped FLEET_PG_DSN and fails
+    # closed when neither -Dsn nor FLEET_PG_DSN is supplied.
+    assert "user=postgres" not in script
+    assert "user=fleet_worker" not in script
+    assert 'throw "No fleet DSN' in script
 
 
 def test_check_fleet_ready_script_fails_closed_on_apply_blockers() -> None:

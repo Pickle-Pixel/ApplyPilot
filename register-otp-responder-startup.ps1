@@ -3,13 +3,18 @@
 # script falls back to the current user's Startup folder when registration is
 # denied by local policy/elevation.
 param(
-  [string]$Dsn = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5",
+  [Parameter(Mandatory = $true)][string]$Dsn,
   [switch]$NoStart
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Launcher = Join-Path $ProjectRoot "run-otp-responder.ps1"
+
+# Fail closed on an admin/shared principal before registering any startup task/shortcut.
+if ($Dsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+  throw "register-otp-responder-startup: -Dsn selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+}
 $TaskName = "ApplyPilotFleet-OtpResponder"
 $ShortcutName = "ApplyPilotFleet-OtpResponder.lnk"
 

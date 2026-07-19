@@ -27,7 +27,7 @@
       powershell -ExecutionPolicy Bypass -File .\setup-fleet-discovery.ps1
 ================================================================================
 #>
-param([string]$HomeIp = "100.90.104.99", [string]$InstallDir = "C:\ApplyPilot")
+param([string]$HomeIp = "100.90.104.99", [string]$InstallDir = "C:\ApplyPilot", [string]$FleetPgDsn = $env:FLEET_PG_DSN)
 $ErrorActionPreference = "Stop"
 function Say($m,$c="White"){ Write-Host $m -ForegroundColor $c }
 function Refresh-Path { $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") }
@@ -109,12 +109,17 @@ $py = (Resolve-Path $py).Path
 & $py -c "import jobspy; print('  jobspy import OK')"
 & $py -m pip check
 
-# --- 5. Postgres connectivity (LAN, passwordless via pgpass) ---
+# --- 5. Postgres connectivity: require an explicit mapped fleet DSN (never postgres) ---
+# The mapped DSN carries its own credential; this script never prompts for the home box's
+# postgres password nor writes a postgres pgpass. Fail closed before any database action.
 Say "`n[5/6] Postgres connection ..." Cyan
-$pgPw = (Read-Host "  Postgres password (home box's 'postgres' user)").Trim()
-$pgpassDir = Join-Path $env:APPDATA "postgresql"; New-Item -ItemType Directory -Force -Path $pgpassDir | Out-Null
-Set-Content -Path (Join-Path $pgpassDir "pgpass.conf") -Value "${HomeIp}:5432:*:postgres:${pgPw}" -Encoding ascii
-$dsn = "host=$HomeIp port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+if (-not $FleetPgDsn) {
+  throw "FLEET_PG_DSN is not set. Provide an explicit mapped per-node fleet DSN (with its own password; never the postgres admin or the shared fleet_worker role) via -FleetPgDsn or the FLEET_PG_DSN environment variable."
+}
+if ($FleetPgDsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+  throw "setup-fleet-discovery: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+}
+$dsn = $FleetPgDsn
 [Environment]::SetEnvironmentVariable("FLEET_PG_DSN", $dsn, "User")
 [Environment]::SetEnvironmentVariable("APPLYPILOT_FLEET_DSN", $dsn, "User")
 $env:FLEET_PG_DSN = $dsn; $env:APPLYPILOT_FLEET_DSN = $dsn

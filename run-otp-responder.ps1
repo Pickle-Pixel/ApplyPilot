@@ -2,7 +2,7 @@
 # Starts the home-box OTP responder with quoting that survives Windows process
 # launch boundaries. Use -Supervise for logon/startup persistence.
 param(
-  [string]$Dsn = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5",
+  [Parameter(Mandatory = $true)][string]$Dsn,
   [string]$MachineOwner = "home",
   [switch]$Supervise,
   [int]$RestartDelaySeconds = 10
@@ -11,6 +11,12 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
+
+# Fail closed on an admin/shared principal: the OTP responder must run under an explicit
+# mapped fleet DSN, never the postgres admin or the shared fleet_worker role.
+if ($Dsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+  throw "run-otp-responder: -Dsn selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+}
 
 $LogDir = Join-Path $ProjectRoot ".fleet-logs"
 if (-not (Test-Path -LiteralPath $LogDir)) {

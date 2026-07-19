@@ -24,6 +24,7 @@
       powershell -ExecutionPolicy Bypass -File .\setup-fleet-machine.ps1
   --------------------------------------------------------------------------------
 #>
+param([string]$FleetPgDsn = $env:FLEET_PG_DSN)
 
 $ErrorActionPreference = "Stop"
 function Say($m,$c="White"){ Write-Host $m -ForegroundColor $c }
@@ -71,7 +72,6 @@ Ensure "Node.js LTS" "OpenJS.NodeJS.LTS"  "node"
 # --- 2. Inputs ---
 $homeIp = (Read-Host "Home box IP [default 100.90.104.99]").Trim()
 if (-not $homeIp){ $homeIp = "100.90.104.99" }
-$pgPw   = (Read-Host "Postgres password (the home box's 'postgres' user password)").Trim()
 $installDir = (Read-Host "Folder to install the code [default C:\ApplyPilot]").Trim()
 if (-not $installDir){ $installDir = "C:\ApplyPilot" }
 
@@ -100,11 +100,17 @@ $py = (Resolve-Path ".\.venv\Scripts\python.exe").Path
 & $py -m pip install -e . --quiet
 & $py -m pip install "psycopg[binary]" mcp pyyaml --quiet
 
-# --- 6. Postgres connectivity: pgpass (keeps the DSN passwordless) + env vars ---
-$pgpassDir = Join-Path $env:APPDATA "postgresql"
-New-Item -ItemType Directory -Force -Path $pgpassDir | Out-Null
-Set-Content -Path (Join-Path $pgpassDir "pgpass.conf") -Value "${homeIp}:5432:*:postgres:${pgPw}" -Encoding ascii
-$dsn = "host=$homeIp port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+# --- 6. Postgres connectivity: require an explicit mapped fleet DSN (never postgres) ---
+# The mapped per-node DSN carries its OWN credential; this script never prompts for the
+# home box's postgres password nor writes a postgres pgpass. Fail closed if it is absent
+# or selects an admin/shared principal, before any database action.
+if (-not $FleetPgDsn) {
+  throw "FLEET_PG_DSN is not set. Provide an explicit mapped per-node fleet DSN (with its own password; never the postgres admin or the shared fleet_worker role) via -FleetPgDsn or the FLEET_PG_DSN environment variable."
+}
+if ($FleetPgDsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+  throw "setup-fleet-machine: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+}
+$dsn = $FleetPgDsn
 # FLEET_PG_DSN -> the fleet CLIs + Codex bridge; APPLYPILOT_FLEET_DSN -> the low-level connect() fallback.
 [Environment]::SetEnvironmentVariable("FLEET_PG_DSN", $dsn, "User")
 [Environment]::SetEnvironmentVariable("APPLYPILOT_FLEET_DSN", $dsn, "User")

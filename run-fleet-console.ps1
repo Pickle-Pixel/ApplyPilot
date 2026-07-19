@@ -15,10 +15,13 @@ if (Test-Path $RepoPyExe) {
     # Worktrees share the primary checkout's Python environment.
     $PyExe = "C:/Users/JStal/OneDrive/Documents/New project/ApplyPilot/.conda-env/python.exe"
 }
-$FleetDsn  = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+if (-not $env:FLEET_PG_DSN) {
+    throw "FLEET_PG_DSN is not set. Launch the fleet console with an explicit mapped fleet DSN in FLEET_PG_DSN (never the postgres admin or the shared fleet_worker role); refusing to start before any database action."
+}
+$FleetDsn  = $env:FLEET_PG_DSN
 $Port      = 8787   # 8765 is used by an unrelated local app (radio_digest); 8787 is free
 
-# DSN comes from the environment (pgpass makes it passwordless). Both names are read by
+# DSN comes from the environment (an explicit mapped fleet DSN). Both names are read by
 # the reused fleet helpers (pgqueue.connect / codex_bridge). Never echoed to the console.
 $env:APPLYPILOT_FLEET_DSN = $FleetDsn
 $env:FLEET_PG_DSN         = $FleetDsn

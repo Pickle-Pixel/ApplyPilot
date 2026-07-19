@@ -30,7 +30,7 @@
 #
 #   Examples:
 #     .\register-apply-cycle.ps1                     # register all three home tasks
-#     .\register-apply-cycle.ps1 -Dsn "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+#     .\register-apply-cycle.ps1 -Dsn "host=localhost port=5432 dbname=applypilot_fleet user=<mapped-fleet-role> connect_timeout=5"
 #     .\register-apply-cycle.ps1 -Unregister          # remove the three tasks
 #
 #   Idempotent: re-running replaces existing "ApplyPilot <Name>" tasks (unregister-then-register)
@@ -95,8 +95,15 @@ if (-not $isAdmin) {
   exit 1
 }
 
-# ---- default DSN (home-only script; mirrors register-fleet-tasks.ps1's "home" default) ----
-$effectiveDsn = if ($Dsn) { $Dsn } else { "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5" }
+# ---- fleet DSN: explicit -Dsn or FLEET_PG_DSN, an explicit mapped fleet DSN. There is no
+# ---- local-admin default: fail closed BEFORE registering any scheduled task. ----
+$effectiveDsn = if ($Dsn) { $Dsn } elseif ($env:FLEET_PG_DSN) { $env:FLEET_PG_DSN } else { $null }
+if (-not $effectiveDsn) {
+  throw "register-apply-cycle: no fleet DSN. Pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to register scheduled tasks."
+}
+if ($effectiveDsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+  throw "register-apply-cycle: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+}
 
 # ============================================================================================
 # -Unregister MODE: remove the three ApplyPilot cadence tasks.

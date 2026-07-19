@@ -24,11 +24,17 @@ param(
   [int]$ScoreFloor    = 7,        # only push jobs scoring >= this into the queue
   [switch]$SkipQueuePrep,         # skip pull/push (just arm + approve + start workers)
   [switch]$WithWatchdog,          # also start the self-healing watchdog (reclaim + restart)
-  [string]$Dsn = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+  [string]$Dsn = $env:FLEET_PG_DSN
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
+if (-not $Dsn) {
+  throw "No fleet DSN: pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to arm the canary or start workers without it."
+}
+if ($Dsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+  throw "load-canary-home: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+}
 $env:FLEET_PG_DSN = $Dsn
 $env:APPLYPILOT_FLEET_DSN = $Dsn
 

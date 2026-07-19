@@ -16,7 +16,7 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
 
 if (-not $env:FLEET_PG_DSN) {
-  $env:FLEET_PG_DSN = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+  throw "FLEET_PG_DSN is not set. Supply an explicit mapped per-node fleet DSN (never the postgres admin or the shared fleet_worker role); refusing to start before any database action."
 }
 $env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN
 $env:APPLYPILOT_DB_PATH = Join-Path $env:LOCALAPPDATA "ApplyPilot\applypilot.db"

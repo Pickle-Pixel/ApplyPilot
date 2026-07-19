@@ -4,7 +4,9 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot ".fleet-logs") | Out-Null
 
-$env:FLEET_PG_DSN = "host=100.90.104.99 port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+if (-not $env:FLEET_PG_DSN) {
+  throw "FLEET_PG_DSN is not set. Export an explicit mapped per-node fleet DSN (never the postgres admin or the shared fleet_worker role) before launching the TARPON LinkedIn worker."
+}
 $env:PYTHONPATH = "src"
 $env:APPLYPILOT_FLEET_LABEL = "m2"
 $env:FLEET_MACHINE_OWNER = "m2"

@@ -36,7 +36,7 @@ if (-not $Dsn) {
   $Dsn = [Environment]::GetEnvironmentVariable("FLEET_PG_DSN", "Process")
   if (-not $Dsn) { $Dsn = [Environment]::GetEnvironmentVariable("FLEET_PG_DSN", "User") }
   if (-not $Dsn) { $Dsn = [Environment]::GetEnvironmentVariable("FLEET_PG_DSN", "Machine") }
-  if (-not $Dsn) { $Dsn = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5" }
+  if (-not $Dsn) { throw "No fleet DSN: pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to read discovery status without it." }
 }
 
 $python = Get-RepoPython
