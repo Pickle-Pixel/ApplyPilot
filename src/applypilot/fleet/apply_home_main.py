@@ -114,6 +114,44 @@ def lift_canary(conn) -> None:
     conn.commit()
 
 
+def set_spend_cap(conn, cap_usd: float) -> dict[str, float]:
+    """Set the fleet-wide hard $ spend ceiling on ``fleet_config`` (spec S6).
+
+    This is the audited control-plane replacement for the retired raw ``psql`` write to
+    ``fleet_config`` in ``load-canary-home.ps1``. The caller's
+    connection is the central ``pgqueue.connect`` mapped-principal channel (validated
+    by ``validate_runtime_conninfo``/``assert_mapped_principal`` -- never the postgres
+    admin or the shared ``fleet_worker`` role, never an ``options``/ambient/indirection
+    bypass). The write is a single parameterized statement inside one transaction; it
+    fails closed (raising, so the CLI exits non-zero) when the singleton config row is
+    absent, and records a durable ``fleet_console_audit`` row for the change.
+    """
+    if cap_usd < 0:
+        raise ValueError("spend cap must be non-negative (0 means UNCAPPED)")
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE fleet_config SET spend_cap_usd=%s, updated_at=now() WHERE id=1",
+            (cap_usd,),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            raise RuntimeError("fleet_config row id=1 is missing; refusing to set the spend cap")
+        cur.execute(
+            "INSERT INTO fleet_console_audit "
+            "(action, actor, lane, target, message, ok) VALUES (%s,%s,%s,%s,%s,%s)",
+            (
+                "set_spend_cap",
+                "apply-home",
+                "ats",
+                f"${cap_usd:.2f}",
+                "set fleet-wide hard spend cap via the mapped control-plane principal",
+                True,
+            ),
+        )
+    conn.commit()
+    return {"spend_cap_usd": cap_usd}
+
+
 def _canary_capacity(conn) -> int:
     with conn.cursor() as cur:
         cur.execute("SELECT ats_apply_mode, canary_enabled, canary_remaining FROM fleet_config WHERE id=1")
@@ -2378,6 +2416,13 @@ def main(argv=None) -> int:  # pragma: no cover - CLI wiring
     ac.add_argument("k", type=int)
     ap = sub.add_parser("approve")
     ap.add_argument("--all-pushed", action="store_true")
+    ssc = sub.add_parser("set-spend-cap")
+    ssc.add_argument(
+        "cap_usd",
+        type=float,
+        help="Hard $ ceiling written to fleet_config (0 = UNCAPPED). Routed through the "
+        "mapped control-plane principal (never raw psql / postgres / fleet_worker).",
+    )
     chp = sub.add_parser("challenges")
     chp.add_argument("--grouped", action="store_true")
     chp.add_argument("--stale-days", type=int, default=None,
@@ -2590,6 +2635,8 @@ def main(argv=None) -> int:  # pragma: no cover - CLI wiring
                 return 2
         elif args.cmd == "approve":
             print("approved batch", approve(conn, all_pushed=args.all_pushed))
+        elif args.cmd == "set-spend-cap":
+            print("spend cap set", set_spend_cap(conn, args.cap_usd))
         elif args.cmd == "challenges":
             if args.grouped:
                 print_challenges_grouped(conn)

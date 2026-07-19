@@ -151,6 +151,28 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
             re.IGNORECASE,
         ),
     ),
+    # Raw ``psql ... -c "<write> ... fleet_config ..."`` from a launch surface: an unapproved
+    # direct DB channel that bypasses the mapped-principal pgqueue layer (its parameterized SQL,
+    # transaction, audit row, and exact-principal check) and can silently execute as the ambient
+    # psql login. Every fleet_config mutation must go through the audited apply-home CLI instead.
+    # Reads (SELECT ... FROM fleet_config) and writes to other tables are not matched.
+    (
+        "raw_psql_fleet_config_write",
+        re.compile(
+            r"\bpsql\b[^\n]*\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM|UPSERT|MERGE|TRUNCATE)\b[^\n]*\bfleet_config\b",
+            re.IGNORECASE,
+        ),
+    ),
+    # PowerShell generic-DSN env fallback used as a SOURCE/value (coalesce, ternary, pipeline,
+    # scriptblock return) rather than an assignment TARGET: a bare ``$env:DATABASE_URL`` /
+    # ``$env:APPLYPILOT_FLEET_DSN`` reference sources a DSN from the retired generic channel,
+    # bypassing the mapped FLEET_PG_DSN topology. The negative lookahead ``(?!\s*=)`` skips the
+    # legitimate alias-write ``$env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN`` (a target, not a
+    # source), which every fleet launcher uses to re-expose the validated DSN under the old name.
+    (
+        "powershell_generic_dsn_env_source",
+        re.compile(r"(?i)\$env:(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\b(?!\s*=)"),
+    ),
 )
 
 # postgres URL DSN whose userinfo we percent-decode before checking (URI-encoded identities

@@ -29,12 +29,18 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
-if (-not $Dsn) {
-  throw "No fleet DSN: pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to arm the canary or start workers without it."
-}
-if ($Dsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
-  throw "load-canary-home: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
-}
+
+# --- 0. gate EVERY side effect behind the SAME approved runtime-launch channel + full offline
+# conninfo/principal validator that the supported launchers use. There is deliberately NO
+# standalone regex denylist or weaker parser here: Assert-ApplyPilotRuntimeChannel runs
+# `python -m applypilot.fleet.launch_guard`, which reuses the single hardened conninfo parser
+# (pgqueue.assert_mapped_principal) to reject the postgres admin, the shared fleet_worker role,
+# and every URL / percent-encoded / query-string / options role-switch / ambient / indirection /
+# weak-TLS bypass, and to require the exact APPLYPILOT_PG_PRINCIPAL. It fails closed BEFORE the
+# queue prep, canary arm/approve, spend-cap update, or any worker launch below.
+. (Join-Path $Root "scripts\runtime-launch-channel.ps1")
+$runtimeChannel = Assert-ApplyPilotRuntimeChannel -RepoRoot $Root -OverrideDsn $Dsn
+$Dsn = $runtimeChannel.Dsn
 $env:FLEET_PG_DSN = $Dsn
 $env:APPLYPILOT_FLEET_DSN = $Dsn
 
@@ -62,28 +68,40 @@ if ($freeGB -lt ($Count * $perWorkerGB + 1.5)) {
 
 $homeExe = Find-Exe "applypilot-fleet-apply-home"
 
+# Native (external .exe) commands do NOT honor $ErrorActionPreference, so a nonzero exit from the
+# CLI would otherwise be ignored and the script would barrel on to the next mutation. Check
+# $LASTEXITCODE after every native call and throw so NO later step (approve, spend-cap, workers)
+# runs after a failed validation/update.
+function Invoke-HomeCli {
+  param([Parameter(Mandatory = $true)][string[]]$CliArgs, [Parameter(Mandatory = $true)][string]$What)
+  & $homeExe @CliArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw "load-canary-home: $What failed (exit $LASTEXITCODE); aborting before any later step."
+  }
+}
+
 # --- 1. queue prep (touches the SQLite brain -- HOME box only) ------------------------------
 if (-not $SkipQueuePrep) {
   Write-Host "Pulling applied_set + pushing eligible jobs (score >= $ScoreFloor) ..." -ForegroundColor Cyan
-  & $homeExe --dsn $Dsn pull
-  & $homeExe --dsn $Dsn push --score-floor $ScoreFloor
+  Invoke-HomeCli -CliArgs @("--dsn", $Dsn, "pull") -What "queue pull"
+  Invoke-HomeCli -CliArgs @("--dsn", $Dsn, "push", "--score-floor", "$ScoreFloor") -What "queue push"
 }
 
 # --- 2. ARM the canary to K (canary_enabled=TRUE, remaining=K, paused=FALSE; overwrites prior)
 Write-Host "Arming canary -> remaining=$Canary (auto-pauses the fleet after $Canary applies) ..." -ForegroundColor Cyan
-& $homeExe --dsn $Dsn canary $Canary
+Invoke-HomeCli -CliArgs @("--dsn", $Dsn, "canary", "$Canary") -What "canary arm"
 
 # --- 3. approve the pushed batch (CLI refuses unless the canary is armed) -------------------
-& $homeExe --dsn $Dsn approve --all-pushed
+Invoke-HomeCli -CliArgs @("--dsn", $Dsn, "approve", "--all-pushed") -What "approve"
 
 # --- 4. hard $ ceiling (belt-and-suspenders with the canary count) --------------------------
-$psql = (Get-ChildItem "C:\Program Files\PostgreSQL\*\bin\psql.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-if ($psql) {
-  & $psql --dbname=$Dsn -v ON_ERROR_STOP=1 -c "UPDATE fleet_config SET spend_cap_usd=$SpendCapUsd WHERE id=1;" | Out-Null
-  Write-Host "Spend cap set to `$$SpendCapUsd (remember: 0 would mean UNCAPPED)." -ForegroundColor Cyan
-} else {
-  Write-Host "psql not found -- set the spend cap from the console (http://<lan-ip>:8787) instead." -ForegroundColor Yellow
-}
+# Routed through the SAME audited, mapped control-plane CLI as the steps above (one
+# parameterized write + audit row in a single transaction) -- never a raw psql write to the
+# fleet_config table. The exit code is propagated, so a least-privilege role that cannot write
+# the cap aborts the run here rather than silently starting workers under an unset cap.
+Write-Host "Setting hard spend cap = `$$SpendCapUsd via the mapped control-plane principal ..." -ForegroundColor Cyan
+Invoke-HomeCli -CliArgs @("--dsn", $Dsn, "set-spend-cap", "$SpendCapUsd") -What "spend-cap update"
+Write-Host "Spend cap set to `$$SpendCapUsd (remember: 0 would mean UNCAPPED)." -ForegroundColor Cyan
 
 # --- 5. optional: self-healing watchdog (reclaims stale leases + restarts dead workers) -----
 if ($WithWatchdog) {

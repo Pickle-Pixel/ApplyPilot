@@ -60,6 +60,7 @@ def test_discovers_representative_surfaces_across_categories():
         "run-fleet-worker.ps1",
         "run-fleet-workers.ps1",
         "run-fleet-console.ps1",
+        "load-canary-home.ps1",  # the primary spend-cap loader must be classified/audited
         "load-canary-remote.ps1",
         "register-fleet-tasks.ps1",
         "run-otp-responder.ps1",
@@ -105,6 +106,8 @@ def test_scanner_flags_every_forbidden_principal_form():
         "set_role_call_admin_or_shared",
         "generic_dsn_env_fallback",  # DATABASE_URL / APPLYPILOT_FLEET_DSN fallback source
         "generic_dsn_help_default",  # help text advertising the retired generic fallbacks
+        "raw_psql_fleet_config_write",  # raw psql mutation of fleet_config (unapproved DB channel)
+        "powershell_generic_dsn_env_source",  # bare $env:DATABASE_URL/$env:APPLYPILOT_FLEET_DSN source
     } <= patterns
     # EVERY non-comment sentinel line is flagged -- no forbidden form silently slips through.
     non_comment_lines = [
@@ -180,6 +183,59 @@ def test_scanner_ignores_legitimate_rejection_guards(line):
     # validated DSN; none SELECTS the principal via a `user=`/`PGUSER=`/URL/role-switch form
     # or sources a DSN from the generic fallback, so none may be flagged.
     assert scanner.scan_text(line) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # The exact retired load-canary-home write, and its INSERT/DELETE/psql-path variants.
+        '& $psql --dbname=$Dsn -v ON_ERROR_STOP=1 -c "UPDATE fleet_config SET spend_cap_usd=0 WHERE id=1;"',
+        'psql "$env:FLEET_PG_DSN" -c "INSERT INTO fleet_config (id) VALUES (1)"',
+        'psql $Dsn -c "DELETE FROM fleet_config WHERE id=1"',
+        r'& $psql --dbname=$Dsn -c "TRUNCATE fleet_config"',
+    ],
+)
+def test_scanner_flags_reintroduced_raw_psql_fleet_config_write(line):
+    findings = {f.pattern for f in scanner.scan_text(line)}
+    assert "raw_psql_fleet_config_write" in findings, line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Reads of fleet_config and writes to OTHER tables are not the unapproved-mutation channel.
+        'psql "$env:FLEET_PG_DSN" -c "SELECT doctor_last_pass_at FROM fleet_config WHERE id=1;"',
+        'psql $effectiveDsn -c "UPDATE fleet_desired_state SET desired_workers=1 WHERE machine_owner=' + "'m2'\"",
+    ],
+)
+def test_scanner_ignores_psql_reads_and_other_table_writes(line):
+    assert "raw_psql_fleet_config_write" not in {f.pattern for f in scanner.scan_text(line)}, line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Bare generic-DSN env used as a value/fallback source (coalesce, ternary, scriptblock).
+        "$Dsn = if ($env:FLEET_PG_DSN) { $env:FLEET_PG_DSN } else { $env:APPLYPILOT_FLEET_DSN }",
+        "$Dsn = $env:DATABASE_URL",
+        "Start-Worker -Dsn ($env:APPLYPILOT_FLEET_DSN)",
+    ],
+)
+def test_scanner_flags_powershell_generic_dsn_env_source(line):
+    assert "powershell_generic_dsn_env_source" in {f.pattern for f in scanner.scan_text(line)}, line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Aliasing the validated FLEET_PG_DSN under the legacy name is a WRITE TARGET, not a source.
+        "$env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN",
+        "$env:APPLYPILOT_FLEET_DSN = $Dsn",
+        "$env:DATABASE_URL=$foo",
+    ],
+)
+def test_scanner_ignores_generic_dsn_env_alias_write_target(line):
+    assert "powershell_generic_dsn_env_source" not in {f.pattern for f in scanner.scan_text(line)}, line
 
 
 def test_discovery_includes_python_dash_m_targets_and_their_imports():
