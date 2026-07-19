@@ -1,0 +1,16 @@
+# Adversarial sentinels for tests/test_runtime_launch_principals.py.
+#
+# This file exists ONLY so the scanner test can prove every forbidden launch-principal
+# form is rejected. It lives under tests/fixtures/ with a .txt suffix so the scanner never
+# discovers it as a production launch surface (tests/ is excluded and .txt is not a launch
+# suffix). If any of these strings ever reappears in a real discovered launcher, the scanner
+# fails. Each line below MUST be flagged by scanner.scan_text.
+$Dsn = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
+PGUSER=postgres
+export PGUSER=fleet_worker
+DSN="host=100.90.104.99 port=5432 dbname=applypilot_fleet user=fleet_worker connect_timeout=5"
+DATABASE_URL=postgresql://postgres:example@127.0.0.1:5432/postgres
+CONN=postgres://fleet_worker:example@10.0.0.1:5432/applypilot_fleet
+SET ROLE postgres;
+SET SESSION AUTHORIZATION fleet_worker;
+conn.execute(set_role("postgres"))
