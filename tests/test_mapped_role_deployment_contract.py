@@ -1,5 +1,6 @@
 """Static deployment contracts for mapped worker identities and pg_hba safety."""
 
+import ast
 from pathlib import Path
 import json
 import os
@@ -68,12 +69,70 @@ def test_database_hardening_script_requires_identity_manifest_and_receipts() -> 
 def test_rollback_executor_verifies_hash_and_enforces_atomic_break_glass_order(tmp_path: Path) -> None:
     script_path = REPO / "scripts" / "rollback-fleet-pg-role.py"
     script = script_path.read_text(encoding="utf-8")
-    main_body = script.split("def main() -> int:", 1)[1]
-    assert "hmac.compare_digest" in script
-    assert "with conn.transaction():" in script
-    assert "psql --single-transaction --set=ON_ERROR_STOP=on" in script
-    assert main_body.index("psycopg.connect") < main_body.index("_restore_hba_and_reload(conn")
-    assert main_body.index("_restore_hba_and_reload(conn") < main_body.index("conn.execute(rollback_sql)")
+    syntax = ast.parse(script)
+    functions = {node.name: node for node in syntax.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    def call_name(call: ast.Call) -> str:
+        if isinstance(call.func, ast.Name):
+            return call.func.id
+        if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+            return f"{call.func.value.id}.{call.func.attr}"
+        return ""
+
+    def ordered_calls(function_name: str) -> list[ast.Call]:
+        return sorted(
+            (node for node in ast.walk(functions[function_name]) if isinstance(node, ast.Call)),
+            key=lambda node: (node.lineno, node.col_offset),
+        )
+
+    main_calls = ordered_calls("main")
+    main_call_names = [call_name(call) for call in main_calls]
+    verified_inputs_index = main_call_names.index("_verified_inputs")
+    connect_index = main_call_names.index("psycopg.connect")
+    assert verified_inputs_index < connect_index
+
+    phase_calls = {
+        call.args[0].value: main_calls.index(call)
+        for call in main_calls
+        if call_name(call) == "commit_phase"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and call.args[0].value in {"phase1", "phase2"}
+    }
+    termination_index = main_call_names.index("_terminate_affected_sessions")
+    postcondition_index = main_call_names.index("_assert_candidate_artifact_containment")
+    assert phase_calls["phase1"] < termination_index < phase_calls["phase2"] < postcondition_index
+
+    containment_call_names = [call_name(call) for call in ordered_calls("_commit_database_containment")]
+    assert (
+        containment_call_names.index("_execute_database_containment_sql")
+        < containment_call_names.index("_write_database_containment_marker")
+        < containment_call_names.index("_commit_database_containment_transaction")
+        < containment_call_names.index("_assert_database_containment_marker")
+    )
+    assert "conn.commit" in [call_name(call) for call in ordered_calls("_commit_database_containment_transaction")]
+    assert containment_call_names.count("conn.rollback") == 2
+
+    marker_sql = "".join(
+        constant.value
+        for constant in ast.walk(functions["_write_database_containment_marker"])
+        if isinstance(constant, ast.Constant) and isinstance(constant.value, str)
+    )
+    assert "ON CONFLICT(marker_id) DO UPDATE SET" in marker_sql
+    assert "completed_phases" in marker_sql
+
+    for receipt_function in (
+        "_emit_database_phase_failure_receipt",
+        "_emit_commit_unknown_receipt",
+        "_emit_commit_reconciled_receipt",
+    ):
+        receipt_node = functions[receipt_function]
+        receipt_calls = [call_name(call) for call in ordered_calls(receipt_function)]
+        assert receipt_function in main_call_names
+        assert "attempted_phase" in {argument.arg for argument in receipt_node.args.args + receipt_node.args.kwonlyargs}
+        assert "_require_matching_partial_state_predecessor" in receipt_calls
+        assert "authenticate_evidence_receipt" in receipt_calls
+        assert "_write_exclusive_durable" in receipt_calls
 
     authentication_key = b"applypilot-mapped-role-contract-key"
     authentication_key_id = "mapped-role-contract-v1"
