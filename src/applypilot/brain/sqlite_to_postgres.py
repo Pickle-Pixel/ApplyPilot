@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -1285,6 +1286,15 @@ def _validated_terminal_parity(value: Any) -> dict[str, dict[str, Any]]:
     return normalized
 
 
+def _is_canonical_uuid(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError):
+        return False
+
+
 def _validated_destination_binding(value: Any) -> dict[str, Any]:
     required = {"database", "systemIdentifier", "databaseOid", "databaseIncarnationId"}
     if not isinstance(value, Mapping) or set(value) != required:
@@ -1293,9 +1303,10 @@ def _validated_destination_binding(value: Any) -> dict[str, Any]:
     for name in ("database", "systemIdentifier", "databaseOid"):
         if not isinstance(normalized[name], str) or not normalized[name]:
             raise BrainImportError(f"destination binding {name} is invalid")
-    incarnation = normalized["databaseIncarnationId"]
-    if incarnation is not None and (not isinstance(incarnation, str) or not incarnation):
-        raise BrainImportError("destination binding databaseIncarnationId is invalid")
+    # A durable database incarnation is mandatory: the terminal write and every resumed recovery
+    # must bind to the exact destination singleton, never an absent or malformed incarnation.
+    if not _is_canonical_uuid(normalized["databaseIncarnationId"]):
+        raise BrainImportError("destination binding databaseIncarnationId must be a canonical UUID")
     return normalized
 
 

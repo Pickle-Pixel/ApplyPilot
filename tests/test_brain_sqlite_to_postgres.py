@@ -25,6 +25,7 @@ from applypilot.brain.sqlite_to_postgres import _record_completed_batches
 from applypilot.brain.sqlite_to_postgres import _require_artifact
 from applypilot.brain.sqlite_to_postgres import _source_bounds
 from applypilot.brain.sqlite_to_postgres import _verify_kg_artifacts
+from applypilot.brain.sqlite_to_postgres import _validated_destination_binding
 from applypilot.brain.sqlite_to_postgres import finalize_sqlite_to_postgres_import
 from applypilot.brain.sqlite_to_postgres import recover_finalized_sqlite_to_postgres_import
 from applypilot.brain.parity import ParityResult
@@ -35,7 +36,7 @@ DESTINATION_BINDING = {
     "database": "brain",
     "systemIdentifier": "7460123456789012345",
     "databaseOid": "16384",
-    "databaseIncarnationId": None,
+    "databaseIncarnationId": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
 }
 
 
@@ -322,6 +323,14 @@ def test_terminal_recovery_rejects_nonterminal_or_incomplete_metadata(event_type
             run_key="stable-run-key",
             expected_destination_binding=DESTINATION_BINDING,
         )
+
+
+def test_destination_binding_requires_a_canonical_incarnation() -> None:
+    valid = _validated_destination_binding(DESTINATION_BINDING)
+    assert valid["databaseIncarnationId"] == DESTINATION_BINDING["databaseIncarnationId"]
+    for bad in (None, "", "not-a-uuid", "3f2504e0-4f89-41d3-9a0c-0305e82c33"):
+        with pytest.raises(Exception, match="canonical UUID"):
+            _validated_destination_binding({**DESTINATION_BINDING, "databaseIncarnationId": bad})
 
 
 def test_terminal_recovery_rejects_different_destination_binding() -> None:

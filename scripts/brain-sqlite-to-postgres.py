@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -398,23 +399,56 @@ def _source_evidence(sealed: SealedSnapshotReceipt) -> dict[str, Any]:
     }
 
 
+def _is_canonical_uuid(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError):
+        return False
+
+
+def _read_database_incarnation(pg) -> str:
+    """Read the durable incarnation from the ``applypilot_database_identity`` singleton itself.
+
+    The ambient ``applypilot.database_incarnation_id`` GUC is deliberately never consulted, so a
+    spoofed session setting has no effect. A missing, empty, ambiguous (multiple), or malformed
+    singleton fails closed rather than silently importing into an unbound destination.
+    """
+    row = pg.execute(
+        "SELECT count(*) AS identity_row_count,"
+        " min(database_incarnation_id::text) AS incarnation_low,"
+        " max(database_incarnation_id::text) AS incarnation_high"
+        " FROM public.applypilot_database_identity WHERE singleton_id=1"
+    ).fetchone()
+    if not isinstance(row, Mapping):
+        raise CLIError("connected PostgreSQL database identity singleton is unavailable")
+    count = row.get("identity_row_count")
+    low, high = row.get("incarnation_low"), row.get("incarnation_high")
+    if count != 1 or low is None or low != high:
+        raise CLIError("connected PostgreSQL database identity singleton is missing or ambiguous")
+    if not _is_canonical_uuid(low):
+        raise CLIError("connected PostgreSQL database incarnation is malformed")
+    return low
+
+
 def _destination_identity(pg) -> dict[str, Any]:
     row = pg.execute(
         """SELECT current_database() AS database,
                   (pg_control_system()).system_identifier::text AS system_identifier,
                   (SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid,
-                  CASE WHEN to_regclass('public.applypilot_database_identity') IS NULL THEN NULL
-                       ELSE current_setting('applypilot.database_incarnation_id', true) END
-                       AS database_incarnation_id,
+                  to_regclass('public.applypilot_database_identity') IS NOT NULL AS identity_present,
                   current_setting('server_version_num') AS server_version_num"""
     ).fetchone()
     if not isinstance(row, Mapping):
         raise CLIError("connected PostgreSQL database identity is unavailable")
+    if row.get("identity_present") is not True:
+        raise CLIError("connected PostgreSQL is missing the durable database identity singleton")
     return {
         "database": row.get("database"),
         "systemIdentifier": row.get("system_identifier"),
         "databaseOid": row.get("database_oid"),
-        "databaseIncarnationId": row.get("database_incarnation_id"),
+        "databaseIncarnationId": _read_database_incarnation(pg),
         "serverVersionNum": row.get("server_version_num"),
     }
 
@@ -433,11 +467,17 @@ def _assert_destination_binding(
         raise CLIError("connected PostgreSQL system identifier does not match --expected-system-identifier")
     if str(destination["databaseOid"]) != expected_database_oid:
         raise CLIError("connected PostgreSQL database OID does not match --expected-database-oid")
+    if not _is_canonical_uuid(expected_database_incarnation_id):
+        raise CLIError(
+            "a canonical --expected-database-incarnation-id is required for a write-capable import"
+        )
     incarnation = destination["databaseIncarnationId"]
-    if expected_database_incarnation_id is not None and incarnation is None:
-        raise CLIError("connected PostgreSQL database incarnation is unavailable but an expected incarnation was supplied")
-    if incarnation is not None and str(incarnation) != expected_database_incarnation_id:
-        raise CLIError("connected PostgreSQL database incarnation requires an exact expected incarnation binding")
+    if not _is_canonical_uuid(incarnation):
+        raise CLIError("connected PostgreSQL database incarnation is malformed or absent")
+    if not hmac.compare_digest(str(incarnation), str(expected_database_incarnation_id)):
+        raise CLIError(
+            "connected PostgreSQL database incarnation does not match --expected-database-incarnation-id"
+        )
 
 
 def _run_key(
@@ -573,8 +613,8 @@ def _validate_receipt_semantics(receipt: dict[str, Any], receipt_path: Path, com
         if not isinstance(durable_destination[name], str) or not durable_destination[name]:
             raise CLIError(f"brain import receipt destination {name} is invalid")
     incarnation = durable_destination["databaseIncarnationId"]
-    if incarnation is not None and (not isinstance(incarnation, str) or not incarnation):
-        raise CLIError("brain import receipt destination incarnation is invalid")
+    if not _is_canonical_uuid(incarnation):
+        raise CLIError("brain import receipt destination incarnation must be a canonical UUID")
     if not str(destination["serverVersionNum"]).isdigit():
         raise CLIError("brain import receipt destination server version is invalid")
     expected_run_key = _run_key(
@@ -769,7 +809,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-database", required=True)
     parser.add_argument("--expected-system-identifier", required=True)
     parser.add_argument("--expected-database-oid", required=True)
-    parser.add_argument("--expected-database-incarnation-id")
+    parser.add_argument(
+        "--expected-database-incarnation-id",
+        required=True,
+        help="Exact UUID of the destination's durable database incarnation singleton",
+    )
     parser.add_argument("--mode", required=True, choices=_MODES)
     parser.add_argument("--release-id", required=True)
     parser.add_argument("--release-nonce", required=True)

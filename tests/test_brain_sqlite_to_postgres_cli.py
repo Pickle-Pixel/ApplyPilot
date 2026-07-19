@@ -29,6 +29,7 @@ FREEZE_KEY_ID = "writer-freeze-key-2026"
 IMPORT_KEY_ID = "brain-import-key-2026"
 SYSTEM_IDENTIFIER = "7460123456789012345"
 DATABASE_OID = "16384"
+INCARNATION = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
 
 
 def _load_cli():
@@ -54,7 +55,10 @@ class _Connection:
         database: str = "brain",
         system_identifier: str = SYSTEM_IDENTIFIER,
         database_oid: str = DATABASE_OID,
-        database_incarnation_id: str | None = None,
+        database_incarnation_id: str | None = INCARNATION,
+        identity_present: bool = True,
+        identity_row_count: int = 1,
+        incarnation_high: str | None = None,
     ) -> None:
         self.identity = {
             "database": database,
@@ -63,6 +67,11 @@ class _Connection:
             "database_incarnation_id": database_incarnation_id,
             "server_version_num": "170005",
         }
+        # The durable singleton is read directly from applypilot_database_identity; these knobs
+        # model its presence, row count, and (for the ambiguous case) a divergent high value.
+        self.identity_present = identity_present
+        self.identity_row_count = identity_row_count
+        self.incarnation_high = incarnation_high
         self.statements: list[str] = []
 
     def __enter__(self):
@@ -72,8 +81,27 @@ class _Connection:
         return None
 
     def execute(self, query: str, params=()):
-        self.statements.append(" ".join(query.split()))
-        return _Result(dict(self.identity))
+        normalized = " ".join(query.split())
+        self.statements.append(normalized)
+        if "identity_row_count" in normalized:
+            low = self.identity["database_incarnation_id"]
+            high = self.incarnation_high if self.incarnation_high is not None else low
+            return _Result(
+                {
+                    "identity_row_count": self.identity_row_count,
+                    "incarnation_low": low,
+                    "incarnation_high": high,
+                }
+            )
+        return _Result(
+            {
+                "database": self.identity["database"],
+                "system_identifier": self.identity["system_identifier"],
+                "database_oid": self.identity["database_oid"],
+                "identity_present": self.identity_present,
+                "server_version_num": self.identity["server_version_num"],
+            }
+        )
 
 
 def _file_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -199,8 +227,9 @@ def _arguments(
     expected_database: str = "brain",
     expected_system_identifier: str = SYSTEM_IDENTIFIER,
     expected_database_oid: str = DATABASE_OID,
+    expected_database_incarnation_id: str | None = INCARNATION,
 ) -> list[str]:
-    return [
+    arguments = [
         "--source",
         str(tmp_path / "canonical.sqlite"),
         "--sealed-snapshot",
@@ -222,6 +251,9 @@ def _arguments(
         "--output",
         str(tmp_path / output),
     ]
+    if expected_database_incarnation_id is not None:
+        arguments += ["--expected-database-incarnation-id", expected_database_incarnation_id]
+    return arguments
 
 
 def _prepare(monkeypatch, tmp_path: Path, *, connection: _Connection | None = None):
@@ -467,22 +499,74 @@ def test_wrong_destination_binding_fails_before_import(
         cli.execute(_arguments(tmp_path))
 
 
-def test_database_oid_and_available_incarnation_are_enforced(monkeypatch, tmp_path: Path) -> None:
-    incarnation = "00000000-0000-0000-0000-000000000123"
-    connection = _Connection(database_oid="999", database_incarnation_id=incarnation)
+def test_database_oid_and_incarnation_are_enforced(monkeypatch, tmp_path: Path) -> None:
+    connection = _Connection(database_oid="999")
     cli, _source, _snapshot, _sealed, _marker = _prepare(monkeypatch, tmp_path, connection=connection)
 
+    # A wrong OID fails before any incarnation binding is considered.
     with pytest.raises(cli.CLIError, match="database OID"):
         cli.execute(_arguments(tmp_path))
 
+    # A durable singleton incarnation that differs from the expected UUID fails closed.
     connection.identity["database_oid"] = DATABASE_OID
-    with pytest.raises(cli.CLIError, match="incarnation"):
+    connection.identity["database_incarnation_id"] = "00000000-0000-0000-0000-000000000123"
+    with pytest.raises(cli.CLIError, match="incarnation does not match"):
         cli.execute(_arguments(tmp_path))
 
-    connection.identity["database_incarnation_id"] = None
-    arguments = [*_arguments(tmp_path), "--expected-database-incarnation-id", incarnation]
-    with pytest.raises(cli.CLIError, match="incarnation"):
-        cli.execute(arguments)
+    # A malformed singleton incarnation is rejected even against a valid expected UUID.
+    connection.identity["database_incarnation_id"] = "not-a-uuid"
+    with pytest.raises(cli.CLIError, match="incarnation is malformed"):
+        cli.execute(_arguments(tmp_path))
+
+
+def test_write_capable_import_requires_expected_incarnation_flag(monkeypatch, tmp_path: Path) -> None:
+    cli, _source, _snapshot, sealed, _marker = _prepare(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli, "import_sqlite_to_postgres", lambda *_a, **_k: pytest.fail("must not import without incarnation")
+    )
+    # argparse rejects the write-capable invocation when the flag is absent.
+    with pytest.raises(SystemExit):
+        cli.execute(_arguments(tmp_path, expected_database_incarnation_id=None))
+
+
+def test_incarnation_is_read_from_singleton_not_a_spoofable_guc(monkeypatch, tmp_path: Path) -> None:
+    connection = _Connection()
+    cli, _source, _snapshot, sealed, _marker = _prepare(monkeypatch, tmp_path, connection=connection)
+    monkeypatch.setattr(
+        cli, "import_sqlite_to_postgres", lambda *_a, **_k: ImportSummary(1, sealed.sha256, {"jobs": 1}, {})
+    )
+
+    receipt = json.loads(cli.execute(_arguments(tmp_path)).read_text(encoding="utf-8"))
+
+    assert receipt["destination"]["databaseIncarnationId"] == INCARNATION
+    joined = " ".join(connection.statements)
+    assert "applypilot_database_identity" in joined
+    # The removed ambient/custom-GUC fallback is never consulted, so a spoofed setting is inert.
+    assert "current_setting('applypilot.database_incarnation_id'" not in joined
+    assert "applypilot.database_incarnation_id" not in joined
+
+
+@pytest.mark.parametrize(
+    ("connection_kwargs", "message"),
+    [
+        ({"identity_present": False}, "missing the durable database identity singleton"),
+        ({"identity_row_count": 0}, "missing or ambiguous"),
+        (
+            {"identity_row_count": 2, "incarnation_high": "11111111-1111-1111-1111-111111111111"},
+            "missing or ambiguous",
+        ),
+    ],
+)
+def test_absent_missing_or_ambiguous_singleton_is_rejected(
+    monkeypatch, tmp_path: Path, connection_kwargs: dict, message: str
+) -> None:
+    connection = _Connection(**connection_kwargs)
+    cli, _source, _snapshot, _sealed, _marker = _prepare(monkeypatch, tmp_path, connection=connection)
+    monkeypatch.setattr(
+        cli, "import_sqlite_to_postgres", lambda *_a, **_k: pytest.fail("must not import without a singleton")
+    )
+    with pytest.raises(cli.CLIError, match=message):
+        cli.execute(_arguments(tmp_path))
 
 
 def test_path_anchor_revalidated_before_publication(monkeypatch, tmp_path: Path) -> None:
@@ -714,10 +798,18 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
             "CREATE TEMP TABLE brain_migration_run_events (migration_run_event_id bigint PRIMARY KEY, "
             "migration_run_id bigint, source_namespace text NOT NULL, event_type text NOT NULL, metadata jsonb)"
         )
+        connection.execute(
+            "CREATE TABLE public.applypilot_database_identity ("
+            "singleton_id smallint PRIMARY KEY DEFAULT 1,"
+            "database_incarnation_id uuid NOT NULL DEFAULT gen_random_uuid(),"
+            "initialized_at timestamptz NOT NULL DEFAULT now())"
+        )
+        connection.execute("INSERT INTO public.applypilot_database_identity (singleton_id) VALUES (1)")
         identity = connection.execute(
             "SELECT current_database() AS database,(pg_control_system()).system_identifier::text AS system_identifier,"
             "(SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid,"
-            "NULL::text AS database_incarnation_id,current_setting('server_version_num') AS server_version_num"
+            "(SELECT database_incarnation_id::text FROM public.applypilot_database_identity WHERE singleton_id=1)"
+            " AS database_incarnation_id,current_setting('server_version_num') AS server_version_num"
         ).fetchone()
         connection.commit()
         cli, _source, _snapshot, sealed, marker = _prepare(monkeypatch, tmp_path)
@@ -726,6 +818,7 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
             ("--expected-database", identity["database"]),
             ("--expected-system-identifier", identity["system_identifier"]),
             ("--expected-database-oid", identity["database_oid"]),
+            ("--expected-database-incarnation-id", identity["database_incarnation_id"]),
         ):
             arguments[arguments.index(option) + 1] = value
         monkeypatch.setattr(cli, "_connect_postgres", lambda *_args, **_kwargs: _OpenConnection(connection))
@@ -800,4 +893,10 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
         assert recovered["result"]["terminalEventId"] == 201
         assert recovered["result"]["parity"]["jobs"]["target_count"] == 4
     finally:
+        try:
+            connection.rollback()
+            connection.execute("DROP TABLE IF EXISTS public.applypilot_database_identity")
+            connection.commit()
+        except Exception:
+            pass
         connection.close()
