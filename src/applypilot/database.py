@@ -829,6 +829,11 @@ def _quote_sqlite_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _sqlite_ascii_fold(value: str) -> str:
+    """Match SQLite's identifier folding: ASCII A-Z only, never Unicode."""
+    return value.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+
+
 def _sqlite_schema_tokens(sql: str) -> list[tuple[str, str, bool]]:
     """Tokenize SQLite DDL while distinguishing bare and quoted identifiers."""
     tokens: list[tuple[str, str, bool]] = []
@@ -850,18 +855,21 @@ def _sqlite_schema_tokens(sql: str) -> list[tuple[str, str, bool]]:
             continue
         if char == "'":
             index += 1
+            value: list[str] = []
             while index < len(sql):
                 if sql[index] != "'":
+                    value.append(sql[index])
                     index += 1
                     continue
                 if index + 1 < len(sql) and sql[index + 1] == "'":
+                    value.append("'")
                     index += 2
                     continue
                 index += 1
                 break
             else:
                 raise ValueError("unterminated SQLite DDL string")
-            tokens.append(("string", "", False))
+            tokens.append(("string", "".join(value), False))
             continue
         if char in {'"', "`"}:
             delimiter = char
@@ -912,9 +920,9 @@ def _has_identifier(
     tokens: list[tuple[str, str, bool]],
     identifier: str,
 ) -> bool:
-    expected = identifier.casefold()
+    expected = _sqlite_ascii_fold(identifier)
     return any(
-        kind == "identifier" and value.casefold() == expected
+        kind == "identifier" and _sqlite_ascii_fold(value) == expected
         for kind, value, _bare in tokens
     )
 
@@ -957,13 +965,13 @@ def _has_canonical_snapshot_table_definition(
     else:
         return False
 
-    expected = snapshot_column_name.casefold()
+    expected = _sqlite_ascii_fold(snapshot_column_name)
     snapshot_elements = [
         element
         for element in elements
         if element
         and element[0][0] == "identifier"
-        and element[0][1].casefold() == expected
+        and _sqlite_ascii_fold(element[0][1]) == expected
     ]
     if len(snapshot_elements) != 1:
         return False
@@ -972,7 +980,7 @@ def _has_canonical_snapshot_table_definition(
         len(snapshot_element) == 2
         and snapshot_element[0] == ("identifier", snapshot_column_name, True)
         and snapshot_element[1][0] == "identifier"
-        and snapshot_element[1][1].casefold() == "text"
+        and _sqlite_ascii_fold(snapshot_element[1][1]) == "text"
         and snapshot_element[1][2]
     ):
         return False
@@ -981,7 +989,7 @@ def _has_canonical_snapshot_table_definition(
         1
         for element in elements
         for kind, value, _bare in element
-        if kind == "identifier" and value.casefold() == expected
+        if kind == "identifier" and _sqlite_ascii_fold(value) == expected
     )
     return references == 1
 
@@ -995,7 +1003,7 @@ def _index_sql_references_column(sql: str, column_name: str) -> bool | None:
         (
             index
             for index, (kind, value, _bare) in enumerate(tokens)
-            if kind == "identifier" and value.casefold() == "on"
+            if kind == "identifier" and _sqlite_ascii_fold(value) == "on"
         ),
         None,
     )
@@ -1014,43 +1022,69 @@ def _index_sql_references_column(sql: str, column_name: str) -> bool | None:
     return _has_identifier(tokens[opening:], column_name)
 
 
-def _trigger_sql_references_column(sql: str, column_name: str) -> bool | None:
+def _canonical_sqlite_schema_tokens(
+    sql: str,
+) -> tuple[tuple[str, str], ...] | None:
+    """Return semantic DDL tokens, retaining literal values and ignoring comments."""
     try:
         tokens = _sqlite_schema_tokens(sql)
     except ValueError:
         return None
-    trigger_index = next(
-        (
-            index
-            for index, (kind, value, _bare) in enumerate(tokens)
-            if kind == "identifier" and value.casefold() == "trigger"
-        ),
-        None,
+    return tuple(
+        (kind, _sqlite_ascii_fold(value) if kind == "identifier" else value)
+        for kind, value, _bare in tokens
     )
-    if trigger_index is None:
-        return None
-    index = trigger_index + 1
-    if (
-        index + 2 < len(tokens)
-        and tokens[index][0] == "identifier"
-        and tokens[index][1].casefold() == "if"
-        and tokens[index + 1][0] == "identifier"
-        and tokens[index + 1][1].casefold() == "not"
-        and tokens[index + 2][0] == "identifier"
-        and tokens[index + 2][1].casefold() == "exists"
-    ):
-        index += 3
-    if index >= len(tokens) or tokens[index][0] != "identifier":
-        return None
-    index += 1
-    if (
-        index + 1 < len(tokens)
-        and tokens[index][0] == "punctuation"
-        and tokens[index][1] == "."
-        and tokens[index + 1][0] == "identifier"
-    ):
-        index += 2
-    return _has_identifier(tokens[index:], column_name)
+
+
+_CANONICAL_JOB_DECISION_TRIGGER_SQL: dict[str, str] = {
+    "trg_job_decisions_policy_lane_insert": """
+        CREATE TRIGGER trg_job_decisions_policy_lane_insert
+        BEFORE INSERT ON job_decisions
+        FOR EACH ROW
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM decision_policy_versions
+            WHERE policy_version = NEW.policy_version
+              AND lane = NEW.lane
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'decision policy lane mismatch');
+        END
+    """,
+    "trg_job_decisions_policy_lane_update": """
+        CREATE TRIGGER trg_job_decisions_policy_lane_update
+        BEFORE UPDATE OF policy_version, lane ON job_decisions
+        FOR EACH ROW
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM decision_policy_versions
+            WHERE policy_version = NEW.policy_version
+              AND lane = NEW.lane
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'decision policy lane mismatch');
+        END
+    """,
+}
+
+
+def _reject_temp_job_decision_objects(conn: sqlite3.Connection) -> None:
+    """Reject TEMP shadowing/trigger hooks before issuing any migration DDL."""
+    target = _sqlite_ascii_fold("job_decisions")
+    for object_type, name, table_name in conn.execute(
+        "SELECT type, name, tbl_name FROM temp.sqlite_schema"
+    ).fetchall():
+        folded_type = _sqlite_ascii_fold(str(object_type))
+        folded_name = _sqlite_ascii_fold(str(name))
+        folded_table = _sqlite_ascii_fold(str(table_name))
+        if folded_type in {"table", "view"} and folded_name == target:
+            raise RuntimeError(
+                f"TEMP {folded_type} {name!r} shadows main.job_decisions"
+            )
+        if folded_type == "trigger" and folded_table == target:
+            raise RuntimeError(
+                f"TEMP trigger {name!r} targets main.job_decisions"
+            )
 
 
 def _snapshot_schema_issues(
@@ -1059,7 +1093,7 @@ def _snapshot_schema_issues(
 ) -> tuple[str, ...]:
     issues: list[str] = []
     table_row = conn.execute(
-        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
+        "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = ?",
         ("job_decisions",),
     ).fetchone()
     if (
@@ -1072,27 +1106,37 @@ def _snapshot_schema_issues(
         issues.append("table DDL is not the canonical bare nullable TEXT definition")
 
     for foreign_key in conn.execute(
-        "PRAGMA foreign_key_list(job_decisions)"
+        "PRAGMA main.foreign_key_list(job_decisions)"
     ).fetchall():
-        if str(foreign_key[3]).casefold() == snapshot_column_name.casefold():
+        if _sqlite_ascii_fold(str(foreign_key[3])) == _sqlite_ascii_fold(
+            snapshot_column_name
+        ):
             issues.append("foreign key constrains the snapshot column")
             break
 
-    for index_row in conn.execute("PRAGMA index_list(job_decisions)").fetchall():
+    for index_row in conn.execute("PRAGMA main.index_list(job_decisions)").fetchall():
         index_name = str(index_row[1])
+        index_origin = str(index_row[3]) if len(index_row) > 3 else ""
         quoted_index = _quote_sqlite_identifier(index_name)
-        index_details = conn.execute(f"PRAGMA index_xinfo({quoted_index})").fetchall()
+        index_details = conn.execute(
+            f"PRAGMA main.index_xinfo({quoted_index})"
+        ).fetchall()
+        xinfo_valid = bool(index_details) and all(
+            len(detail) >= 6 and detail[5] in (0, 1) for detail in index_details
+        )
+        key_details = [detail for detail in index_details if len(detail) >= 6 and detail[5] == 1]
         if any(
             detail[2] is not None
-            and str(detail[2]).casefold() == snapshot_column_name.casefold()
-            for detail in index_details
+            and _sqlite_ascii_fold(str(detail[2]))
+            == _sqlite_ascii_fold(snapshot_column_name)
+            for detail in key_details
         ):
             issues.append(f"index {index_name!r} constrains the snapshot column")
             continue
         schema_row = conn.execute(
             """
             SELECT sql
-            FROM sqlite_schema
+            FROM main.sqlite_schema
             WHERE type = 'index' AND name = ? AND tbl_name = 'job_decisions'
             """,
             (index_name,),
@@ -1101,33 +1145,58 @@ def _snapshot_schema_issues(
             issues.append(f"index {index_name!r} has no schema metadata")
             continue
         index_sql = schema_row[0]
-        if index_sql is None:
+        if index_origin in {"pk", "u"} and index_sql is None:
+            autoindex_proven = xinfo_valid and bool(key_details) and all(
+                isinstance(detail[2], str) for detail in key_details
+            )
+            if not autoindex_proven:
+                issues.append(
+                    f"autoindex {index_name!r} has unverifiable key metadata"
+                )
+            continue
+        if index_origin != "c":
+            issues.append(
+                f"index {index_name!r} has unsupported origin {index_origin!r}"
+            )
+            continue
+        if not isinstance(index_sql, str) or not index_sql.strip():
+            issues.append(f"user index {index_name!r} has no valid schema DDL")
             continue
         references_column = _index_sql_references_column(
-            str(index_sql), snapshot_column_name
+            index_sql, snapshot_column_name
         )
         if references_column is None:
             issues.append(f"index {index_name!r} DDL could not be validated")
         elif references_column:
             issues.append(f"index {index_name!r} expression constrains the snapshot column")
 
-    for trigger_name, trigger_sql in conn.execute(
+    expected_triggers = {
+        _sqlite_ascii_fold(name): _canonical_sqlite_schema_tokens(sql)
+        for name, sql in _CANONICAL_JOB_DECISION_TRIGGER_SQL.items()
+    }
+    for trigger_name, trigger_sql, trigger_table in conn.execute(
         """
-        SELECT name, sql
-        FROM sqlite_schema
-        WHERE type = 'trigger' AND tbl_name = 'job_decisions'
+        SELECT name, sql, tbl_name
+        FROM main.sqlite_schema
+        WHERE type = 'trigger'
         """
     ).fetchall():
+        if _sqlite_ascii_fold(str(trigger_table)) != _sqlite_ascii_fold(
+            "job_decisions"
+        ):
+            continue
+        expected_tokens = expected_triggers.get(_sqlite_ascii_fold(str(trigger_name)))
+        if expected_tokens is None:
+            issues.append(f"unexpected trigger {trigger_name!r} targets job_decisions")
+            continue
         if not isinstance(trigger_sql, str):
             issues.append(f"trigger {trigger_name!r} has no schema DDL")
             continue
-        references_column = _trigger_sql_references_column(
-            trigger_sql, snapshot_column_name
-        )
-        if references_column is None:
+        observed_tokens = _canonical_sqlite_schema_tokens(trigger_sql)
+        if observed_tokens is None:
             issues.append(f"trigger {trigger_name!r} DDL could not be validated")
-        elif references_column:
-            issues.append(f"trigger {trigger_name!r} affects the snapshot column")
+        elif observed_tokens != expected_tokens:
+            issues.append(f"trigger {trigger_name!r} differs from canonical DDL")
     return tuple(issues)
 
 
@@ -1136,8 +1205,10 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
     if conn is None:
         conn = get_connection()
 
+    _reject_temp_job_decision_objects(conn)
+
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS decision_policy_versions (
+        CREATE TABLE IF NOT EXISTS main.decision_policy_versions (
             policy_version       TEXT PRIMARY KEY,
             lane                 TEXT NOT NULL CHECK(lane IN ('ats', 'linkedin')),
             status               TEXT NOT NULL CHECK(status IN ('draft', 'validated', 'canary', 'active', 'retired')),
@@ -1158,7 +1229,7 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
         )
     """)
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS job_decisions (
+        CREATE TABLE IF NOT EXISTS main.job_decisions (
             decision_id            TEXT PRIMARY KEY,
             job_url                TEXT NOT NULL,
             policy_version         TEXT NOT NULL,
@@ -1192,15 +1263,21 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
     snapshot_column = next(
         (
             row
-            for row in conn.execute("PRAGMA table_xinfo(job_decisions)").fetchall()
-            if row[1] == snapshot_column_name
+            for row in conn.execute(
+                "PRAGMA main.table_xinfo(job_decisions)"
+            ).fetchall()
+            if _sqlite_ascii_fold(str(row[1]))
+            == _sqlite_ascii_fold(snapshot_column_name)
         ),
         None,
     )
     duplicate_column_error: sqlite3.OperationalError | None = None
     if snapshot_column is None:
         try:
-            conn.execute("ALTER TABLE job_decisions ADD COLUMN decision_snapshot_json TEXT")
+            conn.execute(
+                "ALTER TABLE main.job_decisions "
+                "ADD COLUMN decision_snapshot_json TEXT"
+            )
         except sqlite3.OperationalError as exc:
             # Another startup process can complete the same additive migration
             # after our PRAGMA snapshot but before this ALTER obtains its lock.
@@ -1215,8 +1292,11 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
         snapshot_column = next(
             (
                 row
-                for row in conn.execute("PRAGMA table_xinfo(job_decisions)").fetchall()
-                if row[1] == snapshot_column_name
+                for row in conn.execute(
+                    "PRAGMA main.table_xinfo(job_decisions)"
+                ).fetchall()
+                if _sqlite_ascii_fold(str(row[1]))
+                == _sqlite_ascii_fold(snapshot_column_name)
             ),
             None,
         )
@@ -1256,7 +1336,7 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
             raise contract_error from duplicate_column_error
         raise contract_error
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS reviewed_outcomes (
+        CREATE TABLE IF NOT EXISTS main.reviewed_outcomes (
             event_id          TEXT NOT NULL,
             job_url           TEXT NOT NULL,
             attribution_json  TEXT,
@@ -1277,75 +1357,55 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
     """)
 
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_decision_policy_versions_status_lane
+        CREATE INDEX IF NOT EXISTS main.idx_decision_policy_versions_status_lane
         ON decision_policy_versions(status, lane)
     """)
     conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_policy_versions_version_lane
+        CREATE UNIQUE INDEX IF NOT EXISTS main.idx_decision_policy_versions_version_lane
         ON decision_policy_versions(policy_version, lane)
     """)
     conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_policy_versions_active_lane
+        CREATE UNIQUE INDEX IF NOT EXISTS main.idx_decision_policy_versions_active_lane
         ON decision_policy_versions(lane) WHERE status = 'active'
     """)
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_job_decisions_job
+        CREATE INDEX IF NOT EXISTS main.idx_job_decisions_job
         ON job_decisions(job_url, created_at)
     """)
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_job_decisions_policy
+        CREATE INDEX IF NOT EXISTS main.idx_job_decisions_policy
         ON job_decisions(policy_version)
     """)
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_job_decisions_action
+        CREATE INDEX IF NOT EXISTS main.idx_job_decisions_action
         ON job_decisions(action)
     """)
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_job_decisions_expires
+        CREATE INDEX IF NOT EXISTS main.idx_job_decisions_expires
         ON job_decisions(expires_at)
     """)
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_reviewed_outcomes_job
+        CREATE INDEX IF NOT EXISTS main.idx_reviewed_outcomes_job
         ON reviewed_outcomes(job_url)
     """)
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_reviewed_outcomes_status
+        CREATE INDEX IF NOT EXISTS main.idx_reviewed_outcomes_status
         ON reviewed_outcomes(review_status)
     """)
     conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_reviewed_outcomes_event
+        CREATE UNIQUE INDEX IF NOT EXISTS main.idx_reviewed_outcomes_event
         ON reviewed_outcomes(event_id)
     """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_job_decisions_policy_lane_insert
-        BEFORE INSERT ON job_decisions
-        FOR EACH ROW
-        WHEN NOT EXISTS (
-            SELECT 1
-            FROM decision_policy_versions
-            WHERE policy_version = NEW.policy_version
-              AND lane = NEW.lane
+    for trigger_sql in _CANONICAL_JOB_DECISION_TRIGGER_SQL.values():
+        conn.execute(
+            trigger_sql.replace(
+                "CREATE TRIGGER ",
+                "CREATE TRIGGER IF NOT EXISTS main.",
+                1,
+            )
         )
-        BEGIN
-            SELECT RAISE(ABORT, 'decision policy lane mismatch');
-        END
-    """)
     conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_job_decisions_policy_lane_update
-        BEFORE UPDATE OF policy_version, lane ON job_decisions
-        FOR EACH ROW
-        WHEN NOT EXISTS (
-            SELECT 1
-            FROM decision_policy_versions
-            WHERE policy_version = NEW.policy_version
-              AND lane = NEW.lane
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'decision policy lane mismatch');
-        END
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_decision_policy_versions_lane_update
+        CREATE TRIGGER IF NOT EXISTS main.trg_decision_policy_versions_lane_update
         BEFORE UPDATE OF lane ON decision_policy_versions
         FOR EACH ROW
         WHEN EXISTS (
@@ -1362,7 +1422,9 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
 
     violations: list[str] = []
     for table in ("job_decisions", "reviewed_outcomes"):
-        for row in conn.execute(f"PRAGMA foreign_key_check({table})").fetchall():
+        for row in conn.execute(
+            f"PRAGMA main.foreign_key_check({table})"
+        ).fetchall():
             violations.append(
                 f"foreign key violation: {row[0]} rowid={row[1]} "
                 f"references {row[2]} (fk={row[3]})"
@@ -1370,8 +1432,8 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
 
     lane_mismatches = conn.execute("""
         SELECT d.decision_id, d.policy_version, d.lane, p.lane
-        FROM job_decisions d
-        JOIN decision_policy_versions p ON p.policy_version = d.policy_version
+        FROM main.job_decisions d
+        JOIN main.decision_policy_versions p ON p.policy_version = d.policy_version
         WHERE d.lane <> p.lane
         ORDER BY d.decision_id
     """).fetchall()
