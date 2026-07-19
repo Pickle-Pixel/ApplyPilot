@@ -4950,7 +4950,7 @@
         "powershell -File scripts/setup-fleet-pg-tailscale.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/setup-fleet-pg-tailscale.ps1;sourceBlobSha256=4aa6375f9e88536c1369eb4f5c2d760fee5aaba07cc62cb23951c9d6a5e35f76",
+      "canonicalTarget": "scripts/setup-fleet-pg-tailscale.ps1;sourceBlobSha256=579962eb83687d60412470c448ea5ce6e26d4766296b146257d7005451382500",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5525,7 +5525,7 @@
         "python scripts/bootstrap-fleet-pg-roles.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py;sourceBlobSha256=673451968e81e5ba01c2ce4b9c4e18d2024e5aa1fdf1a6fd1e6b6cfd56e11b58",
+      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py;sourceBlobSha256=2af68b26a4e5987fa6c2c1123c250558fa38edf9459ad7d9a18f8848842686df",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5555,7 +5555,7 @@
         "python scripts/brain-sqlite-to-postgres.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/brain-sqlite-to-postgres.py;sourceBlobSha256=d0362ea86546591f56052e3304b87e13bfb80bb5660d97bac115a49d0843b0c0",
+      "canonicalTarget": "scripts/brain-sqlite-to-postgres.py;sourceBlobSha256=3c6144b891f1fd34c0536cba502eac11e906d121246b18256d1d0354a2b6becf",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5700,7 +5700,7 @@
         "python scripts/run-private-authority-migrator.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/run-private-authority-migrator.py;sourceBlobSha256=b9dfa1ff2e6143e56a19d3515b621cb99561f3002e4b6ff244db4af7a956095d",
+      "canonicalTarget": "scripts/run-private-authority-migrator.py;sourceBlobSha256=efbe5726da06f6ae41d4bdcb0a5f2eb1d0092d4ed75876dc2d5e9e86d5cf8046",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5759,7 +5759,7 @@
         "python scripts/upgrade-brain-authority-existing-topology.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py;sourceBlobSha256=899b8ee76feb68eb48ce9df044588126b85715b536a3a03c693157df12294af0",
+      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py;sourceBlobSha256=f21524b163e9275360b7410e569d0b563ad8350569a2bea7d6d45216cd2e01c0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
