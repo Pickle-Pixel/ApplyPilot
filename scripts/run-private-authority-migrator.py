@@ -51,6 +51,16 @@ _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _SYSTEM_IDENTIFIER = re.compile(r"^[0-9]{1,20}$")
 _DATABASE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+# The exact deployment wrapper set this migrator package must bind. Asserting the required
+# set -- rather than trusting whatever keys the manifest happens to list -- prevents a tampered
+# manifest from silently dropping a wrapper (e.g. the Dockerfile) out of hash coverage.
+_REQUIRED_WRAPPERS = frozenset(
+    {
+        "Dockerfile.authority-migrator",
+        "railway.toml",
+        "scripts/run-private-authority-migrator.py",
+    }
+)
 
 
 class TargetError(RuntimeError):
@@ -108,6 +118,10 @@ def verify_package_manifest(repository_root: Path, package_manifest: Path) -> di
     wrappers = payload.get("wrappers")
     if not isinstance(wrappers, dict) or not wrappers:
         raise PackageError("package manifest binds no wrapper hashes")
+    if frozenset(wrappers) != _REQUIRED_WRAPPERS:
+        raise PackageError(
+            "package manifest wrapper set does not match the exact required deployment wrappers"
+        )
     for relative, expected in sorted(wrappers.items()):
         if not isinstance(expected, str) or not _HEX64.fullmatch(expected):
             raise PackageError(f"package manifest has an invalid wrapper hash for {relative}")

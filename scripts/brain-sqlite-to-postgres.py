@@ -409,7 +409,15 @@ def _is_canonical_uuid(value: object) -> bool:
         return False
 
 
-_DURABLE_IDENTITY_READ_ROLE = "brain_schema_migrator"
+# The durable identity read is a pure SELECT, so it runs under the least-privileged role that
+# V8 grants that SELECT to: ``brain_schema_verifier`` (schema_v8.sql grants it SELECT on the
+# singleton), *not* the table owner ``brain_schema_migrator``. Reading through the owner would
+# assume a role that can also create/alter/drop the identity table; the verifier role can only
+# read it. Deployment must therefore grant the canonical import LOGIN membership in
+# ``brain_schema_verifier`` WITH SET TRUE (the same non-inheriting SET channel it already holds
+# for the migrator), which confers no standing authority -- only the ability to assume the
+# read-only role for the duration of this scoped SELECT.
+_DURABLE_IDENTITY_READ_ROLE = "brain_schema_verifier"
 
 
 @contextmanager
@@ -417,9 +425,10 @@ def _durable_identity_role(pg):
     """Run a durable-identity read under the least-privileged canonical role.
 
     The canonical import LOGIN is ``NOINHERIT`` and is never granted direct SELECT on the V8
-    ``public.applypilot_database_identity`` singleton; only its owner ``brain_schema_migrator``
-    (and the V8 verifier/authority roles) may read it. The read therefore executes under an
-    explicit ``SET ROLE brain_schema_migrator`` with a hardened ``search_path`` of
+    ``public.applypilot_database_identity`` singleton. V8 grants that SELECT to the read-only
+    ``brain_schema_verifier`` role, so the read executes under an explicit
+    ``SET ROLE brain_schema_verifier`` -- the least-privileged role that can read it, never the
+    table owner ``brain_schema_migrator`` -- with a hardened ``search_path`` of
     ``pg_catalog, public`` and nothing else. The role and search_path are always torn down --
     the read-only transaction is rolled back and the role/search_path reset -- on success, on
     exception, and after an ambiguous commit/recovery, so neither can leak onto a pooled or
@@ -438,13 +447,15 @@ def _durable_identity_role(pg):
 
 
 def _restore_login_role(pg) -> None:
-    """Fail-safe restore of the canonical login role and default search_path.
+    """Fail-closed restore of the canonical login role and default search_path.
 
     Rolling back discards the read-only identity transaction and -- because ``SET`` is
     transactional -- reverts the scoped role and search_path while returning the connection to
     the idle state the importer's own boundary guard requires. The explicit ``RESET`` afterwards
-    is defense-in-depth for an autocommit session where the ``SET`` persisted at session scope,
-    so nothing leaks onto a pooled or reused connection even after a failure.
+    is defense-in-depth for an autocommit session where the ``SET`` persisted at session scope.
+    A failure to reset or commit the restore is *surfaced* as a ``CLIError`` (never swallowed):
+    a connection that might still be wearing the elevated role or hardened search_path must not
+    be silently returned to a pool as if the teardown had succeeded.
     """
     rollback = getattr(pg, "rollback", None)
     commit = getattr(pg, "commit", None)
@@ -458,12 +469,15 @@ def _restore_login_role(pg) -> None:
         pg.execute("RESET search_path")
         if callable(commit):
             commit()
-    except Exception:
+    except Exception as exc:
         if callable(rollback):
             try:
                 rollback()
             except Exception:
                 pass
+        raise CLIError(
+            "failed to restore the canonical login role after the durable identity read"
+        ) from exc
 
 
 def _read_database_incarnation(pg) -> str:

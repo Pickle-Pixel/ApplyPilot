@@ -364,22 +364,36 @@ def verify_predecessor(manifest: Manifest, repository_root: str | Path) -> None:
     _verify_predecessor_bundle(manifest, _predecessor_bundle_dir(root))
 
 
+def _read_migration_bytes_verified(root: Path, migration: Migration) -> bytes:
+    """Read a migration file and rebind the exact bytes to the manifest hash at read time.
+
+    The returned bytes are format-checked, decoded, hashed, and compared to
+    ``migration.sha256`` *before* they are handed back. A caller that both hashes (here)
+    and executes the same returned value therefore never executes bytes that differ from
+    the manifest: there is no second, unverified read between the check and the use, so a
+    file swapped after an earlier ``verify_migration_files`` pass cannot slip unrehashed
+    bytes into ``conn.execute`` while the ledger records the manifest hash.
+    """
+    path = (root / Path(*PurePosixPath(migration.path).parts)).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ManifestError(f"migration file is missing: {migration.path}")
+    data = path.read_bytes()
+    if data.startswith(b"\xef\xbb\xbf") or b"\r" in data or not data.endswith(b"\n"):
+        raise ManifestError(f"migration file must be UTF-8 without BOM and LF-only: {migration.path}")
+    try:
+        data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ManifestError(f"migration file is not UTF-8: {migration.path}") from exc
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != migration.sha256:
+        raise ManifestError(f"migration checksum mismatch for {migration.id}: expected {migration.sha256}, got {actual}")
+    return data
+
+
 def verify_migration_files(manifest: Manifest, repository_root: str | Path) -> None:
     root = Path(repository_root).resolve()
     for migration in manifest.migrations:
-        path = (root / Path(*PurePosixPath(migration.path).parts)).resolve()
-        if not path.is_relative_to(root) or not path.is_file():
-            raise ManifestError(f"migration file is missing: {migration.path}")
-        data = path.read_bytes()
-        if data.startswith(b"\xef\xbb\xbf") or b"\r" in data or not data.endswith(b"\n"):
-            raise ManifestError(f"migration file must be UTF-8 without BOM and LF-only: {migration.path}")
-        try:
-            data.decode("utf-8", errors="strict")
-        except UnicodeDecodeError as exc:
-            raise ManifestError(f"migration file is not UTF-8: {migration.path}") from exc
-        actual = hashlib.sha256(data).hexdigest()
-        if actual != migration.sha256:
-            raise ManifestError(f"migration checksum mismatch for {migration.id}: expected {migration.sha256}, got {actual}")
+        _read_migration_bytes_verified(root, migration)
 
 
 def _bounded_timeout(value: float, default: float) -> float:
@@ -560,8 +574,13 @@ def apply_manifest(
         conn.commit()
         root = Path(repository_root).resolve()
         for migration in manifest.migrations[len(already_applied) :]:
-            path = (root / Path(*PurePosixPath(migration.path).parts)).resolve()
-            sql = path.read_text(encoding="utf-8", errors="strict")
+            # Re-read AND re-hash the exact bytes about to be executed. An earlier
+            # verify_migration_files pass hashed the file, but re-reading here without
+            # rehashing would reopen a TOCTOU window in which a swapped file is executed
+            # while the ledger still records the manifest hash. Rehashing the bytes we are
+            # about to run -- and refusing unless they match migration.sha256 -- makes the
+            # executed bytes provably identical to the hash bound into the ledger below.
+            sql = _read_migration_bytes_verified(root, migration).decode("utf-8")
             with conn.transaction():
                 conn.execute(
                     "SELECT set_config('lock_timeout', %s, true)",

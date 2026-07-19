@@ -51,7 +51,9 @@ class _Result:
 
 
 _LOGIN_ROLE = "canonical_import_login"
-_IDENTITY_ROLE = "brain_schema_migrator"
+# The durable identity read is a pure SELECT, so it runs under the least-privileged role V8
+# grants that SELECT to -- the read-only ``brain_schema_verifier`` -- never the table owner.
+_IDENTITY_ROLE = "brain_schema_verifier"
 _DEFAULT_SEARCH_PATH = "\"$user\", public"
 
 
@@ -86,7 +88,7 @@ class _Connection:
         self.search_path = _DEFAULT_SEARCH_PATH
         self.rollbacks = 0
         self.commits = 0
-        # The privileged singleton SELECT is only visible when the migrator role is active.
+        # The privileged singleton SELECT is only visible when the verifier role is active.
         self.identity_readable_only_as_role: str | None = _IDENTITY_ROLE
 
     def __enter__(self):
@@ -592,7 +594,7 @@ def test_incarnation_is_read_from_singleton_not_a_spoofable_guc(monkeypatch, tmp
 def test_durable_identity_read_is_scoped_to_least_privilege_role_without_leak(
     monkeypatch, tmp_path: Path
 ) -> None:
-    # The fake singleton refuses to answer unless the migrator role is active, so a green run
+    # The fake singleton refuses to answer unless the verifier role is active, so a green run
     # proves the CLI genuinely wraps every durable read (pre- and post-operation) in the scoped
     # SET ROLE rather than relying on ambient superuser privilege.
     connection = _Connection()
@@ -605,7 +607,7 @@ def test_durable_identity_read_is_scoped_to_least_privilege_role_without_leak(
 
     statements = [statement.upper() for statement in connection.statements]
     read_positions = [i for i, s in enumerate(statements) if "IDENTITY_ROW_COUNT" in s]
-    set_role_positions = [i for i, s in enumerate(statements) if s.startswith("SET ROLE BRAIN_SCHEMA_MIGRATOR")]
+    set_role_positions = [i for i, s in enumerate(statements) if s.startswith("SET ROLE BRAIN_SCHEMA_VERIFIER")]
     search_path_positions = [i for i, s in enumerate(statements) if s.startswith("SET SEARCH_PATH TO PG_CATALOG, PUBLIC")]
     reset_role_positions = [i for i, s in enumerate(statements) if s.startswith("RESET ROLE")]
     # Both the pre-operation and the post-operation durable reads are exercised on success.
@@ -864,15 +866,18 @@ class _OpenConnection:
 def _provision_v8_identity_singleton(connection) -> None:
     """Create the V8 durable identity singleton owned by ``brain_schema_migrator``.
 
-    Ownership -- not a widened table grant -- is what the real V8 schema uses to let the migrator
-    read the singleton, so the scoped ``SET ROLE brain_schema_migrator`` in the CLI reaches it
-    exactly as it would in production while an ordinary login role cannot.
+    The singleton is owned by the migrator but, exactly as real V8 does (schema_v8.sql grants
+    SELECT to ``brain_schema_verifier``), grants only SELECT to the read-only verifier role. The
+    CLI's scoped ``SET ROLE brain_schema_verifier`` therefore reaches it through the least-
+    privileged channel -- never the table owner -- while an ordinary login role still cannot.
     """
-    connection.execute(
-        "DO $$ BEGIN CREATE ROLE brain_schema_migrator NOLOGIN; "
-        "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
-    )
+    for role in ("brain_schema_migrator", "brain_schema_verifier"):
+        connection.execute(
+            f"DO $$ BEGIN CREATE ROLE {role} NOLOGIN; "
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+        )
     connection.execute("GRANT USAGE, CREATE ON SCHEMA public TO brain_schema_migrator")
+    connection.execute("GRANT USAGE ON SCHEMA public TO brain_schema_verifier")
     connection.execute("SET ROLE brain_schema_migrator")
     connection.execute(
         "CREATE TABLE public.applypilot_database_identity ("
@@ -881,6 +886,7 @@ def _provision_v8_identity_singleton(connection) -> None:
         "initialized_at timestamptz NOT NULL DEFAULT now())"
     )
     connection.execute("REVOKE ALL ON public.applypilot_database_identity FROM PUBLIC")
+    connection.execute("GRANT SELECT ON public.applypilot_database_identity TO brain_schema_verifier")
     connection.execute("INSERT INTO public.applypilot_database_identity (singleton_id) VALUES (1)")
     connection.execute("RESET ROLE")
 
@@ -1002,7 +1008,7 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
 #
 # These exercise the real repair: the durable identity singleton is SELECT-visible only to the
 # ``brain_schema_migrator`` owner, and the canonical import identity is a NOINHERIT LOGIN that is
-# *not* postgres and holds the migrator role only via SET. They prove the pre/post reads succeed
+# *not* postgres and holds the read-only verifier role only via SET. They prove the pre/post reads succeed
 # through the scoped SET ROLE, that a wrong/absent/mismatched singleton still fails before any
 # write, and that neither the role nor the hardened search_path leaks after success, after a
 # failure, or across a reused (pooled) connection.
@@ -1014,10 +1020,11 @@ _CANONICAL_LOGIN_PASSWORD = "canonical-login-disposable-test-only"
 def _provision_canonical_login(admin, admin_dsn: str) -> str:
     """Provision a NOINHERIT LOGIN that reaches the singleton only via ``SET ROLE``.
 
-    The login is a member of ``brain_schema_migrator`` WITH INHERIT FALSE, SET TRUE: it may assume
-    the role for the guarded read but never passively holds its privileges, and it is deliberately
-    neither ``postgres`` nor a superuser. The V8 singleton is created owned by the migrator, so the
-    login cannot read it directly.
+    The login is a member of the read-only ``brain_schema_verifier`` WITH INHERIT FALSE, SET TRUE:
+    it may assume the least-privileged role that V8 grants SELECT on the singleton for the guarded
+    read, but never passively holds its privileges, and it is deliberately neither ``postgres`` nor
+    a superuser. The V8 singleton is owned by the migrator and grants only SELECT to the verifier,
+    so the login cannot read it directly and never assumes the table owner.
     """
     _provision_v8_identity_singleton(admin)
     admin.execute(
@@ -1032,7 +1039,7 @@ def _provision_canonical_login(admin, admin_dsn: str) -> str:
         )
     )
     admin.execute(
-        pg_sql.SQL("GRANT brain_schema_migrator TO {} WITH INHERIT FALSE, SET TRUE").format(
+        pg_sql.SQL("GRANT brain_schema_verifier TO {} WITH INHERIT FALSE, SET TRUE").format(
             pg_sql.Identifier(_CANONICAL_LOGIN)
         )
     )

@@ -3,7 +3,7 @@
   "wrappers": {
     "Dockerfile.authority-migrator": "c371f4a01392168c26d6386525e7be8454c8bc42efa8930ba1b4ffb5122d4874",
     "railway.toml": "59ec663e8c7c7d23a392773f63a0beabd6a1e9ff05db10e93c9fd7dd6cf6e9e3",
-    "scripts/run-private-authority-migrator.py": "b9dfa1ff2e6143e56a19d3515b621cb99561f3002e4b6ff244db4af7a956095d"
+    "scripts/run-private-authority-migrator.py": "efbe5726da06f6ae41d4bdcb0a5f2eb1d0092d4ed75876dc2d5e9e86d5cf8046"
   },
   "migration_manifest": {
     "path": "src/applypilot/fleet/migrations/manifest-v1.json",

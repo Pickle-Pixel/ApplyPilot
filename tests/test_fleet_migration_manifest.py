@@ -359,6 +359,42 @@ def test_failed_migration_rolls_back_sql_and_ledger(migration_pg, tmp_path):
         assert conn.execute("SELECT count(*) AS n FROM applypilot_fleet_schema_migrations").fetchone()["n"] == 0
 
 
+def test_apply_rebinds_executed_bytes_against_hostile_reread(migration_pg, tmp_path, monkeypatch):
+    # A migration file honestly passes the up-front verify_migration_files hash, then an attacker
+    # swaps its bytes in the window before apply_manifest re-reads the file to execute it. The
+    # execution-time re-read MUST rehash the exact bytes and refuse the swap, so neither the hostile
+    # SQL runs nor a ledger row (which binds the manifest hash) is minted for unrehashed bytes.
+    first = _migration(tmp_path, "20260715_001_probe", None, None)
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, [first]))
+    migration_path = tmp_path / str(first["path"])
+    honest_sha = first["sha256"]
+
+    real_verify = migrator.verify_migration_files
+
+    def hostile_verify(bound_manifest, root):
+        # The honest bytes pass the up-front verification exactly as in production...
+        real_verify(bound_manifest, root)
+        # ...then the file is swapped in the TOCTOU window before the execution re-read.
+        migration_path.write_text(
+            "DROP TABLE IF EXISTS applypilot_fleet_schema_migrations;\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        assert hashlib.sha256(migration_path.read_bytes()).hexdigest() != honest_sha
+
+    monkeypatch.setattr(migrator, "verify_migration_files", hostile_verify)
+    with psycopg.connect(migration_pg, row_factory=dict_row) as conn:
+        conn.execute("SET ROLE applypilot_fleet_migrator")
+        with pytest.raises(migrator.ManifestError, match="checksum mismatch"):
+            migrator.apply_manifest(conn, manifest, tmp_path)
+        conn.rollback()
+        # The swapped SQL never executed and no ledger row bound the manifest hash to it.
+        conn.execute("SET ROLE applypilot_fleet_migrator")
+        assert conn.execute(
+            "SELECT count(*) AS n FROM applypilot_fleet_schema_migrations"
+        ).fetchone()["n"] == 0
+
+
 def test_application_authority_is_single_owner_and_crash_conservative(migration_pg):
     signatures = (
         "public.fleet_worker_authorize_lease(text,text,text,text,uuid,text,integer)",

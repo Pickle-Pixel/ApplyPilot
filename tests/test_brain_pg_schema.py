@@ -5542,3 +5542,104 @@ def test_v10_direct_writer_forgery_never_confers_authority(brain_pg) -> None:
             "WHERE retention_attestation_id=%s",
             (forged_id,),
         ).fetchone()["count"] == 0
+
+
+def test_v10_verifier_role_is_the_trusted_attester_boundary(brain_pg) -> None:
+    # Trust-model contract (separation of duties). The HMAC signing key lives outside the database,
+    # so brain_verify_artifact_retention CANNOT cryptographically re-verify the signature: on the
+    # database side it only re-derives the canonical payload SHA-256, pins the incarnation, and
+    # echo-matches the stored evidence. Authority is conferred by the *verifier role's* direct,
+    # privileged call -- the database trusts it as an attestation that out-of-band crypto happened.
+    # This pins the exact boundary: a well-formed but never-crypto-verified signature is accepted
+    # from the verifier role and DOES confer authority, while the writer role can never make the
+    # same call (writer-alone fails closed).
+    artifact_hash = "c" * 64
+    request_id = "9ccccccc-cccc-cccc-cccc-cccccccccccc"
+    with psycopg.connect(brain_pg, row_factory=dict_row) as owner:
+        _install_v8_authority(owner)
+        _append_v9(owner)
+        _append_v10(owner)
+        location = _register_v8_artifact(
+            owner, request_id=request_id, digest="a" * 64, artifact_hash=artifact_hash
+        )
+        location_verified_at = _v8_location_verified_at(owner, artifact_hash, location["object_key"])
+        retain_until = datetime.now(timezone.utc) + timedelta(days=30)
+        lease_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        payload = canonical_manifest_bytes(
+            {
+                "purpose": "brain-artifact-retention-attestation-v1",
+                "requestId": request_id,
+                "artifactSha256": artifact_hash,
+                "backend": location["backend"],
+                "bucketOrContainer": location["bucket_or_container"],
+                "objectKey": location["object_key"],
+                "providerVersionId": location["provider_version_id"],
+                "providerChecksum": location["provider_checksum"],
+                "retentionMode": "COMPLIANCE",
+                "retainUntil": retain_until.isoformat().replace("+00:00", "Z"),
+                "verifiedAt": location_verified_at.isoformat().replace("+00:00", "Z"),
+                "verificationLeaseId": "trusted-attester-lease",
+                "verificationExpiresAt": lease_expires.isoformat().replace("+00:00", "Z"),
+            }
+        )
+        payload_sha256 = hashlib.sha256(payload).hexdigest()
+        # A syntactically valid but cryptographically unchecked signing key/signature: the database
+        # never validates the HMAC, so these are recorded as evidence, not proof.
+        evidence_key_id = "outside-db-signing-key"
+        evidence_signature = "A" * 43
+        attest_args = (
+            artifact_hash, location["backend"], location["bucket_or_container"], location["object_key"],
+            location["provider_version_id"], location["provider_checksum"], retain_until,
+            location_verified_at, "trusted-attester-lease", lease_expires, payload,
+            payload_sha256, evidence_key_id, evidence_signature,
+        )
+        # Capture the durable incarnation as the owner and reuse it below: the artifact-authority
+        # roles are not granted direct SELECT on the identity singleton (production reads it via the
+        # SECURITY DEFINER getter brain_get_artifact_retention_for_verification), so bind it here.
+        incarnation = _v8_current_incarnation(owner)
+        owner.execute("SET ROLE brain_artifact_authority_writer")
+        attestation_id = owner.execute(
+            "SELECT brain_attest_artifact_retention("
+            "%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz,"
+            "%s::bytea,%s,%s,%s) AS id",
+            attest_args,
+        ).fetchone()["id"]
+        owner.commit()
+        # The writer role can never self-attest verification: EXECUTE is not granted to it.
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            owner.execute(
+                "SELECT brain_verify_artifact_retention(%s,%s::uuid,%s,%s,%s)",
+                (attestation_id, incarnation, payload_sha256, evidence_key_id, evidence_signature),
+            )
+        owner.rollback()
+        owner.execute("RESET ROLE")
+        owner.commit()
+        # An attested-but-unverified artifact is non-authoritative until the verifier role acts.
+        assert owner.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is False
+        owner.commit()
+
+    with psycopg.connect(brain_pg, row_factory=dict_row) as verifier:
+        verifier.execute("SET ROLE brain_artifact_authority_verifier")
+        verifier.commit()
+        verification_id = verifier.execute(
+            "SELECT brain_verify_artifact_retention(%s,%s::uuid,%s,%s,%s) AS id",
+            (attestation_id, incarnation, payload_sha256, evidence_key_id, evidence_signature),
+        ).fetchone()["id"]
+        verifier.commit()
+        # The verifier role's direct SQL call -- not any database-side HMAC check -- conferred
+        # authority. The signature bytes were never cryptographically verified by the database.
+        assert isinstance(verification_id, int)
+        assert verifier.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is True
+        # Idempotent replay of the identical attestation returns the same verification row.
+        assert verifier.execute(
+            "SELECT brain_verify_artifact_retention(%s,%s::uuid,%s,%s,%s) AS id",
+            (attestation_id, incarnation, payload_sha256, evidence_key_id, evidence_signature),
+        ).fetchone()["id"] == verification_id
+        verifier.commit()
+        verifier.execute("RESET ROLE")
+        verifier.commit()
+        schema.verify_brain_schema_v10(verifier)

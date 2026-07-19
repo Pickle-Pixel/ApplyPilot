@@ -758,7 +758,21 @@ def verify_persisted_retention(
     keys: Mapping[str, bytes],
     now: datetime,
 ) -> list[int]:
-    """Re-read, cryptographically verify, and verifier-mark exact committed V9 rows."""
+    """Re-read, cryptographically verify, and verifier-mark exact committed V9 rows.
+
+    Trust boundary (separation of duties). The HMAC signing key lives *outside* the database by
+    design, so the ``brain_verify_artifact_retention`` SQL function it calls below CANNOT and does
+    not re-verify the HMAC signature: on the database side it only re-derives the canonical
+    payload's SHA-256 (a genuine integrity check of ``canonical_payload``), pins the database
+    incarnation, echo-matches the stored evidence, and appends the verification row idempotently.
+    The actual cryptographic HMAC verification happens *here in this verifier process* --
+    ``validate_retention_attestation`` re-derives and constant-time-compares the signature using
+    ``keys`` -- and the subsequent SQL call is the verifier role's trusted attestation that it did
+    so. Authority is therefore conferred by the *verifier role* (only it is granted EXECUTE on the
+    function), acting as a trusted attester; the persisted ``signing_key_id``/``signature`` are
+    recorded evidence, not database-verified proof. The writer role alone can never confer
+    authority (it cannot call the function), so the separation-of-duty boundary fails closed.
+    """
     verification_ids: list[int] = []
     try:
         with connection.cursor() as cursor:

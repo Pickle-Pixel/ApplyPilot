@@ -20,6 +20,7 @@ deployment-provenance contract:
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import tomllib
@@ -95,6 +96,19 @@ def test_package_manifest_rejects_missing_bound_wrapper(tmp_path) -> None:
     (tmp_path / "Dockerfile.authority-migrator").unlink()
     with pytest.raises(wrapper.PackageError, match="bound wrapper is missing"):
         wrapper.verify_package_manifest(tmp_path, tmp_path / "deploy/authority-migrator/package-manifest.json")
+
+
+def test_package_manifest_rejects_dropped_wrapper_from_its_own_list(tmp_path) -> None:
+    # A tampered manifest that simply omits a required wrapper (here the Dockerfile) from its own
+    # ``wrappers`` map must fail closed: the verifier asserts the exact required set rather than
+    # trusting whatever keys the manifest lists, so a dropped wrapper cannot escape hash coverage.
+    manifest_relative = "deploy/authority-migrator/package-manifest.json"
+    payload = json.loads((REPO_ROOT / manifest_relative).read_text(encoding="utf-8"))
+    payload["wrappers"].pop("Dockerfile.authority-migrator")
+    _stage_package(tmp_path)
+    (tmp_path / manifest_relative).write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(wrapper.PackageError, match="wrapper set does not match"):
+        wrapper.verify_package_manifest(tmp_path, tmp_path / manifest_relative)
 
 
 def test_package_manifest_rejects_migration_manifest_drift(tmp_path) -> None:
