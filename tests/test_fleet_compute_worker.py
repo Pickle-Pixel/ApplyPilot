@@ -19,7 +19,11 @@ def test_compute_entrypoint_requires_server_admission_before_context(monkeypatch
         def __exit__(self, *_args):
             return False
 
-    monkeypatch.setattr(cwm.pgqueue, "connect", lambda _dsn: Conn())
+    monkeypatch.setattr(
+        cwm.pgqueue,
+        "connect_runtime",
+        lambda _dsn, *, worker_id, contract: Conn(),
+    )
     monkeypatch.setattr(cwm.fleet_schema, "require_apply_result_event_schema", lambda _conn: None)
     monkeypatch.setattr(cwm.fleet_schema, "require_apply_attempt_schema", lambda _conn: None)
     monkeypatch.setattr(

@@ -32,7 +32,11 @@ def test_discovery_entrypoint_requires_server_admission_before_loop(monkeypatch)
         def __exit__(self, *_args):
             return False
 
-    monkeypatch.setattr(dm.pgqueue, "connect", lambda _dsn: Conn())
+    monkeypatch.setattr(
+        dm.pgqueue,
+        "connect_runtime",
+        lambda _dsn, *, worker_id, contract: Conn(),
+    )
     monkeypatch.setattr(dm.fleet_schema, "require_apply_result_event_schema", lambda _conn: None)
     monkeypatch.setattr(dm.fleet_schema, "require_apply_attempt_schema", lambda _conn: None)
     monkeypatch.setattr(

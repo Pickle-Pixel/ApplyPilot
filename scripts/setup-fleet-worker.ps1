@@ -27,20 +27,18 @@ try {
     $validation = @'
 import os
 import psycopg
-from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
+from applypilot.apply import pgqueue
 from applypilot.fleet.pg_roles import validate_runtime_principal
 
 dsn = os.environ["APPLYPILOT_SETUP_DSN"]
-params = conninfo_to_dict(dsn)
 expected_role = os.environ["APPLYPILOT_SETUP_ROLE"]
-if params.get("user") != expected_role:
-    raise SystemExit("FLEET_PG_DSN user does not match MappedRole")
-if params.get("user") in {"postgres", "fleet_worker"}:
-    raise SystemExit("admin and shared fleet worker DSNs are forbidden")
-if not params.get("password"):
-    raise SystemExit("FLEET_PG_DSN must contain an explicit password")
-with psycopg.connect(dsn, row_factory=dict_row) as conn:
+validated = pgqueue.validate_runtime_conninfo(
+    dsn,
+    expected_principal=expected_role,
+    require_expected_principal=True,
+)
+with psycopg.connect(validated.conninfo, row_factory=dict_row) as conn:
     identity = validate_runtime_principal(
         conn,
         worker_id=os.environ["APPLYPILOT_SETUP_NODE"],
@@ -54,9 +52,11 @@ print(identity.session_user)
     }
 
     [Environment]::SetEnvironmentVariable("FLEET_PG_DSN", $FleetPgDsn, "User")
+    [Environment]::SetEnvironmentVariable("APPLYPILOT_PG_PRINCIPAL", $MappedRole, "User")
     [Environment]::SetEnvironmentVariable("APPLYPILOT_WORKER_ID", $NodeId, "User")
     [Environment]::SetEnvironmentVariable("APPLYPILOT_WORKER_CONTRACT", $Contract, "User")
     $env:FLEET_PG_DSN = $FleetPgDsn
+    $env:APPLYPILOT_PG_PRINCIPAL = $MappedRole
     $env:APPLYPILOT_WORKER_ID = $NodeId
     $env:APPLYPILOT_WORKER_CONTRACT = $Contract
     Write-Host "[worker-setup] validated mapped role '$MappedRole' for $NodeId/$Contract"

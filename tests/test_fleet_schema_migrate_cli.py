@@ -35,7 +35,7 @@ def test_migrate_schema_uses_locked_schema_migrator(monkeypatch, capsys):
     conn = object()
     calls = []
     manifest = object()
-    monkeypatch.setattr(pgqueue, "connect", lambda dsn: nullcontext(conn))
+    monkeypatch.setattr(pgqueue, "connect_admin", lambda dsn: nullcontext(conn))
     monkeypatch.setattr(migrator, "load_manifest", lambda path: manifest)
     monkeypatch.setattr(
         migrator,
@@ -52,7 +52,7 @@ def test_migrate_schema_uses_locked_schema_migrator(monkeypatch, capsys):
 
 
 def test_migrate_schema_returns_nonzero_on_migration_failure(monkeypatch, capsys):
-    monkeypatch.setattr(pgqueue, "connect", lambda _dsn: nullcontext(object()))
+    monkeypatch.setattr(pgqueue, "connect_admin", lambda _dsn: nullcontext(object()))
     monkeypatch.setattr(migrator, "load_manifest", lambda _path: object())
     monkeypatch.setattr(migrator, "apply_manifest", lambda *_args: (_ for _ in ()).throw(RuntimeError("migration rejected")))
 

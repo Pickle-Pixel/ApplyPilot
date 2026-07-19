@@ -88,7 +88,9 @@ def main_worker(argv=None) -> int:
     if not args.dsn:
         raise SystemExit("set --dsn or FLEET_PG_DSN")
 
-    with pgqueue.connect(args.dsn) as conn:
+    with pgqueue.connect_runtime(
+        args.dsn, worker_id=args.worker_id, contract="discovery"
+    ) as conn:
         fleet_schema.require_apply_result_event_schema(conn)
         fleet_schema.require_apply_attempt_schema(conn)
         require_allowed(discovery_worker_admission(conn))

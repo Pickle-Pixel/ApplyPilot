@@ -15,14 +15,11 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
 
-# Fail closed if the secure channel is absent: never start without an explicit mapped fleet DSN.
-if (-not $Dsn) {
-  throw "run-otp-responder: FLEET_PG_DSN is not set. Provide an explicit mapped fleet DSN via the environment or -Dsn (never the postgres admin or the shared fleet_worker role)."
-}
-# Fail closed on an admin/shared principal: the OTP responder must run under an explicit
-# mapped fleet DSN, never the postgres admin or the shared fleet_worker role.
-if ($Dsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
-  throw "run-otp-responder: -Dsn selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+. (Join-Path $ProjectRoot "scripts\runtime-launch-channel.ps1")
+$runtimeChannel = Assert-ApplyPilotRuntimeChannel -RepoRoot $ProjectRoot -OverrideDsn $Dsn
+$Dsn = $runtimeChannel.Dsn
+if ($MachineOwner -notmatch '^[A-Za-z0-9_.-]+$') {
+  throw "run-otp-responder: MachineOwner contains unsupported characters."
 }
 
 $LogDir = Join-Path $ProjectRoot ".fleet-logs"
@@ -33,7 +30,6 @@ $OutLog = Join-Path $LogDir "otp-responder.out.log"
 $ErrLog = Join-Path $LogDir "otp-responder.err.log"
 
 $env:FLEET_PG_DSN = $Dsn
-$env:APPLYPILOT_FLEET_DSN = $Dsn
 $env:FLEET_MACHINE_OWNER = $MachineOwner
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
@@ -68,15 +64,15 @@ Stop-StaleOtpResponderProcesses
 
 if ($Supervise) {
   while ($true) {
-    & $Exe --dsn $Dsn --machine-owner $MachineOwner >> $OutLog 2>> $ErrLog
+    & $Exe --machine-owner $MachineOwner >> $OutLog 2>> $ErrLog
     $exit = $LASTEXITCODE
     Add-Content -LiteralPath $ErrLog -Value "[run-otp-responder] responder exited code=$exit; restarting in $RestartDelaySeconds seconds"
     Start-Sleep -Seconds ([Math]::Max(1, $RestartDelaySeconds))
   }
 }
 
-$ArgumentList = "--dsn `"$Dsn`" --machine-owner `"$MachineOwner`""
-$process = Start-Process -FilePath $Exe -WindowStyle Hidden -ArgumentList $ArgumentList `
+$process = Start-Process -FilePath $Exe -WindowStyle Hidden `
+  -ArgumentList @("--machine-owner", $MachineOwner) `
   -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog `
   -WorkingDirectory $ProjectRoot -PassThru
 Write-Host "[run-otp-responder] started pid=$($process.Id)"

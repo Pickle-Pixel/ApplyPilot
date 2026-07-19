@@ -20,7 +20,7 @@
 #                                  5. applypilot-fleet-apply-home resume-if-safe
 #                                  6. applypilot-fleet-apply-home pull
 #     ApplyPilot DeadMan     -- every 20 min. Wrapper: applypilot-fleet-deadman.exe (read-only
-#                                watcher), with FLEET_PG_DSN set inline in the wrapper.
+#                                watcher), inheriting the validated persisted Runtime channel.
 #
 #   Each scheduled task action runs a small generated WRAPPER SCRIPT under
 #   .fleet-logs\_task-wrappers\ via "powershell.exe -File" (never -Command with embedded quoting --
@@ -95,16 +95,6 @@ if (-not $isAdmin) {
   exit 1
 }
 
-# ---- fleet DSN: explicit -Dsn or FLEET_PG_DSN, an explicit mapped fleet DSN. There is no
-# ---- local-admin default: fail closed BEFORE registering any scheduled task. ----
-$effectiveDsn = if ($Dsn) { $Dsn } elseif ($env:FLEET_PG_DSN) { $env:FLEET_PG_DSN } else { $null }
-if (-not $effectiveDsn) {
-  throw "register-apply-cycle: no fleet DSN. Pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to register scheduled tasks."
-}
-if ($effectiveDsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
-  throw "register-apply-cycle: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
-}
-
 # ============================================================================================
 # -Unregister MODE: remove the three ApplyPilot cadence tasks.
 # ============================================================================================
@@ -131,6 +121,10 @@ if ($Unregister) {
 # ============================================================================================
 # REGISTRATION MODE
 # ============================================================================================
+. (Join-Path $repo "scripts\runtime-launch-channel.ps1")
+$runtimeChannel = Assert-ApplyPilotRuntimeChannel -RepoRoot $repo -OverrideDsn $Dsn `
+  -RequirePersistedUserChannel
+$effectiveDsn = $runtimeChannel.Dsn
 if (-not (Test-Path $wrapperDir)) { New-Item -ItemType Directory -Path $wrapperDir -Force | Out-Null }
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 
@@ -144,9 +138,17 @@ function New-CadenceSettings([int]$restartCount = 3, [TimeSpan]$restartInterval 
 # Writes a wrapper .ps1 (UTF8) and returns its full path. Mirrors register-fleet-tasks.ps1's
 # Write-Wrapper -- keeping each task's env-setup in its own tiny file avoids ALL the Win32-argv /
 # PowerShell double-quote-nesting hazards of building a giant -Command string by hand.
+$script:generatedRuntimeWrappers = @()
+$script:registeredRuntimeTasks = @()
 function Write-Wrapper([string]$name, [string]$content) {
   $path = Join-Path $wrapperDir "$name.ps1"
-  Set-Content -Path $path -Value $content -Encoding UTF8
+  $runtimePython = Get-ApplyPilotRuntimePython -RepoRoot $repo
+  $guard = @"
+& '$runtimePython' -m applypilot.fleet.launch_guard
+if (`$LASTEXITCODE -ne 0) { exit 78 }
+"@
+  Set-Content -Path $path -Value ($guard + $content) -Encoding UTF8
+  $script:generatedRuntimeWrappers += $path
   return $path
 }
 
@@ -168,6 +170,7 @@ function Register-CadenceTask {
   Register-ScheduledTask -TaskName $Name -Action $action -Trigger $Trigger -Settings $Settings `
     -Principal $principal -Description $Description -Force | Out-Null
   Write-Host "  registered $Name -> $WrapperPath" -ForegroundColor Green
+  $script:registeredRuntimeTasks += $Name
 }
 
 $runApplyPilotPs1 = Join-Path $repo "run-applypilot.ps1"
@@ -320,7 +323,7 @@ Register-CadenceTask -Name "${TaskPrefix}ApplyCycle" -WrapperPath $applyCycleWra
   -Description "ApplyPilot autonomous apply cycle: verify-live -> push -> arm-canary -> approve --all-pushed -> resume-if-safe -> pull, every 4h. Best-effort: runs all steps, exits non-zero if any failed."
 
 # ---------------------------------------------------------------------------------------------
-# DeadMan -- every 20 min. Read-only watcher; FLEET_PG_DSN set inline in the wrapper.
+# DeadMan -- every 20 min. Read-only watcher; inherits the validated persisted Runtime channel.
 # ---------------------------------------------------------------------------------------------
 Write-Host "`n[register-apply-cycle] registering DeadMan (every 20 min, read-only watcher)..." -ForegroundColor Cyan
 $deadManLog = Join-Path $logDir "deadman.log"
@@ -349,4 +352,9 @@ Write-Host "  [ ] apply-cycle.log shows '=== ApplyCycle done (fail=0) ===' after
 Write-Host "  [ ] Get-ScheduledTask -TaskName 'ApplyPilot *' shows LastTaskResult=0 for all three"
 Write-Host "`n[register-apply-cycle] Get-ScheduledTask -TaskName 'ApplyPilot *' to list what's registered." -ForegroundColor Cyan
 Write-Host "[register-apply-cycle] wrapper scripts live under $wrapperDir (regenerated on every run)." -ForegroundColor Cyan
+Write-ApplyPilotLaunchRolloutEvidence `
+  -Path (Join-Path $logDir "runtime-launch-rollout-apply-cycle.json") `
+  -RuntimeChannel $runtimeChannel `
+  -WrapperPath $generatedRuntimeWrappers `
+  -TaskName $registeredRuntimeTasks
 Write-Host "[register-apply-cycle] registration complete." -ForegroundColor Green

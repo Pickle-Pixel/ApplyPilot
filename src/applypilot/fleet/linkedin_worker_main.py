@@ -286,7 +286,9 @@ def main(argv=None) -> int:  # pragma: no cover - long-running
     from applypilot.apply import pgqueue
     from applypilot.fleet import emergency_admission, schema as fleet_schema
 
-    with pgqueue.connect(args.dsn) as schema_conn:
+    with pgqueue.connect_runtime(
+        args.dsn, worker_id=args.worker_id, contract="linkedin"
+    ) as schema_conn:
         emergency_admission.require_allowed(
             emergency_admission.linkedin_worker_admission(schema_conn)
         )

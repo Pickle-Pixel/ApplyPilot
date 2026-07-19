@@ -929,7 +929,9 @@ def main(argv=None) -> int:  # pragma: no cover - long-running
     from applypilot.apply import launcher, pgqueue
     from applypilot.fleet.agent_switch import AgentSwitcher
     from applypilot.fleet import schema as fleet_schema
-    with pgqueue.connect(args.dsn) as schema_conn:
+    with pgqueue.connect_runtime(
+        args.dsn, worker_id=args.worker_id, contract="apply"
+    ) as schema_conn:
         emergency_admission.require_allowed(
             emergency_admission.worker_admission(
                 schema_conn,

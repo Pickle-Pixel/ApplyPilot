@@ -10,22 +10,24 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Launcher = Join-Path $ProjectRoot "run-otp-responder.ps1"
 
-# The registered task/shortcut must NEVER embed the secret DSN in its arguments (a scheduled
-# task action is world-readable via schtasks/WMI and a .lnk persists on disk). Instead the
-# generated action references the approved runtime secret channel: run-otp-responder.ps1 reads
-# FLEET_PG_DSN from the persisted User environment at logon. Fail closed here if that channel
-# is not integrated, rather than persisting/copying the DSN into the action.
-if (-not $env:FLEET_PG_DSN) {
-  throw "register-otp-responder-startup: FLEET_PG_DSN is not set. Persist an explicit mapped fleet DSN in the User environment (the secure channel the OTP task reads at logon) before registering; the DSN is never embedded in the task/shortcut."
-}
-if ($env:FLEET_PG_DSN -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
-  throw "register-otp-responder-startup: FLEET_PG_DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
-}
+. (Join-Path $ProjectRoot "scripts\runtime-launch-channel.ps1")
+$runtimeChannel = Assert-ApplyPilotRuntimeChannel -RepoRoot $ProjectRoot -RequirePersistedUserChannel
 $TaskName = "ApplyPilotFleet-OtpResponder"
 $ShortcutName = "ApplyPilotFleet-OtpResponder.lnk"
 
 if (-not (Test-Path -LiteralPath $Launcher)) {
   throw "OTP launcher not found: $Launcher"
+}
+
+# Idempotently remove any legacy action/shortcut that may still contain a historical DSN.
+$existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existingTask) {
+  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
+}
+$legacyShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) $ShortcutName
+if (Test-Path -LiteralPath $legacyShortcut) {
+  Remove-Item -LiteralPath $legacyShortcut -Force
 }
 
 function Install-StartupShortcut {
@@ -60,6 +62,11 @@ function Register-OtpScheduledTask {
 
 try {
   Register-OtpScheduledTask
+  Write-ApplyPilotLaunchRolloutEvidence `
+    -Path (Join-Path $ProjectRoot ".fleet-logs\runtime-launch-rollout-otp.json") `
+    -RuntimeChannel $runtimeChannel `
+    -WrapperPath @($Launcher) `
+    -TaskName @($TaskName)
   Write-Host "[otp-startup] registered Task Scheduler task $TaskName"
   if (-not $NoStart) {
     Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
@@ -68,6 +75,11 @@ try {
 } catch {
   Write-Host "[otp-startup] Task Scheduler registration denied; installing Startup shortcut fallback: $($_.Exception.Message)" -ForegroundColor Yellow
   $shortcutPath = Install-StartupShortcut
+  Write-ApplyPilotLaunchRolloutEvidence `
+    -Path (Join-Path $ProjectRoot ".fleet-logs\runtime-launch-rollout-otp.json") `
+    -RuntimeChannel $runtimeChannel `
+    -WrapperPath @($Launcher) `
+    -ShortcutPath @($shortcutPath)
   Write-Host "[otp-startup] installed Startup shortcut $shortcutPath"
   if (-not $NoStart) {
     # No -Dsn: the launcher reads the mapped DSN from the FLEET_PG_DSN environment channel.

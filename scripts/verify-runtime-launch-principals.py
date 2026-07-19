@@ -16,8 +16,8 @@ filenames. It discovers launch surfaces from the git-tracked tree:
   * deploy/service templates (``deploy/*``, ``*.template``, ``*.plist.template``),
   * launcher wrappers under ``scripts/``, and
   * every ``[project.scripts]`` console-entry module ("installed/direct launch
-    wrappers") plus the first-party modules those entry points directly import
-    (so reporting/console helpers reached through the ``applypilot`` CLI are covered).
+    wrappers") plus its complete tracked first-party import closure (so reporting/
+    console helpers reached through the ``applypilot`` CLI are covered).
 
 Comments, examples, help/error text, and generated command lines are all part of the
 safety surface: a forbidden principal token is an offence wherever it appears.
@@ -118,6 +118,39 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
         "generic_dsn_help_default",
         re.compile(r"(?i)default[^\n]*\b(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\b"),
     ),
+    (
+        "generic_dsn_direct_env_source",
+        re.compile(
+            r"(?:\bdsn\w*|\bdatabase\w*|\burl\w*|\$dsn\w*)\s*=\s*(?:"
+            r"(?:os\.)?environ\s*\[\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"]\s*\]"
+            r"|(?:os\.)?(?:getenv|environ\.get)\(\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"]"
+            r"|\$env:(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\b"
+            r"|\[Environment\]::GetEnvironmentVariable\(\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "shell_generic_dsn_default",
+        re.compile(
+            r"(?:\$\{(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)(?::[-+=?]|\})"
+            r"|\$(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "set_item_pguser_admin_or_shared",
+        re.compile(
+            r"\bSet-Item\s+(?:-Path\s+)?(?:Env:)?PGUSER\s+(?:-Value\s+)?['\"]?(?:postgres|fleet_worker)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "role_changing_conninfo_options",
+        re.compile(
+            r"\boptions\s*=\s*[^\n]*(?:-c|--command)[^\n]*\b(?:role|session_authorization)\s*=\s*[^\s&'\"]+",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 # postgres URL DSN whose userinfo we percent-decode before checking (URI-encoded identities
@@ -152,11 +185,26 @@ def scan_text(text: str) -> list[Finding]:
     """Return every forbidden-principal match in ``text`` (path filled by caller)."""
     findings: list[Finding] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
-        for name, pattern in FORBIDDEN_PATTERNS:
-            if pattern.search(line):
-                findings.append(Finding(file="", line=lineno, pattern=name))
-        if _url_encoded_admin_principal(line):
-            findings.append(Finding(file="", line=lineno, pattern="url_encoded_admin_or_shared"))
+        variants = [line]
+        decoded = line
+        for _ in range(3):
+            next_decoded = urllib.parse.unquote(decoded)
+            if next_decoded == decoded:
+                break
+            variants.append(next_decoded)
+            decoded = next_decoded
+        matched: set[str] = set()
+        for variant in variants:
+            for name, pattern in FORBIDDEN_PATTERNS:
+                if name not in matched and pattern.search(variant):
+                    findings.append(Finding(file="", line=lineno, pattern=name))
+                    matched.add(name)
+            if (
+                "url_encoded_admin_or_shared" not in matched
+                and _url_encoded_admin_principal(variant)
+            ):
+                findings.append(Finding(file="", line=lineno, pattern="url_encoded_admin_or_shared"))
+                matched.add("url_encoded_admin_or_shared")
     return findings
 
 
@@ -240,16 +288,39 @@ def _first_party_imports(repo: Path, relpath: str) -> list[str]:
     except (OSError, SyntaxError):
         return []
     found: list[str] = []
+    module_parts = list(Path(relpath).with_suffix("").parts[1:])
+    package_parts = module_parts if module_parts[-1] == "__init__" else module_parts[:-1]
+    if package_parts and package_parts[-1] == "__init__":
+        package_parts.pop()
+
+    def add_module(module: str) -> None:
+        rel = _module_to_relpath(module)
+        if rel is None:
+            return
+        found.append(rel)
+        found.append("src/" + module.replace(".", "/") + "/__init__.py")
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            rel = _module_to_relpath(node.module)
-            if rel is not None:
-                found.append(rel)
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                base = node.module or ""
+            else:
+                keep = len(package_parts) - (node.level - 1)
+                if keep < 1:
+                    continue
+                parts = package_parts[:keep]
+                if node.module:
+                    parts.extend(node.module.split("."))
+                base = ".".join(parts)
+            if not base.startswith("applypilot"):
+                continue
+            add_module(base)
+            for alias in node.names:
+                if alias.name != "*":
+                    add_module(f"{base}.{alias.name}")
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                rel = _module_to_relpath(alias.name)
-                if rel is not None:
-                    found.append(rel)
+                add_module(alias.name)
     return found
 
 
@@ -270,13 +341,16 @@ def _python_dash_m_modules(text: str) -> list[str]:
 
 
 def _add_module_and_imports(repo: Path, module_rel: str, tracked: set[str], surface: set[str]) -> None:
-    """Add a first-party module file plus its one-hop first-party imports to the surface."""
-    if module_rel not in tracked or module_rel in SELF_EXCLUDED:
-        return
-    surface.add(module_rel)
-    for imported in _first_party_imports(repo, module_rel):
-        if imported in tracked and imported not in SELF_EXCLUDED:
-            surface.add(imported)
+    """Add a first-party module and its complete tracked import closure."""
+    pending = [module_rel]
+    while pending:
+        current = pending.pop()
+        if current not in tracked or current in SELF_EXCLUDED or current in surface:
+            continue
+        surface.add(current)
+        for imported in _first_party_imports(repo, current):
+            if imported in tracked and imported not in SELF_EXCLUDED and imported not in surface:
+                pending.append(imported)
 
 
 def discover_launch_surfaces(repo: Path) -> list[str]:

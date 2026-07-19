@@ -196,7 +196,13 @@ def test_apply_worker_main_validates_schema_before_building_loop(monkeypatch):
         "enforce_host_identity",
         lambda machine_owner, **_kwargs: calls.append("identity"),
     )
-    monkeypatch.setattr(pgqueue, "connect", lambda dsn: _Ctx())
+    monkeypatch.setattr(
+        pgqueue,
+        "connect_runtime",
+        lambda dsn, *, worker_id, contract: (
+            calls.append(("runtime_identity", worker_id, contract)) or _Ctx()
+        ),
+    )
     monkeypatch.setattr(
         fleet_schema,
         "ensure_schema_v3",
@@ -219,6 +225,7 @@ def test_apply_worker_main_validates_schema_before_building_loop(monkeypatch):
     monkeypatch.setattr(am, "run_apply", lambda conn_factory, loop, **kwargs: calls.append("run") or {})
 
     assert am.main(["--dsn", "postgresql://fleet", "--worker-id", "w-schema"]) == 0
+    assert ("runtime_identity", "w-schema", "apply") in calls
 
     assert ("schema_check", conn) in calls
     assert calls.index(("schema_check", conn)) < calls.index("build")

@@ -38,7 +38,7 @@ def _retire_score_only_queue_tests(request):
 
 
 def test_legacy_score_only_queue_apis_are_disabled(db):
-    with pgqueue.connect(db) as conn:
+    with pgqueue.connect_admin(db) as conn:
         with pytest.raises(RuntimeError, match="canonical"):
             pgqueue.push_jobs(conn, [])
         with pytest.raises(RuntimeError, match="canonical"):
@@ -126,7 +126,7 @@ def pg_dsn():
 @pytest.fixture
 def db(pg_dsn):
     """Clean schema for each test: ensure schema, truncate, reset config. Yields the DSN."""
-    with pgqueue.connect(pg_dsn) as conn:
+    with pgqueue.connect_admin(pg_dsn) as conn:
         pgqueue.ensure_schema(conn)
         with conn.cursor() as cur:
             # lease_one now requires approved_batch IS NOT NULL (Task 5 gate); add the column
@@ -232,6 +232,7 @@ _DOCUMENTED_LIBPQ_CONNECTION_ENV_VARS = (
 def _clear_ambient_libpq(monkeypatch):
     for name in _DOCUMENTED_LIBPQ_CONNECTION_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("APPLYPILOT_PG_PRINCIPAL", "worker")
 
 
 def _capture_connection(monkeypatch):
@@ -251,15 +252,15 @@ def _capture_connection(monkeypatch):
 @pytest.mark.parametrize(
     "dsn, expected_host",
     [
-        ("postgresql://worker:p%40ss@localhost/fleet", "localhost"),
-        ("postgresql://worker:p%40ss@[::1]:5432/fleet", "::1"),
-        ("host=127.0.0.1 dbname=fleet user=worker password='p@ss'", "127.0.0.1"),
+        ("postgresql://worker:p%40ss@localhost/fleet?sslmode=require", "localhost"),
+        ("postgresql://worker:p%40ss@[::1]:5432/fleet?sslmode=require", "::1"),
+        ("host=127.0.0.1 dbname=fleet user=worker password='p@ss' sslmode=require", "127.0.0.1"),
         (
-            "host=postgres.railway.internal dbname=fleet password='p@ss'",
+            "host=postgres.railway.internal dbname=fleet user=worker password='p@ss' sslmode=require",
             "postgres.railway.internal",
         ),
         (
-            "host=pg-gateway.tailnet.ts.net dbname=fleet password='p@ss'",
+            "host=pg-gateway.tailnet.ts.net dbname=fleet user=worker password='p@ss' sslmode=require",
             "pg-gateway.tailnet.ts.net",
         ),
     ],
@@ -285,7 +286,7 @@ def test_connection_private_endpoints_receive_bounded_defaults(monkeypatch, dsn,
             "verify-full",
         ),
         (
-            "host=db.example.com port=5432 dbname=fleet password=p "
+            "host=db.example.com port=5432 dbname=fleet user=worker password=p "
             "sslmode=verify-full sslrootcert=/run/secrets/provider-ca.pem",
             "verify-full",
         ),
@@ -333,6 +334,26 @@ def test_connection_public_verify_full_requires_explicit_root_certificate(monkey
     assert secret not in str(exc_info.value)
 
 
+def test_runtime_connect_rejects_admin_while_explicit_admin_api_allows_it(monkeypatch):
+    captured, sentinel = _capture_connection(monkeypatch)
+    dsn = "host=localhost dbname=fleet user=postgres password=p sslmode=require"
+
+    with pytest.raises(RuntimeError, match="forbidden admin/shared principal"):
+        pgqueue.connect(dsn)
+
+    assert pgqueue.connect_admin(dsn) is sentinel
+    assert captured["params"]["user"] == "postgres"
+
+
+def test_runtime_connect_requires_an_exact_approved_principal(monkeypatch):
+    _clear_ambient_libpq(monkeypatch)
+    monkeypatch.delenv("APPLYPILOT_PG_PRINCIPAL")
+    dsn = "host=localhost dbname=fleet user=worker password=p sslmode=require"
+
+    with pytest.raises(RuntimeError, match="Approved mapped Postgres principal"):
+        pgqueue.connect(dsn)
+
+
 def test_connection_mixed_private_and_public_hosts_require_public_release_tls(monkeypatch):
     _clear_ambient_libpq(monkeypatch)
     monkeypatch.setattr(
@@ -342,7 +363,10 @@ def test_connection_mixed_private_and_public_hosts_require_public_release_tls(mo
     )
 
     with pytest.raises(RuntimeError, match="sslmode=verify-full"):
-        pgqueue.connect("host=localhost,roundhouse.proxy.rlwy.net dbname=fleet password=p")
+        pgqueue.connect(
+            "host=localhost,roundhouse.proxy.rlwy.net dbname=fleet "
+            "user=worker password=p sslmode=require"
+        )
 
 
 @pytest.mark.parametrize(
@@ -413,7 +437,9 @@ def test_connection_does_not_reject_unrelated_pg_prefixed_variables(monkeypatch,
     monkeypatch.setenv("PG_CONFIG", "C:/PostgreSQL/bin/pg_config.exe")
     captured, sentinel = _capture_connection(monkeypatch)
 
-    assert pgqueue.connect("host=localhost dbname=fleet password=p") is sentinel
+    assert pgqueue.connect(
+        "host=localhost dbname=fleet user=worker password=p sslmode=require"
+    ) is sentinel
     assert captured["params"]["host"] == "localhost"
 
 
@@ -450,7 +476,9 @@ def test_connection_does_not_exempt_unapproved_ip_topologies(monkeypatch, host):
     _clear_ambient_libpq(monkeypatch)
 
     with pytest.raises(RuntimeError, match="sslmode=verify-full"):
-        pgqueue.connect(f"host={host} dbname=fleet password=p")
+        pgqueue.connect(
+            f"host={host} dbname=fleet user=worker password=p sslmode=require"
+        )
 
 
 @pytest.mark.parametrize(
@@ -467,13 +495,15 @@ def test_connection_rejects_invalid_private_topology_syntax(monkeypatch, host):
     _clear_ambient_libpq(monkeypatch)
 
     with pytest.raises(RuntimeError, match="topology|syntax"):
-        pgqueue.connect(f"host={host} dbname=fleet password=p")
+        pgqueue.connect(
+            f"host={host} dbname=fleet user=worker password=p sslmode=require"
+        )
 
 
 def test_connection_preserves_explicit_caller_settings(monkeypatch):
     captured, sentinel = _capture_connection(monkeypatch)
     dsn = (
-        "host=localhost dbname=fleet password=p connect_timeout=3 keepalives=1 "
+        "host=localhost dbname=fleet user=worker password=p sslmode=require connect_timeout=3 keepalives=1 "
         "keepalives_idle=15 keepalives_interval=4 keepalives_count=2 "
         "application_name=ApplyPilotController"
     )
@@ -511,7 +541,7 @@ def test_connection_get_dsn_rejects_retired_applypilot_alias(monkeypatch):
 
 
 def test_ensure_schema_is_idempotent(db):
-    with pgqueue.connect(db) as conn:
+    with pgqueue.connect_admin(db) as conn:
         pgqueue.ensure_schema(conn)   # second run must not raise
         with conn.cursor() as cur:
             cur.execute("SELECT spend_cap_usd, paused FROM fleet_config WHERE id=1")

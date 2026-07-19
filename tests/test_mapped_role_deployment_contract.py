@@ -184,9 +184,10 @@ def test_worker_installer_requires_unique_mapped_dsn_and_never_admin_credentials
         "[Parameter(Mandatory = $true)][ValidateSet('apply', 'linkedin', 'compute', 'discovery')]",
         "[Parameter(Mandatory = $true)][string]$MappedRole",
         "[Parameter(Mandatory = $true)][string]$FleetPgDsn",
-        "conninfo_to_dict",
+        "validate_runtime_conninfo",
         "validate_runtime_principal",
         "FLEET_PG_DSN",
+        "APPLYPILOT_PG_PRINCIPAL",
         "APPLYPILOT_WORKER_ID",
         "APPLYPILOT_WORKER_CONTRACT",
     ):
@@ -196,6 +197,7 @@ def test_worker_installer_requires_unique_mapped_dsn_and_never_admin_credentials
     assert "user=postgres" not in script
     assert "user=fleet_worker" not in script
     assert "APPLYPILOT_FLEET_DSN" not in script
+    assert "conninfo_to_dict" not in script
 
 
 def test_root_installers_are_thin_mapped_role_forwarders() -> None:

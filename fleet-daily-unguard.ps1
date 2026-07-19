@@ -21,6 +21,12 @@ $repo = $PSScriptRoot
 if (-not $repo) { $repo = Split-Path -Parent $MyInvocation.MyCommand.Path }
 Set-Location $repo
 
+. (Join-Path $repo "scripts\runtime-launch-channel.ps1")
+$runtimeChannel = Assert-ApplyPilotRuntimeChannel -RepoRoot $repo -OverrideDsn $Dsn `
+  -RequirePersistedUserChannel:$RegisterTask
+$effectiveDsn = $runtimeChannel.Dsn
+$env:FLEET_PG_DSN = $effectiveDsn
+
 $logs = Join-Path $repo ".fleet-logs"
 $wrapperDir = Join-Path $logs "_task-wrappers"
 if (-not (Test-Path $logs)) { New-Item -ItemType Directory -Path $logs | Out-Null }
@@ -29,12 +35,6 @@ if (-not (Test-Path $wrapperDir)) { New-Item -ItemType Directory -Path $wrapperD
 $python = @((Join-Path $repo ".conda-env\python.exe"), (Join-Path $repo ".venv\Scripts\python.exe")) |
   Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $python) { throw "python not found (.conda-env or .venv)." }
-
-$effectiveDsn = if ($Dsn) { $Dsn } else { $env:FLEET_PG_DSN }
-if (-not $effectiveDsn) {
-  throw "Need FLEET_PG_DSN in environment or -Dsn argument."
-}
-$env:FLEET_PG_DSN = $effectiveDsn
 
 function Invoke-PgUnguard([int]$HeartbeatMinutes, [string]$ReasonText) {
   $code = @"
@@ -137,20 +137,28 @@ if ($RegisterTask) {
   $wrapperPath = Join-Path $wrapperDir "applypilot-daily-unguard-wrapper.ps1"
   $wrapperLog = Join-Path $logs "fleet-daily-unguard.log"
   $qReason = $Reason.Replace("'", "''")
+  if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop | Out-Null
+  }
+  if (Test-Path -LiteralPath $wrapperPath) { Remove-Item -LiteralPath $wrapperPath -Force }
 @"
 # FLEET_PG_DSN is inherited from the persisted User environment; the secret DSN is never
 # embedded in this generated wrapper. The daily task reads it from the runtime channel.
+& '$python' -m applypilot.fleet.launch_guard
+if (`$LASTEXITCODE -ne 0) { exit 78 }
 Set-Location '$repo'
-& '$scriptPath' -Dsn `$env:FLEET_PG_DSN -Reason '$qReason' -HeartbeatMinutes $HeartbeatMinutes *>> '$wrapperLog'
+& '$scriptPath' -Reason '$qReason' -HeartbeatMinutes $HeartbeatMinutes *>> '$wrapperLog'
 "@ | Set-Content -Encoding UTF8 -Path $wrapperPath
 
   $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$wrapperPath`""
   $trigger = New-ScheduledTaskTrigger -Daily -At 3:00am
   $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
-  if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
-  }
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "Daily 03:00 fleet guardrail release for apply/compute/discovery/LinkedIn fronts." -Force | Out-Null
+  Write-ApplyPilotLaunchRolloutEvidence `
+    -Path (Join-Path $logs "runtime-launch-rollout-daily-unguard.json") `
+    -RuntimeChannel $runtimeChannel `
+    -WrapperPath @($wrapperPath) `
+    -TaskName @($TaskName)
   Write-Host "[fleet-daily-unguard] registered task '$TaskName' for daily 03:00 (local log: $wrapperLog)." -ForegroundColor Green
   return
 }

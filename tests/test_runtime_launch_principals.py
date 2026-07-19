@@ -139,6 +139,26 @@ def test_scanner_flags_extended_forbidden_forms(line):
 @pytest.mark.parametrize(
     "line",
     [
+        "postgresql://host/db?%75ser=%70ostgres",
+        "postgresql://host/db?user=%66leet_worker",
+        "dsn = os.environ['DATABASE_URL']",
+        'dsn = os.getenv("APPLYPILOT_FLEET_DSN")',
+        "$dsn = $env:DATABASE_URL",
+        '$dsn = [Environment]::GetEnvironmentVariable("DATABASE_URL", "User")',
+        'Set-Item Env:PGUSER "postgres"',
+        "export DSN=${DATABASE_URL:-}",
+        "export DSN=$APPLYPILOT_FLEET_DSN",
+        "options=-c%20role%3Dpostgres",
+        "options='-c session_authorization=random_superuser'",
+    ],
+)
+def test_scanner_flags_encoded_query_env_and_role_option_bypasses(line):
+    assert scanner.scan_text(line), line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         'if ($MappedRole -in @("postgres", "fleet_worker")) { throw "unique per-node" }',
         'if params.get("user") in {"postgres", "fleet_worker"}: raise SystemExit(1)',
         'user = os.environ["APPLYPILOT_SETUP_ROLE"]  # compared, never selected',
@@ -292,9 +312,10 @@ def test_otp_startup_registration_never_embeds_the_dsn_and_fails_closed():
     assert "$Dsn" not in text  # the whole -Dsn parameter is gone; nothing to embed
     # Both generated actions launch the responder with -Supervise only (runtime env channel).
     assert text.count('-File `"$Launcher`" -Supervise') == 2
-    # Fail closed before registration if the secure channel (FLEET_PG_DSN) is absent.
-    assert "if (-not $env:FLEET_PG_DSN)" in text
-    assert "is never embedded in the task/shortcut" in text
+    # Validate the persisted future channel, not a transient process-only environment value.
+    assert "Assert-ApplyPilotRuntimeChannel" in text
+    assert "-RequirePersistedUserChannel" in text
+    assert "Get-ScheduledTask" in text and "Remove-Item -LiteralPath $legacyShortcut" in text
 
 
 @pytest.mark.parametrize(
@@ -317,3 +338,100 @@ def test_generated_task_wrappers_never_embed_the_dsn_literal(rel, embed_tokens):
         assert token not in text, token
     # The de-embedded wrapper documents the inherited channel.
     assert "inherited from the persisted User environment" in text
+
+
+def test_otp_child_processes_inherit_dsn_without_secret_command_line():
+    text = (REPO / "run-otp-responder.ps1").read_text(encoding="utf-8")
+    invocation_lines = [
+        line for line in text.splitlines()
+        if "& $Exe" in line or "ArgumentList" in line
+    ]
+    assert invocation_lines
+    assert all("--dsn" not in line.casefold() for line in invocation_lines)
+    assert "--machine-owner" in "\n".join(invocation_lines)
+
+
+def test_discovery_follows_transitive_from_package_imports(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "src/applypilot/pkg").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project.scripts]\nentry = "applypilot.entry:main"\n', encoding="utf-8"
+    )
+    (tmp_path / "src/applypilot/__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src/applypilot/entry.py").write_text(
+        "from applypilot.pkg import second\n", encoding="utf-8"
+    )
+    (tmp_path / "src/applypilot/pkg/__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src/applypilot/pkg/second.py").write_text(
+        "from applypilot.pkg import third\n", encoding="utf-8"
+    )
+    (tmp_path / "src/applypilot/pkg/third.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+    surfaces = set(scanner.discover_launch_surfaces(tmp_path))
+
+    assert "src/applypilot/entry.py" in surfaces
+    assert "src/applypilot/pkg/second.py" in surfaces
+    assert "src/applypilot/pkg/third.py" in surfaces
+
+
+def test_discovery_follows_transitive_relative_imports(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "src/applypilot/pkg").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project.scripts]\nentry = "applypilot.entry:main"\n', encoding="utf-8"
+    )
+    (tmp_path / "src/applypilot/__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src/applypilot/entry.py").write_text(
+        "from .pkg import second\n", encoding="utf-8"
+    )
+    (tmp_path / "src/applypilot/pkg/__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src/applypilot/pkg/second.py").write_text(
+        "from . import third\n", encoding="utf-8"
+    )
+    (tmp_path / "src/applypilot/pkg/third.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+    surfaces = set(scanner.discover_launch_surfaces(tmp_path))
+
+    assert "src/applypilot/pkg/second.py" in surfaces
+    assert "src/applypilot/pkg/third.py" in surfaces
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "register-fleet-tasks.ps1",
+        "register-apply-cycle.ps1",
+        "fleet-daily-unguard.ps1",
+        "register-otp-responder-startup.ps1",
+    ],
+)
+def test_registrars_validate_persisted_future_channel_before_side_effects(rel):
+    text = (REPO / rel).read_text(encoding="utf-8")
+    validation = text.index("Assert-ApplyPilotRuntimeChannel")
+    effect_positions = [
+        text.find(marker)
+        for marker in ("New-Item -ItemType Directory", "Set-Content", "Register-ScheduledTask")
+        if text.find(marker) >= 0
+    ]
+    assert effect_positions
+    assert validation < min(effect_positions)
+    assert "RequirePersistedUserChannel" in text
+
+
+def test_registration_rollout_scrubs_legacy_artifacts_and_writes_post_evidence():
+    fleet = (REPO / "register-fleet-tasks.ps1").read_text(encoding="utf-8")
+    cadence = (REPO / "register-apply-cycle.ps1").read_text(encoding="utf-8")
+    otp = (REPO / "register-otp-responder-startup.ps1").read_text(encoding="utf-8")
+    daily = (REPO / "fleet-daily-unguard.ps1").read_text(encoding="utf-8")
+    for text in (fleet, cadence, otp, daily):
+        assert "Write-ApplyPilotLaunchRolloutEvidence" in text
+    assert "Remove-Item -LiteralPath" in fleet
+    assert "Set-Content -Path $path" in cadence
+    assert "Remove-Item -LiteralPath" in otp
+    assert "Remove-Item -LiteralPath" in daily
+    assert "Unregister-ScheduledTask" in fleet
+    assert "Unregister-ScheduledTask" in cadence
+    assert "Unregister-ScheduledTask" in otp
+    assert "Unregister-ScheduledTask" in daily

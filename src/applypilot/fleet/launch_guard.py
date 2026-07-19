@@ -1,13 +1,14 @@
-"""``python -m applypilot.fleet.launch_guard``: fail closed unless FLEET_PG_DSN names a
-verified unique mapped principal.
+"""``python -m applypilot.fleet.launch_guard``: fail closed unless FLEET_PG_DSN names
+the exact approved unique mapped principal through a complete explicit runtime DSN.
 
 Runtime launch surfaces call this BEFORE any file/task/process/database side effect. It
 reuses the single hardened conninfo parser (``pgqueue.assert_mapped_principal``) -- there
 is no second, weaker parser -- so a forbidden ``postgres`` / shared ``fleet_worker``
 principal is rejected in libpq keyword DSNs, URL DSNs (including percent-encoded and
-query-string identities), mixed case / quoted spellings, the ambient ``PGUSER`` form, and
-the indirect ``service`` / ``passfile`` forms. It exits non-zero with a redacted message
-and never prints the DSN value.
+query-string identities), mixed case / quoted spellings, ambient libpq variables, indirect
+``service`` / ``passfile`` forms, role-changing options, incomplete authentication fields,
+and unsafe transport settings. It exits non-zero with a redacted message and never prints
+the DSN value.
 """
 
 from __future__ import annotations

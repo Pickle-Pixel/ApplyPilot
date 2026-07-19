@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Any, Iterable
@@ -136,7 +137,14 @@ def _explicit_targets(params: dict[str, str]) -> list[str]:
     return hosts
 
 
-def _prepare_conninfo(dsn: str) -> str:
+@dataclass(frozen=True)
+class RuntimeConninfo:
+    conninfo: str
+    principal: str
+
+
+def _validate_explicit_conninfo(dsn: str) -> tuple[dict[str, str], list[str]]:
+    """Parse one DSN once and enforce the policy shared by every connection class."""
     ambient = sorted(name for name in LIBPQ_CONNECTION_ENV_VARS if name in os.environ)
     if ambient:
         names = ", ".join(ambient)
@@ -160,6 +168,10 @@ def _prepare_conninfo(dsn: str) -> str:
     if params.get("password") in (None, ""):
         raise RuntimeError("Fleet Postgres DSN must contain an explicit password; connection details were not logged.")
 
+    return params, targets
+
+
+def _validate_transport(params: dict[str, str], targets: list[str]) -> None:
     uses_public_tcp = any(not _is_authenticated_private_host(target) for target in targets)
     if uses_public_tcp:
         if params.get("sslmode", "").lower() != "verify-full":
@@ -173,11 +185,80 @@ def _prepare_conninfo(dsn: str) -> str:
                 "connection details were not logged."
             )
 
+
+def _render_conninfo(dsn: str, params: dict[str, str]) -> str:
     defaults = {key: value for key, value in _CONNECTION_DEFAULTS.items() if key not in params}
     try:
         return make_conninfo(dsn, **defaults)
     except (psycopg.Error, ValueError) as exc:
         raise RuntimeError("Invalid fleet Postgres DSN; connection details were not logged.") from exc
+
+
+def validate_runtime_conninfo(
+    dsn: str,
+    *,
+    expected_principal: str | None = None,
+    require_expected_principal: bool = False,
+) -> RuntimeConninfo:
+    """Validate one effective runtime DSN without connecting or logging secrets."""
+    params, targets = _validate_explicit_conninfo(dsn)
+
+    if params.get("options"):
+        raise RuntimeError(
+            "Fleet Postgres DSN options are not allowed because they can change the runtime role; "
+            "connection details were not logged."
+        )
+
+    user = params.get("user")
+    if not user or not user.strip():
+        raise RuntimeError(
+            "Fleet Postgres DSN does not name an explicit mapped principal; connection details were not logged."
+        )
+    principal = user.strip()
+    if principal.casefold() in FORBIDDEN_LAUNCH_PRINCIPALS:
+        raise RuntimeError(
+            "Fleet Postgres DSN selects a forbidden admin/shared principal (postgres/fleet_worker); "
+            "connection details were not logged."
+        )
+    approved = expected_principal or os.environ.get("APPLYPILOT_PG_PRINCIPAL")
+    if require_expected_principal and not approved:
+        raise RuntimeError(
+            "Approved mapped Postgres principal is not configured; set APPLYPILOT_PG_PRINCIPAL."
+        )
+    if approved and principal != approved:
+        raise RuntimeError(
+            "Fleet Postgres DSN principal does not match the approved mapped principal; "
+            "connection details were not logged."
+        )
+    _validate_transport(params, targets)
+    sslmode = params.get("sslmode", "").casefold()
+    if sslmode not in {"require", "verify-ca", "verify-full"}:
+        raise RuntimeError(
+            "Fleet Postgres DSN must explicitly require TLS; connection details were not logged."
+        )
+
+    return RuntimeConninfo(conninfo=_render_conninfo(dsn, params), principal=principal)
+
+
+def _prepare_conninfo(dsn: str) -> str:
+    return validate_runtime_conninfo(dsn, require_expected_principal=True).conninfo
+
+
+def _prepare_admin_conninfo(dsn: str) -> str:
+    """Validate an explicitly privileged controller/migrator connection.
+
+    This deliberately separate path never backs a runtime launcher. It retains the
+    network, password, ambient-environment, and indirection defenses while permitting
+    the database owner/admin identities required for schema and disposable-test setup.
+    """
+    params, targets = _validate_explicit_conninfo(dsn)
+    if params.get("options"):
+        raise RuntimeError(
+            "Fleet Postgres DSN options are not allowed because they can change the session role; "
+            "connection details were not logged."
+        )
+    _validate_transport(params, targets)
+    return _render_conninfo(dsn, params)
 
 
 def get_dsn(dsn: str | None = None) -> str:
@@ -195,7 +276,11 @@ def get_dsn(dsn: str | None = None) -> str:
 FORBIDDEN_LAUNCH_PRINCIPALS = frozenset({"postgres", "fleet_worker"})
 
 
-def assert_mapped_principal(dsn: str) -> str:
+def assert_mapped_principal(
+    dsn: str,
+    *,
+    expected_principal: str | None = None,
+) -> str:
     """Reuse the hardened conninfo parser to reject admin/shared launch principals.
 
     This is the single, hardened principal parser -- there is deliberately no second,
@@ -205,43 +290,47 @@ def assert_mapped_principal(dsn: str) -> str:
     the indirect service / passfile forms that hide the principal. It returns the
     validated principal and never logs the DSN value.
     """
-    ambient_user = os.environ.get("PGUSER")
-    if ambient_user and ambient_user.strip().lower() in FORBIDDEN_LAUNCH_PRINCIPALS:
-        raise RuntimeError(
-            "Ambient PGUSER selects an admin/shared fleet principal; connection details were not logged."
-        )
-
-    try:
-        params = conninfo_to_dict(dsn)
-    except (psycopg.Error, ValueError) as exc:
-        raise RuntimeError("Invalid fleet Postgres DSN; connection details were not logged.") from exc
-
-    indirect = sorted(_INDIRECT_CONNINFO_OPTIONS.intersection(params))
-    if indirect:
-        names = ", ".join(indirect)
-        raise RuntimeError(
-            f"Fleet Postgres DSN indirection hides the launch principal: {names}; "
-            "connection details were not logged."
-        )
-
-    user = params.get("user")
-    if not user or not user.strip():
-        # No explicit user -> libpq would fall back to PGUSER / the OS user, which is not a
-        # verified unique mapped principal. Fail closed rather than guess.
-        raise RuntimeError(
-            "Fleet Postgres DSN does not name an explicit mapped principal; connection details were not logged."
-        )
-    if user.strip().lower() in FORBIDDEN_LAUNCH_PRINCIPALS:
-        raise RuntimeError(
-            "Fleet Postgres DSN selects a forbidden admin/shared principal (postgres/fleet_worker); "
-            "connection details were not logged."
-        )
-    return user
+    return validate_runtime_conninfo(
+        dsn,
+        expected_principal=expected_principal,
+        require_expected_principal=True,
+    ).principal
 
 
 def connect(dsn: str | None = None, *, autocommit: bool = False) -> psycopg.Connection:
-    """Open a hardened dict-row psycopg connection to the fleet Postgres."""
+    """Open a runtime-principal connection to the fleet Postgres."""
     return psycopg.connect(_prepare_conninfo(get_dsn(dsn)), autocommit=autocommit, row_factory=dict_row)
+
+
+def connect_admin(dsn: str | None = None, *, autocommit: bool = False) -> psycopg.Connection:
+    """Open an explicit privileged controller/migrator connection.
+
+    Runtime launchers and workers must never call this API.
+    """
+    return psycopg.connect(
+        _prepare_admin_conninfo(get_dsn(dsn)),
+        autocommit=autocommit,
+        row_factory=dict_row,
+    )
+
+
+def connect_runtime(
+    dsn: str | None,
+    *,
+    worker_id: str,
+    contract: str,
+    autocommit: bool = False,
+) -> psycopg.Connection:
+    """Connect and authenticate the exact database-mapped worker before use."""
+    from applypilot.fleet.pg_roles import validate_runtime_principal
+
+    conn = connect(dsn, autocommit=autocommit)
+    try:
+        validate_runtime_principal(conn, worker_id=worker_id, contract=contract)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def ensure_schema(conn: psycopg.Connection) -> None:

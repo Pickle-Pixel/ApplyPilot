@@ -223,7 +223,7 @@ def fleet_pg():
     # never starts or stops the server: ownership remains with the CI job.
     external_dsn = os.environ.get("APPLYPILOT_PGTEST_DSN")
     if external_dsn:
-        with pgqueue.connect(external_dsn) as conn:
+        with pgqueue.connect_admin(external_dsn) as conn:
             require_disposable_postgres(conn)
         yield external_dsn
         return
@@ -296,7 +296,7 @@ def fleet_pg():
     os.environ[DISPOSABLE_CLUSTER_MARKER_ENV] = cluster_nonce
     try:
         _mark_disposable_postgres(dsn, cluster_nonce=cluster_nonce)
-        with pgqueue.connect(dsn) as conn:
+        with pgqueue.connect_admin(dsn) as conn:
             require_disposable_postgres(conn)
         yield dsn
     finally:
@@ -378,7 +378,7 @@ def _drop_fixed_brain_test_roles(conn) -> None:
 def fleet_db(fleet_pg, monkeypatch):
     """Clean v3 schema for each test; yields the DSN."""
     monkeypatch.setenv("FLEET_PG_DSN", fleet_pg)
-    with pgqueue.connect(fleet_pg) as conn:
+    with pgqueue.connect_admin(fleet_pg) as conn:
         require_disposable_postgres(conn)
         _drop_fixed_brain_test_roles(conn)
         _restore_test_public_acls(conn)
@@ -416,9 +416,20 @@ def fleet_db(fleet_pg, monkeypatch):
             )
             cur.execute("DELETE FROM fleet_decision_policies;")
         conn.commit()
+    runtime_connect = pgqueue.connect
+
+    def connect_disposable_admin(dsn=None, *, autocommit=False):
+        resolved = pgqueue.get_dsn(dsn)
+        if resolved == fleet_pg:
+            return pgqueue.connect_admin(resolved, autocommit=autocommit)
+        return runtime_connect(dsn, autocommit=autocommit)
+
+    # Tests using fleet_db are explicitly privileged against a disposable cluster. Keep that
+    # administrative fixture path separate while production pgqueue.connect remains fail-closed.
+    monkeypatch.setattr(pgqueue, "connect", connect_disposable_admin)
     try:
         yield fleet_pg
     finally:
-        with pgqueue.connect(fleet_pg) as conn:
+        with pgqueue.connect_admin(fleet_pg) as conn:
             _drop_fixed_brain_test_roles(conn)
             _restore_test_public_acls(conn)

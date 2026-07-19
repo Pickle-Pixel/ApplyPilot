@@ -73,7 +73,9 @@ def main(argv=None) -> int:
     providers = [s for s in args.providers.split(",") if s]
     fallback = [s for s in args.fallback.split(",") if s]
 
-    with pgqueue.connect(args.dsn) as conn:
+    with pgqueue.connect_runtime(
+        args.dsn, worker_id=args.worker_id, contract="compute"
+    ) as conn:
         fleet_schema.require_apply_result_event_schema(conn)
         fleet_schema.require_apply_attempt_schema(conn)
         require_allowed(compute_worker_admission(conn))

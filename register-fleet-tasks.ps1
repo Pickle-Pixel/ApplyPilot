@@ -71,18 +71,13 @@ if (-not $isAdmin) {
   exit 1
 }
 
-# ---- fleet DSN: explicit -Dsn or FLEET_PG_DSN, an explicit mapped fleet DSN. There is NO
-# ---- per-machine local-admin default anymore: a postgres/fleet_worker DSN would bypass the
-# ---- mapped-role topology. Resolve it here but only REQUIRE it on the paths that touch the
-# ---- database or register tasks (Assert-FleetDsn); -Unregister needs no DSN. ----
-$effectiveDsn = if ($Dsn) { $Dsn } elseif ($env:FLEET_PG_DSN) { $env:FLEET_PG_DSN } else { $null }
-function Assert-FleetDsn {
-  if (-not $effectiveDsn) {
-    throw "register-fleet-tasks: no fleet DSN for machine '$Machine'. Pass -Dsn or set FLEET_PG_DSN to an explicit mapped fleet DSN (never the postgres admin or the shared fleet_worker role). Refusing to touch the database or register tasks."
-  }
-  if ($effectiveDsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
-    throw "register-fleet-tasks: fleet DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
-  }
+. (Join-Path $repo "scripts\runtime-launch-channel.ps1")
+$effectiveDsn = $null
+function Assert-FleetDsn([switch]$PersistedUserChannel) {
+  $channel = Assert-ApplyPilotRuntimeChannel -RepoRoot $repo -OverrideDsn $Dsn `
+    -RequirePersistedUserChannel:$PersistedUserChannel
+  $script:effectiveDsn = $channel.Dsn
+  $script:runtimeChannel = $channel
 }
 
 function Get-Psql {
@@ -149,7 +144,13 @@ if ($Unregister) {
 # ============================================================================================
 # REGISTRATION MODE
 # ============================================================================================
-Assert-FleetDsn
+Assert-FleetDsn -PersistedUserChannel
+$legacyFleetWrappers = @(
+  "fleet-agent-task.ps1", "watchdog-task.ps1", "otp-responder-task.ps1",
+  "doctor-task.ps1", "autotriage-task.ps1", "crash-liveness-task.ps1",
+  "outcome-scan-task.ps1", "discovery-ingest-task.ps1", "compute-ingest-task.ps1",
+  "discovery-scrape-task.ps1", "compute-score-task.ps1"
+)
 Write-Host "=================================================================================" -ForegroundColor Cyan
 Write-Host " NEVER co-locate canary loaders (load-canary-*.ps1) with fleet-agent on one machine" -ForegroundColor Red
 Write-Host " -- they will kill-fight over the same <Label>-<Slot> worker-id namespace (S1)." -ForegroundColor Red
@@ -222,9 +223,17 @@ function New-FleetSettings([int]$restartCount = 3, [TimeSpan]$restartInterval = 
 # Writes a wrapper .ps1 (UTF8) and returns its full path. Keeping each task's env-setup in its own
 # tiny file avoids ALL the Win32-argv / PowerShell double-quote-nesting hazards of building a
 # giant -Command string by hand, and gives us a stable file to `Get-Content` for troubleshooting.
+$script:generatedRuntimeWrappers = @()
+$script:registeredRuntimeTasks = @()
 function Write-Wrapper([string]$name, [string]$content) {
   $path = Join-Path $wrapperDir "$name.ps1"
-  Set-Content -Path $path -Value $content -Encoding UTF8
+  $runtimePython = Get-ApplyPilotRuntimePython -RepoRoot $repo
+  $guard = @"
+& '$runtimePython' -m applypilot.fleet.launch_guard
+if (`$LASTEXITCODE -ne 0) { exit 78 }
+"@
+  Set-Content -Path $path -Value ($guard + $content) -Encoding UTF8
+  $script:generatedRuntimeWrappers += $path
   return $path
 }
 
@@ -246,12 +255,12 @@ function Register-FleetTask {
   Register-ScheduledTask -TaskName $Name -Action $action -Trigger $Trigger -Settings $Settings `
     -Principal $principal -Description $Description -Force | Out-Null
   Write-Host "  registered $Name -> $WrapperPath" -ForegroundColor Green
+  $script:registeredRuntimeTasks += $Name
 }
 
 # ---------------------------------------------------------------------------------------------
 # ALL MACHINES: FleetAgent -- the one actuator (Phase 1.1). At logon, restart-on-failure, no
-# execution-time limit. Sets FLEET_PG_DSN for this machine inline in the wrapper (does NOT rely
-# on user-profile env).
+# execution-time limit. Inherits the exact persisted Runtime channel validated above.
 # ---------------------------------------------------------------------------------------------
 Write-Host "`n[register-fleet-tasks] registering FleetAgent (actuator) on '$Machine'..." -ForegroundColor Cyan
 $fleetAgentPs1 = Join-Path $repo "fleet-agent.ps1"
@@ -317,7 +326,7 @@ function Stop-StaleWatchdogProcesses {
     }
 }
 Stop-StaleWatchdogProcesses
-& '$watchdogExe' --dsn `$env:FLEET_PG_DSN
+& '$watchdogExe'
 "@
     $watchdogWrapper = Write-Wrapper "watchdog-task" $watchdogWrapperContent
     $watchdogTrigger = New-ScheduledTaskTrigger -AtLogOn
@@ -342,7 +351,7 @@ Stop-StaleWatchdogProcesses
 `$ErrorActionPreference = 'Stop'
 # FLEET_PG_DSN is inherited from the persisted User environment; never embed the secret here.
 Set-Location '$repo'
-& '$otpLauncher' -Dsn `$env:FLEET_PG_DSN -Supervise
+& '$otpLauncher' -Supervise
 "@
     $otpWrapper = Write-Wrapper "otp-responder-task" $otpWrapperContent
     $otpTrigger = New-ScheduledTaskTrigger -AtLogOn
@@ -463,7 +472,7 @@ if (`$scanExit -ne 0) {
 }
 # --no-scan: the standalone outcomes-scan above already refreshed email_events; without it the
 # reconcile runs its own built-in Phase-0 Gmail scan and every cycle would scan Gmail twice.
-& '$reconcileExe' --dsn `$env:APPLYPILOT_FLEET_DSN --no-scan --apply *>> `$log
+& '$reconcileExe' --no-scan --apply *>> `$log
 `$reconcileExit = `$LASTEXITCODE
 Add-Content -Path `$log -Value ('[' + (Get-Date -Format 'o') + '] reconcile-email exit=' + `$reconcileExit)
 exit `$reconcileExit
@@ -607,6 +616,25 @@ if ($Machine -eq "m4") {
   Write-Host "  [ ] .fleet-logs\compute-score.log shows 'pre-flight OK: LLM tier=' then scoring (not the tier-fail)"
   Write-Host "  [ ] apply lane resumes only after you UNPAUSE (fleet is paused=true today); compute runs regardless"
 }
+# Remove stale fleet actions/wrappers only after every replacement for this machine has
+# registered successfully. This keeps the prior working task set recoverable during preflight.
+Get-ScheduledTask -TaskName "${TaskPrefix}*" -ErrorAction SilentlyContinue | Where-Object {
+  $_.TaskName -notin $registeredRuntimeTasks
+} | ForEach-Object {
+  Stop-ScheduledTask -TaskName $_.TaskName -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction Stop
+}
+foreach ($legacyName in $legacyFleetWrappers) {
+  $legacyPath = Join-Path $wrapperDir $legacyName
+  if ((Test-Path -LiteralPath $legacyPath) -and $legacyPath -notin $generatedRuntimeWrappers) {
+    Remove-Item -LiteralPath $legacyPath -Force
+  }
+}
 Write-Host "`n[register-fleet-tasks] Get-ScheduledTask -TaskName '${TaskPrefix}*' to list what's registered on this box." -ForegroundColor Cyan
 Write-Host "[register-fleet-tasks] wrapper scripts live under $wrapperDir (regenerated on every run)." -ForegroundColor Cyan
+Write-ApplyPilotLaunchRolloutEvidence `
+  -Path (Join-Path $logDir "runtime-launch-rollout-fleet.json") `
+  -RuntimeChannel $runtimeChannel `
+  -WrapperPath $generatedRuntimeWrappers `
+  -TaskName $registeredRuntimeTasks
 Write-Host "[register-fleet-tasks] registration for '$Machine' complete." -ForegroundColor Green

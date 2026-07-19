@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         dsn = pgqueue.get_dsn(args.dsn)
         manifest = migrator.load_manifest(_MANIFEST_PATH)
-        with pgqueue.connect(dsn) as conn:
+        with pgqueue.connect_admin(dsn) as conn:
             result = migrator.apply_manifest(conn, manifest, _REPOSITORY_ROOT)
     except Exception as exc:
         print(f"fleet schema migration failed: {type(exc).__name__}: {exc}", file=sys.stderr)
