@@ -56,14 +56,6 @@ _CANDIDATE_V4_PUBLISH_SIGNATURE = (
 _CANDIDATE_V5_PUBLISH_SIGNATURE = (
     "public.brain_publish_v5_candidate(text,text,text,text,text,bigint,uuid,text,text,text,text,text,bigint)"
 )
-_ARTIFACT_REGISTER_SIGNATURE = (
-    "public.brain_register_authoritative_artifact_manifest(uuid,text,text,text,timestamptz,timestamptz,text,text,jsonb)"
-)
-_ARTIFACT_REGISTER_V6_SIGNATURE = (
-    "public.brain_register_authoritative_artifact_manifest_v6(uuid,text,text,text,timestamptz,timestamptz,text,text,jsonb)"
-)
-
-
 @dataclass(frozen=True)
 class AclRegrant:
     """One parsed, non-PUBLIC ACL dependency to preserve during hardening."""
@@ -3123,27 +3115,144 @@ def _conditional_role_pair_statement(
     )
 
 
-def _conditional_function_revoke(
+def _catalog_derived_authority_containment_sql(
     cur,
     *,
-    signature: str,
-    role_name: str,
-) -> str:
-    statement = (
-        sql.SQL("REVOKE ALL PRIVILEGES ON FUNCTION {} FROM {}")
-        .format(sql.SQL(signature), sql.Identifier(role_name))
-        .as_string(cur.connection)
-    )
-    return (
-        sql.SQL(
-            "DO $applypilot_rollback$ BEGIN "
-            "IF pg_catalog.to_regprocedure({}) IS NOT NULL "
-            "AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname={}) THEN "
-            "EXECUTE {}; END IF; END $applypilot_rollback$;"
+    database_name: str,
+    infrastructure_superuser_roles: tuple[str, ...],
+) -> tuple[str, str]:
+    """Return catalog-derived containment plus a postcondition assertion.
+
+    The V4-V7 verifier authenticates the complete ``brain_*`` catalog before a
+    forward rollback receipt can be issued.  At rollback execution time this
+    SQL snapshots every catalog owner and explicit ACL grantee, recursively
+    follows all membership descendants, and contains that snapshot.  This
+    deliberately avoids a function-name or two-edge allowlist that can fall
+    behind an additive authority schema.
+    """
+
+    if infrastructure_superuser_roles:
+        break_glass = sql.SQL("ARRAY[{}]::text[]").format(
+            sql.SQL(",").join(sql.Literal(role) for role in infrastructure_superuser_roles)
         )
-        .format(sql.Literal(signature), sql.Literal(role_name), sql.Literal(statement))
-        .as_string(cur.connection)
-    )
+    else:
+        break_glass = sql.SQL("ARRAY[]::text[]")
+    database = sql.Literal(database_name)
+    inventory_and_containment = sql.SQL(
+        "DROP TABLE IF EXISTS pg_temp.applypilot_authority_containment_roles;\n"
+        "CREATE TEMPORARY TABLE applypilot_authority_containment_roles ON COMMIT DROP AS\n"
+        "WITH RECURSIVE authority_roots(role_oid) AS (\n"
+        "  SELECT function.proowner FROM pg_catalog.pg_proc function\n"
+        "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
+        "  WHERE namespace.nspname='public' AND left(function.proname,6)='brain_'\n"
+        "  UNION\n"
+        "  SELECT acl.grantee FROM pg_catalog.pg_proc function\n"
+        "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
+        "  CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(function.proacl,"
+        "pg_catalog.acldefault('f',function.proowner))) acl\n"
+        "  WHERE namespace.nspname='public' AND left(function.proname,6)='brain_' "
+        "AND acl.grantee<>0\n"
+        "  UNION\n"
+        "  SELECT relation.relowner FROM pg_catalog.pg_class relation\n"
+        "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
+        "  WHERE namespace.nspname='public' AND left(relation.relname,6)='brain_'\n"
+        "  UNION\n"
+        "  SELECT acl.grantee FROM pg_catalog.pg_class relation\n"
+        "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
+        "  CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) acl\n"
+        "  WHERE namespace.nspname='public' AND left(relation.relname,6)='brain_' "
+        "AND acl.grantee<>0\n"
+        "  UNION\n"
+        "  SELECT acl.grantee FROM pg_catalog.pg_namespace namespace\n"
+        "  CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) acl\n"
+        "  WHERE namespace.nspname IN ('public','brain_archive') AND acl.grantee<>0\n"
+        "), authority_closure(role_oid,path) AS (\n"
+        "  SELECT role_oid,ARRAY[role_oid] FROM authority_roots\n"
+        "  UNION ALL\n"
+        "  SELECT membership.member,closure.path||membership.member\n"
+        "  FROM authority_closure closure\n"
+        "  JOIN pg_catalog.pg_auth_members membership ON membership.roleid=closure.role_oid\n"
+        "  WHERE NOT membership.member=ANY(closure.path)\n"
+        ") SELECT DISTINCT role_oid FROM authority_closure;\n"
+        "DO $applypilot_containment$\n"
+        "DECLARE affected record; edge record; function_acl record;\n"
+        "BEGIN\n"
+        "  FOR affected IN\n"
+        "    SELECT role.rolname FROM pg_temp.applypilot_authority_containment_roles contained\n"
+        "    JOIN pg_catalog.pg_roles role ON role.oid=contained.role_oid\n"
+        "    WHERE role.rolcanlogin AND NOT role.rolname=ANY({})\n"
+        "    ORDER BY role.rolname\n"
+        "  LOOP\n"
+        "    EXECUTE pg_catalog.format("
+        "'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',"
+        "affected.rolname);\n"
+        "    EXECUTE pg_catalog.format("
+        "'REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE %I FROM %I',{},affected.rolname);\n"
+        "  END LOOP;\n"
+        "  FOR edge IN\n"
+        "    SELECT parent.rolname AS parent_role,member.rolname AS member_role\n"
+        "    FROM pg_catalog.pg_auth_members membership\n"
+        "    JOIN pg_catalog.pg_roles parent ON parent.oid=membership.roleid\n"
+        "    JOIN pg_catalog.pg_roles member ON member.oid=membership.member\n"
+        "    WHERE membership.roleid IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "    ORDER BY parent.rolname,member.rolname\n"
+        "  LOOP\n"
+        "    EXECUTE pg_catalog.format('REVOKE %I FROM %I CASCADE',edge.parent_role,edge.member_role);\n"
+        "  END LOOP;\n"
+        "  FOR function_acl IN\n"
+        "    SELECT pg_catalog.format('%I.%I(%s)',namespace.nspname,function.proname,"
+        "pg_catalog.pg_get_function_identity_arguments(function.oid)) AS signature,\n"
+        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "    FROM pg_catalog.pg_proc function\n"
+        "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(function.proacl,"
+        "pg_catalog.acldefault('f',function.proowner))) acl\n"
+        "    LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee\n"
+        "    WHERE namespace.nspname='public' AND left(function.proname,6)='brain_'\n"
+        "      AND function.prokind='f' AND acl.privilege_type='EXECUTE' "
+        "AND acl.grantee<>function.proowner\n"
+        "    ORDER BY function.oid,acl.grantee\n"
+        "  LOOP\n"
+        "    IF function_acl.grantee='PUBLIC' THEN\n"
+        "      EXECUTE pg_catalog.format("
+        "'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC',function_acl.signature);\n"
+        "    ELSE\n"
+        "      EXECUTE pg_catalog.format("
+        "'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I',"
+        "function_acl.signature,function_acl.grantee);\n"
+        "    END IF;\n"
+        "  END LOOP;\n"
+        "END $applypilot_containment$;"
+    ).format(break_glass, database).as_string(cur.connection)
+    assertion = sql.SQL(
+        "DO $applypilot_containment_assert$\n"
+        "BEGIN\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_proc function\n"
+        "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(function.proacl,"
+        "pg_catalog.acldefault('f',function.proowner))) acl\n"
+        "    WHERE namespace.nspname='public' AND left(function.proname,6)='brain_'\n"
+        "      AND function.prokind='f' AND acl.privilege_type='EXECUTE' "
+        "AND acl.grantee<>function.proowner\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left a non-owner brain function EXECUTE route';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_auth_members membership\n"
+        "    WHERE membership.roleid IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left a recursive SET ROLE route';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_temp.applypilot_authority_containment_roles contained\n"
+        "    JOIN pg_catalog.pg_roles role ON role.oid=contained.role_oid\n"
+        "    WHERE role.rolcanlogin AND NOT role.rolname=ANY({})\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left an affected LOGIN provider';\n"
+        "  END IF;\n"
+        "END $applypilot_containment_assert$;"
+    ).format(break_glass).as_string(cur.connection)
+    return inventory_and_containment, assertion
 
 
 def _forward_v7_containment_sql(
@@ -3158,80 +3267,15 @@ def _forward_v7_containment_sql(
 ) -> str:
     """Contain V4-V7 authority capabilities while preserving additive evidence data."""
     database = sql.Identifier(database_name).as_string(cur.connection)
-    controller_revoke = (
-        sql.SQL("REVOKE {} FROM {}")
-        .format(sql.Identifier("brain_policy_controller"), sql.Identifier(topology.controller_role))
-        .as_string(cur.connection)
-    )
-    controller_disable = (
-        sql.SQL("ALTER ROLE {} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS")
-        .format(sql.Identifier(topology.controller_role))
-        .as_string(cur.connection)
+    containment_sql, containment_assertion_sql = _catalog_derived_authority_containment_sql(
+        cur,
+        database_name=database_name,
+        infrastructure_superuser_roles=topology.infrastructure_superuser_roles,
     )
     statements = [
-        _conditional_role_pair_statement(
-            cur,
-            first_role="brain_policy_controller",
-            second_role=topology.controller_role,
-            statement=controller_revoke,
-        ),
-        _conditional_role_statement(
-            cur,
-            role_name=topology.controller_role,
-            statement=controller_disable,
-        ),
+        containment_sql,
         f"REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {database} FROM PUBLIC;",
     ]
-    for role_name in (
-        topology.controller_role,
-        topology.verifier_role,
-        topology.migrator_role,
-        BRAIN_CANDIDATE_READER_ROLE,
-        BRAIN_CANDIDATE_WRITER_ROLE,
-        BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE,
-        BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE,
-    ):
-        revoke = (
-            sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM {}")
-            .format(sql.Identifier(database_name), sql.Identifier(role_name))
-            .as_string(cur.connection)
-        )
-        statements.append(
-            _conditional_role_statement(cur, role_name=role_name, statement=revoke)
-        )
-    for signature in (_CANDIDATE_V5_PUBLISH_SIGNATURE, _CANDIDATE_V4_PUBLISH_SIGNATURE):
-        statements.append(
-            _conditional_function_revoke(
-                cur,
-                signature=signature,
-                role_name=BRAIN_CANDIDATE_WRITER_ROLE,
-            )
-        )
-    for signature in (_ARTIFACT_REGISTER_SIGNATURE, _ARTIFACT_REGISTER_V6_SIGNATURE):
-        statements.append(
-            _conditional_function_revoke(
-                cur,
-                signature=signature,
-                role_name=BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE,
-            )
-        )
-    for parent_role, member_role in (
-        (BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE, topology.migrator_role),
-        (topology.migrator_role, topology.database_owner_role),
-    ):
-        revoke = (
-            sql.SQL("REVOKE {} FROM {}")
-            .format(sql.Identifier(parent_role), sql.Identifier(member_role))
-            .as_string(cur.connection)
-        )
-        statements.append(
-            _conditional_role_pair_statement(
-                cur,
-                first_role=parent_role,
-                second_role=member_role,
-                statement=revoke,
-            )
-        )
     statements.append(
         sql.SQL("ALTER DATABASE {} OWNER TO {};")
         .format(sql.Identifier(database_name), sql.Identifier(database_owner_before))
@@ -3245,7 +3289,10 @@ def _forward_v7_containment_sql(
         ).rstrip()
     )
     statements.append(_bootstrap_object_rollback_sql(cur, ownership).rstrip())
-    statements.append(_retired_membership_rollback_sql(cur, memberships=retired_memberships).rstrip())
+    # Forward containment must not recreate retired or provider-admin edges.
+    # Their pre-upgrade shape remains authenticated in the receipt inventory.
+    _ = retired_memberships
+    statements.append(containment_assertion_sql)
     return "\n".join(statement for statement in statements if statement) + "\n"
 
 
