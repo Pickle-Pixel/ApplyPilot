@@ -18,9 +18,20 @@ WORKDIR /app
 # Copy ONLY the tracked files this migrator needs. .git, .env / .env.*, tests,
 # docs, and any untracked local payload are stripped from the build context by
 # .dockerignore; nothing here re-adds them, and there is no `COPY . /app`.
+#
+# The wrapper resolves its repository root to this WORKDIR (/app) and, before any
+# migration, calls verify_package_manifest, which binds three deployment wrappers
+# by hash *relative to that root*: Dockerfile.authority-migrator, railway.toml,
+# and scripts/run-private-authority-migrator.py. All three must therefore be
+# present in the image at their exact manifest-relative paths, or startup fails
+# closed with a missing-bound-wrapper error. That is why the two deployment
+# descriptors below are copied alongside the wrapper -- they are inert provenance
+# artifacts here, never re-read as build config by the running container.
 COPY pyproject.toml /app/pyproject.toml
 COPY src /app/src
 COPY scripts/run-private-authority-migrator.py /app/scripts/run-private-authority-migrator.py
+COPY railway.toml /app/railway.toml
+COPY Dockerfile.authority-migrator /app/Dockerfile.authority-migrator
 COPY deploy/authority-migrator/package-manifest.json /app/deploy/authority-migrator/package-manifest.json
 
 ENV PYTHONUTF8=1 \
