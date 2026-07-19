@@ -1,0 +1,2189 @@
+{
+  "noGlobalAuthorityClaim": true,
+  "pauseScopeVocabulary": [
+    "apply",
+    "brain-admin",
+    "compute",
+    "control",
+    "discovery",
+    "email",
+    "linkedin",
+    "migration",
+    "none",
+    "otp",
+    "release"
+  ],
+  "repository": "applypilot",
+  "rows": [
+    {
+      "aliases": [
+        "applypilot"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.cli:app",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply",
+        "brain-admin"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite"
+      ],
+      "resourcesWritten": [
+        "brain-sqlite"
+      ],
+      "sourcePath": "src/applypilot/cli.py",
+      "surfaceKind": "console-script",
+      "symbol": "app"
+    },
+    {
+      "aliases": [
+        "applypilot-answer-exceptions"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.answer_exceptions_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-answer-exceptions",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/answer_exceptions_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-apply"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.apply_worker_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-apply",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/apply_worker_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-apply-home"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.apply_home_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-apply-home",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/apply_home_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-autotriage"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.autotriage_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-autotriage",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/autotriage_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-codex-bridge"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-codex-bridge",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-compute"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.compute_worker_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-compute",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "compute"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/compute_worker_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-compute-home"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.compute_home_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-compute-home",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "compute"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/compute_home_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-control"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.machine_blackout_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-control",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/machine_blackout_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-deadman"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.deadman:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "console-script:applypilot-fleet-deadman",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/deadman.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-dedup-repair"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.dedup_repair_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-dedup-repair",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/dedup_repair_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-diagnose"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.diagnoser_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-diagnose",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/diagnoser_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-discovery"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.discovery_main:main_worker",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-discovery",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "discovery"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/discovery_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main_worker"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-discovery-home"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.discovery_main:main_home",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-discovery-home",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "discovery"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/discovery_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main_home"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-doctor"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.doctor:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-doctor",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/doctor.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-frontier"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.frontier_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-frontier",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "discovery"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/frontier_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-linkedin"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.linkedin_worker_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-linkedin",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "apply",
+        "linkedin"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/linkedin_worker_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-linkedin-home"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-linkedin-home",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply",
+        "linkedin"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/linkedin_home_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-migrate-schema"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.schema_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-migrate-schema",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "brain-admin",
+      "pauseScopes": [
+        "migration"
+      ],
+      "readWriteClass": "admin-ddl",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres",
+        "fleet-schema"
+      ],
+      "resourcesWritten": [
+        "fleet-schema"
+      ],
+      "sourcePath": "src/applypilot/fleet/schema_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-otp-home"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.otp_responder_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-otp-home",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "email",
+        "otp"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres",
+        "mailbox"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres",
+        "mailbox"
+      ],
+      "sourcePath": "src/applypilot/fleet/otp_responder_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-reaudit-applied"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.historical_apply_reaudit_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-reaudit-applied",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/historical_apply_reaudit_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-reconcile-email"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.email_reconcile_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-reconcile-email",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "email"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres",
+        "mailbox"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/email_reconcile_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-remediate"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.remediator_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-remediate",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "apply",
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/remediator_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-repair-report"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.repair_report_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "console-script:applypilot-fleet-repair-report",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/repair_report_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-fleet-watchdog"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.watchdog:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-fleet-watchdog",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/watchdog.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-greenhouse-shadow"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.apply.greenhouse_shadow_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "console-script:applypilot-greenhouse-shadow",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/apply/greenhouse_shadow_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-workday-onboard"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.workday_onboard_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-workday-onboard",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/workday_onboard_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "applypilot-workday-rollout"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.workday_rollout_main:main",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "console-script:applypilot-workday-rollout",
+      "installed": true,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres",
+        "release-evidence"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/workday_rollout_main.py",
+      "surfaceKind": "console-script",
+      "symbol": "main"
+    },
+    {
+      "aliases": [
+        "mcp:caps"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:caps",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "mcp-tool:applypilot.fleet.codex_bridge:caps",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "mcp-tool",
+      "symbol": "caps"
+    },
+    {
+      "aliases": [
+        "mcp:challenges"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:challenges",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "mcp-tool:applypilot.fleet.codex_bridge:challenges",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "mcp-tool",
+      "symbol": "challenges"
+    },
+    {
+      "aliases": [
+        "mcp:fleet_status"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:fleet_status",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "mcp-tool:applypilot.fleet.codex_bridge:fleet_status",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "mcp-tool",
+      "symbol": "fleet_status"
+    },
+    {
+      "aliases": [
+        "mcp:health_report"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:health_report",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "mcp-tool:applypilot.fleet.codex_bridge:health_report",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "mcp-tool",
+      "symbol": "health_report"
+    },
+    {
+      "aliases": [
+        "mcp:pause_scope"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:pause_scope",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "mcp-tool:applypilot.fleet.codex_bridge:pause_scope",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "mcp-tool",
+      "symbol": "pause_scope"
+    },
+    {
+      "aliases": [
+        "mcp:quarantine_job"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:quarantine_job",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "mcp-tool:applypilot.fleet.codex_bridge:quarantine_job",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "mcp-tool",
+      "symbol": "quarantine_job"
+    },
+    {
+      "aliases": [
+        "mcp:recent_results"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:recent_results",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "mcp-tool:applypilot.fleet.codex_bridge:recent_results",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "mcp-tool",
+      "symbol": "recent_results"
+    },
+    {
+      "aliases": [
+        "mcp:restart_worker"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:restart_worker",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "mcp-tool:applypilot.fleet.codex_bridge:restart_worker",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "mcp-tool",
+      "symbol": "restart_worker"
+    },
+    {
+      "aliases": [
+        "python fleet-agent-query.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "fleet-agent-query.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-file:fleet-agent-query.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "fleet-agent-query.py",
+      "surfaceKind": "python-file",
+      "symbol": "<module-body>"
+    },
+    {
+      "aliases": [
+        "python fleet-agent-update-gate.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "fleet-agent-update-gate.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-file:fleet-agent-update-gate.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "fleet-agent-update-gate.py",
+      "surfaceKind": "python-file",
+      "symbol": "<module-body>"
+    },
+    {
+      "aliases": [
+        "python fleet-agent-version.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "fleet-agent-version.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-file:fleet-agent-version.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres",
+        "repository-source"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "fleet-agent-version.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python fleet-blackout-query.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "fleet-blackout-query.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-file:fleet-blackout-query.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "fleet-blackout-query.py",
+      "surfaceKind": "python-file",
+      "symbol": "<module-body>"
+    },
+    {
+      "aliases": [
+        "python fleet-secret.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "fleet-secret.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:fleet-secret.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "secret-store"
+      ],
+      "resourcesWritten": [
+        "secret-store"
+      ],
+      "sourcePath": "fleet-secret.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python fleet-status.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "fleet-status.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-file:fleet-status.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "fleet-status.py",
+      "surfaceKind": "python-file",
+      "symbol": "<module-body>"
+    },
+    {
+      "aliases": [
+        "python rescore-desc-cut.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "rescore-desc-cut.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:rescore-desc-cut.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite"
+      ],
+      "resourcesWritten": [
+        "brain-sqlite"
+      ],
+      "sourcePath": "rescore-desc-cut.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/bootstrap-fleet-pg-roles.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:scripts/bootstrap-fleet-pg-roles.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "brain-admin",
+      "pauseScopes": [
+        "brain-admin"
+      ],
+      "readWriteClass": "admin-ddl",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres",
+        "fleet-roles"
+      ],
+      "resourcesWritten": [
+        "fleet-roles"
+      ],
+      "sourcePath": "scripts/bootstrap-fleet-pg-roles.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/brain-sqlite-to-postgres.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/brain-sqlite-to-postgres.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:scripts/brain-sqlite-to-postgres.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "brain-admin",
+      "pauseScopes": [
+        "migration"
+      ],
+      "readWriteClass": "admin-ddl",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-postgres",
+        "brain-sqlite"
+      ],
+      "resourcesWritten": [
+        "brain-postgres"
+      ],
+      "sourcePath": "scripts/brain-sqlite-to-postgres.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/build-compatibility-manifest.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/build-compatibility-manifest.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:scripts/build-compatibility-manifest.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "release-engineer",
+      "pauseScopes": [
+        "release"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "repository-source"
+      ],
+      "resourcesWritten": [
+        "release-evidence"
+      ],
+      "sourcePath": "scripts/build-compatibility-manifest.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/inventory-brain-command-authority.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/inventory-brain-command-authority.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-file:scripts/inventory-brain-command-authority.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "repository-source"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "scripts/inventory-brain-command-authority.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/register-brain-artifact-authority.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/register-brain-artifact-authority.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:scripts/register-brain-artifact-authority.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "release-engineer",
+      "pauseScopes": [
+        "release"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "release-evidence"
+      ],
+      "resourcesWritten": [
+        "release-evidence"
+      ],
+      "sourcePath": "scripts/register-brain-artifact-authority.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/rollback-fleet-pg-role.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/rollback-fleet-pg-role.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:scripts/rollback-fleet-pg-role.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "brain-admin",
+      "pauseScopes": [
+        "brain-admin"
+      ],
+      "readWriteClass": "admin-ddl",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres",
+        "fleet-roles"
+      ],
+      "resourcesWritten": [
+        "fleet-roles"
+      ],
+      "sourcePath": "scripts/rollback-fleet-pg-role.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/sign-release-attestation.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/sign-release-attestation.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:scripts/sign-release-attestation.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "release-engineer",
+      "pauseScopes": [
+        "release"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "repository-source"
+      ],
+      "resourcesWritten": [
+        "release-evidence"
+      ],
+      "sourcePath": "scripts/sign-release-attestation.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/upgrade-brain-authority-existing-topology.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:scripts/upgrade-brain-authority-existing-topology.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "brain-admin",
+      "pauseScopes": [
+        "brain-admin",
+        "migration"
+      ],
+      "readWriteClass": "admin-ddl",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-postgres",
+        "fleet-roles"
+      ],
+      "resourcesWritten": [
+        "brain-postgres",
+        "fleet-roles"
+      ],
+      "sourcePath": "scripts/upgrade-brain-authority-existing-topology.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/verify-brain-command-authority.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/verify-brain-command-authority.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-file:scripts/verify-brain-command-authority.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "repository-source"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "scripts/verify-brain-command-authority.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.apply.container_worker",
+        "python src/applypilot/apply/container_worker.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.apply.container_worker:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.apply.container_worker",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/apply/container_worker.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.apply.fleet_sync",
+        "python src/applypilot/apply/fleet_sync.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.apply.fleet_sync:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.apply.fleet_sync",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/apply/fleet_sync.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.apply.greenhouse_shadow_main",
+        "python src/applypilot/apply/greenhouse_shadow_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.apply.greenhouse_shadow_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-module:applypilot.apply.greenhouse_shadow_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/apply/greenhouse_shadow_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.cli",
+        "python src/applypilot/cli.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.cli:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.cli",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply",
+        "brain-admin"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite"
+      ],
+      "resourcesWritten": [
+        "brain-sqlite"
+      ],
+      "sourcePath": "src/applypilot/cli.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.answer_exceptions_main",
+        "python src/applypilot/fleet/answer_exceptions_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.answer_exceptions_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.answer_exceptions_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/answer_exceptions_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.autotriage_main",
+        "python src/applypilot/fleet/autotriage_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.autotriage_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.autotriage_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/autotriage_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.codex_bridge",
+        "python src/applypilot/fleet/codex_bridge.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.codex_bridge",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/codex_bridge.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.console_app",
+        "python src/applypilot/fleet/console_app.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.console_app:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.console_app",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/console_app.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.deadman",
+        "python src/applypilot/fleet/deadman.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.deadman:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-module:applypilot.fleet.deadman",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/deadman.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.dedup_repair_main",
+        "python src/applypilot/fleet/dedup_repair_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.dedup_repair_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.dedup_repair_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/dedup_repair_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.diagnoser_main",
+        "python src/applypilot/fleet/diagnoser_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.diagnoser_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.diagnoser_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/diagnoser_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.doctor",
+        "python src/applypilot/fleet/doctor.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.doctor:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.doctor",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/doctor.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.email_reconcile_main",
+        "python src/applypilot/fleet/email_reconcile_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.email_reconcile_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.email_reconcile_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "email"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres",
+        "mailbox"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/email_reconcile_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.historical_apply_reaudit_main",
+        "python src/applypilot/fleet/historical_apply_reaudit_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.historical_apply_reaudit_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.historical_apply_reaudit_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "brain-sqlite",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/historical_apply_reaudit_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.machine_blackout_main",
+        "python src/applypilot/fleet/machine_blackout_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.machine_blackout_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.machine_blackout_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/machine_blackout_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.remediator_main",
+        "python src/applypilot/fleet/remediator_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.remediator_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.remediator_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-console",
+      "pauseScopes": [
+        "apply",
+        "control"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/remediator_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.repair_report_main",
+        "python src/applypilot/fleet/repair_report_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.repair_report_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-module:applypilot.fleet.repair_report_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/repair_report_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.schema_main",
+        "python src/applypilot/fleet/schema_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.schema_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.schema_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "brain-admin",
+      "pauseScopes": [
+        "migration"
+      ],
+      "readWriteClass": "admin-ddl",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres",
+        "fleet-schema"
+      ],
+      "resourcesWritten": [
+        "fleet-schema"
+      ],
+      "sourcePath": "src/applypilot/fleet/schema_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.work_hours",
+        "python src/applypilot/fleet/work_hours.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.work_hours:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-module:applypilot.fleet.work_hours",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "repository-source"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/work_hours.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.workday_onboard_main",
+        "python src/applypilot/fleet/workday_onboard_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.workday_onboard_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.workday_onboard_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/workday_onboard_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python -m applypilot.fleet.workday_rollout_main",
+        "python src/applypilot/fleet/workday_rollout_main.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.workday_rollout_main:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-module:applypilot.fleet.workday_rollout_main",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres",
+        "release-evidence"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres"
+      ],
+      "sourcePath": "src/applypilot/fleet/workday_rollout_main.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    }
+  ],
+  "runtimeKind": "python-process-entrypoints",
+  "schemaVersion": "applypilot-brain-command-authority-matrix-runtime-v1",
+  "scope": {
+    "deferralReason": "This bounded Runtime shard classifies Python process entrypoints only. In-process command routing (Typer/argparse subcommands, console HTTP actions) and non-Python launchers, scheduled-task identities, container/service/plist entrypoints are owned by sibling Runtime packets and the cross-repo pairing; the receipt disclaims any global authority.",
+    "deferredSurfaceKinds": [
+      "argparse-subcommand",
+      "batch-launcher",
+      "console-http-action",
+      "container-entrypoint",
+      "launchd-plist",
+      "powershell-launcher",
+      "scheduled-task-identity",
+      "service-unit",
+      "shell-launcher",
+      "typer-subcommand"
+    ],
+    "includedSurfaceKinds": [
+      "console-script",
+      "mcp-tool",
+      "python-file",
+      "python-module"
+    ]
+  }
+}
