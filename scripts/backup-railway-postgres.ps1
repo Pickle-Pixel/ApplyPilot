@@ -14,6 +14,8 @@ param(
     [Parameter(Mandatory = $true)][guid]$ExpectedDatabaseIncarnationId,
     [Parameter(Mandatory = $true)][string]$PgDumpPath,
     [Parameter(Mandatory = $true)][string]$ExpectedPgDumpSha256,
+    [Parameter(Mandatory = $true)][string]$ExpectedPsqlSha256,
+    [Parameter(Mandatory = $true)][string]$ExpectedPgRestoreSha256,
     [Parameter(Mandatory = $true)][string]$ExpectedRepoHead,
     [Parameter(Mandatory = $true)][string]$ExpectedRepoTree,
     [Parameter(Mandatory = $true)][string]$ExpectedScriptSha256,
@@ -91,17 +93,26 @@ if ($ExpectedPgSslRootCertSha256 -notmatch '^[0-9a-f]{64}$' -or (Get-FileHash -A
 $protectedPassFile = Assert-ProtectedCredentialFile -Path $PgPassFile
 if (-not (Test-Path -LiteralPath $PgDumpPath -PathType Leaf)) { throw "pg_dump was not found." }
 $PgDumpPath = (Resolve-Path -LiteralPath $PgDumpPath).Path
-foreach ($digest in @($ExpectedPgDumpSha256,$ExpectedScriptSha256)) { if ($digest -notmatch '^[0-9a-f]{64}$') { throw "Expected SHA-256 pin is invalid." } }
+$toolDir = Split-Path -Parent $PgDumpPath
+$pgRestore = Join-Path $toolDir "pg_restore.exe"
+$psql = Join-Path $toolDir "psql.exe"
+foreach ($tool in @($pgRestore,$psql)) { if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Required PostgreSQL tool is missing beside the approved pg_dump." } }
+$pgRestore = (Resolve-Path -LiteralPath $pgRestore -ErrorAction Stop).Path
+$psql = (Resolve-Path -LiteralPath $psql -ErrorAction Stop).Path
+foreach ($digest in @($ExpectedPgDumpSha256,$ExpectedPsqlSha256,$ExpectedPgRestoreSha256,$ExpectedScriptSha256)) { if ($digest -notmatch '^[0-9a-f]{64}$') { throw "Expected SHA-256 pin is invalid." } }
 foreach ($commit in @($ExpectedRepoHead,$ExpectedRepoTree)) { if ($commit -notmatch '^[0-9a-f]{40}$') { throw "Expected Git pin is invalid." } }
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PgDumpPath).Hash.ToLowerInvariant() -cne $ExpectedPgDumpSha256) { throw "pg_dump hash pin mismatch." }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $psql).Hash.ToLowerInvariant() -cne $ExpectedPsqlSha256) { throw "psql hash pin mismatch." }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $pgRestore).Hash.ToLowerInvariant() -cne $ExpectedPgRestoreSha256) { throw "pg_restore hash pin mismatch." }
 $version = (& $PgDumpPath --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $version -notmatch '^pg_dump \(PostgreSQL\) 18(?:\.|$)') { throw "pg_dump must be approved PostgreSQL major 18." }
+$version = (& $psql --version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $version -notmatch '^psql \(PostgreSQL\) 18(?:\.|$)') { throw "psql must be approved PostgreSQL major 18." }
+$version = (& $pgRestore --version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $version -notmatch '^pg_restore \(PostgreSQL\) 18(?:\.|$)') { throw "pg_restore must be approved PostgreSQL major 18." }
 $repo = (Resolve-Path -LiteralPath $RepoPath -ErrorAction Stop).Path
 if ((& git -C $repo rev-parse 'HEAD^{commit}').Trim() -cne $ExpectedRepoHead -or (& git -C $repo rev-parse 'HEAD^{tree}').Trim() -cne $ExpectedRepoTree) { throw "repository exact-head pin mismatch." }
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $MyInvocation.MyCommand.Path).Hash.ToLowerInvariant() -cne $ExpectedScriptSha256) { throw "backup script hash pin mismatch." }
-$pgRestore = Join-Path (Split-Path -Parent $PgDumpPath) "pg_restore.exe"
-$psql = Join-Path (Split-Path -Parent $PgDumpPath) "psql.exe"
-foreach ($tool in @($pgRestore,$psql)) { if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Required PostgreSQL tool is missing." } }
 foreach ($name in @('PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD','PGPASSFILE','PGSERVICE','PGSERVICEFILE','PGOPTIONS','PGSSLMODE','PGSSLROOTCERT','PGSSLCERT','PGSSLKEY','PGTARGETSESSIONATTRS','PGCHANNELBINDING','PGCONNECT_TIMEOUT')) {
     Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
 }

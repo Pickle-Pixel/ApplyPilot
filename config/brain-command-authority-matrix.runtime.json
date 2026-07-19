@@ -3874,7 +3874,7 @@
         "powershell -File backup-fleet-pg.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1;sourceBlobSha256=57e2f7bf69ac5b3d36b436e8103e533c124593cb5aa6ab8935b1103a26c34d11",
+      "canonicalTarget": "backup-fleet-pg.ps1;sourceBlobSha256=801557d5630310b4ec3e4587cd6833cdf53e65bf183ea07ecdd3f49fa7ad38f8",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4805,7 +4805,7 @@
         "powershell -File scripts/backup-railway-postgres.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/backup-railway-postgres.ps1;sourceBlobSha256=a5d86b187d634842f9f8085f1a1dfb21c0620182f26308851a7dbb5b433bbe2c",
+      "canonicalTarget": "scripts/backup-railway-postgres.ps1;sourceBlobSha256=16bc157896915f8bca3de9e72ad003889514f9692ce82106d7b35fa9b4ef50d3",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6584,7 +6584,7 @@
         "scheduled-task-action:backup-fleet-pg.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:45e0e9aec87d2efb04a26c337887b2ed7913cf04f07be3576c1211c3584c00d8;sourceBlobSha256=57e2f7bf69ac5b3d36b436e8103e533c124593cb5aa6ab8935b1103a26c34d11",
+      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:45e0e9aec87d2efb04a26c337887b2ed7913cf04f07be3576c1211c3584c00d8;sourceBlobSha256=801557d5630310b4ec3e4587cd6833cdf53e65bf183ea07ecdd3f49fa7ad38f8",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6606,7 +6606,7 @@
       ],
       "sourcePath": "backup-fleet-pg.ps1",
       "surfaceKind": "scheduled-task-action",
-      "symbol": "line-165"
+      "symbol": "line-186"
     },
     {
       "aliases": [
@@ -6848,7 +6848,7 @@
         "scheduled-task-identity:backup-fleet-pg.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=57e2f7bf69ac5b3d36b436e8103e533c124593cb5aa6ab8935b1103a26c34d11",
+      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=801557d5630310b4ec3e4587cd6833cdf53e65bf183ea07ecdd3f49fa7ad38f8",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6870,7 +6870,7 @@
       ],
       "sourcePath": "backup-fleet-pg.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-169"
+      "symbol": "line-190"
     },
     {
       "aliases": [
