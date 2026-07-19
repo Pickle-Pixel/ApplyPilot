@@ -20,7 +20,7 @@
         "argparse:applypilot.fleet.answer_exceptions_main:approve"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.answer_exceptions_main#argparse:approve",
+      "canonicalTarget": "applypilot.fleet.answer_exceptions_main#argparse:approve;sourceBlobSha256=7aaaffe9ce1f08b421d7fd514c047128227c980dd4c3e2b5d5186f2687f0ee88",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -53,7 +53,7 @@
         "argparse:applypilot.fleet.answer_exceptions_main:list"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.answer_exceptions_main#argparse:list",
+      "canonicalTarget": "applypilot.fleet.answer_exceptions_main#argparse:list;sourceBlobSha256=7aaaffe9ce1f08b421d7fd514c047128227c980dd4c3e2b5d5186f2687f0ee88",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -81,7 +81,7 @@
         "argparse:applypilot.fleet.apply_home_main:approve"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:approve",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:approve;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -114,7 +114,7 @@
         "argparse:applypilot.fleet.apply_home_main:arm-canary-if-safe"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:arm-canary-if-safe",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:arm-canary-if-safe;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -147,7 +147,7 @@
         "argparse:applypilot.fleet.apply_home_main:backfill-dedup-metadata"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:backfill-dedup-metadata",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:backfill-dedup-metadata;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -180,7 +180,7 @@
         "argparse:applypilot.fleet.apply_home_main:blocklist-backfill"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:blocklist-backfill",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:blocklist-backfill;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -213,7 +213,7 @@
         "argparse:applypilot.fleet.apply_home_main:canary"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:canary",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:canary;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -246,7 +246,7 @@
         "argparse:applypilot.fleet.apply_home_main:canary-readiness"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:canary-readiness",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:canary-readiness;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -279,7 +279,7 @@
         "argparse:applypilot.fleet.apply_home_main:challenges"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:challenges",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:challenges;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -307,7 +307,7 @@
         "argparse:applypilot.fleet.apply_home_main:cleanup-terminal-challenges"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:cleanup-terminal-challenges",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:cleanup-terminal-challenges;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -340,7 +340,7 @@
         "argparse:applypilot.fleet.apply_home_main:clear-blocked-leases"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:clear-blocked-leases",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:clear-blocked-leases;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -373,7 +373,7 @@
         "argparse:applypilot.fleet.apply_home_main:clear-terminal-leases"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:clear-terminal-leases",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:clear-terminal-leases;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -406,7 +406,7 @@
         "argparse:applypilot.fleet.apply_home_main:crash-liveness"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:crash-liveness",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:crash-liveness;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -439,7 +439,7 @@
         "argparse:applypilot.fleet.apply_home_main:crash-review"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:crash-review",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:crash-review;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -472,7 +472,7 @@
         "argparse:applypilot.fleet.apply_home_main:dedup-review"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:dedup-review",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:dedup-review;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -505,7 +505,7 @@
         "argparse:applypilot.fleet.apply_home_main:lift-canary"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:lift-canary",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:lift-canary;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -538,7 +538,7 @@
         "argparse:applypilot.fleet.apply_home_main:normalize-clear-terminal-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-clear-terminal-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-clear-terminal-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -571,7 +571,7 @@
         "argparse:applypilot.fleet.apply_home_main:normalize-dedup-terminal-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-dedup-terminal-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-dedup-terminal-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -604,7 +604,7 @@
         "argparse:applypilot.fleet.apply_home_main:normalize-final-protected-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-final-protected-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-final-protected-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -637,7 +637,7 @@
         "argparse:applypilot.fleet.apply_home_main:normalize-nonretryable-policy-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-nonretryable-policy-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-nonretryable-policy-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -670,7 +670,7 @@
         "argparse:applypilot.fleet.apply_home_main:normalize-resolved-auth-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-resolved-auth-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-resolved-auth-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -703,7 +703,7 @@
         "argparse:applypilot.fleet.apply_home_main:normalize-resolved-challenge-blocks"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-resolved-challenge-blocks",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-resolved-challenge-blocks;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -736,7 +736,7 @@
         "argparse:applypilot.fleet.apply_home_main:normalize-terminal-inventory"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-terminal-inventory",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:normalize-terminal-inventory;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -769,7 +769,7 @@
         "argparse:applypilot.fleet.apply_home_main:park-dead-crashes"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:park-dead-crashes",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:park-dead-crashes;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -802,7 +802,7 @@
         "argparse:applypilot.fleet.apply_home_main:park-email-review-crashes"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:park-email-review-crashes",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:park-email-review-crashes;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -838,7 +838,7 @@
         "argparse:applypilot.fleet.apply_home_main:park-evidence-gap-crashes"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:park-evidence-gap-crashes",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:park-evidence-gap-crashes;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -871,7 +871,7 @@
         "argparse:applypilot.fleet.apply_home_main:park-protected-crashes"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:park-protected-crashes",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:park-protected-crashes;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -904,7 +904,7 @@
         "argparse:applypilot.fleet.apply_home_main:pull"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:pull",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:pull;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -937,7 +937,7 @@
         "argparse:applypilot.fleet.apply_home_main:push"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:push",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:push;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -970,7 +970,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-budget-limit-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-budget-limit-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-budget-limit-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1003,7 +1003,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-incomplete-infrastructure-evidence"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-incomplete-infrastructure-evidence",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-incomplete-infrastructure-evidence;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1036,7 +1036,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-invalid-queued"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-invalid-queued",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-invalid-queued;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1069,7 +1069,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-missing-evidence-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-missing-evidence-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-missing-evidence-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1102,7 +1102,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-missing-infrastructure-evidence"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-missing-infrastructure-evidence",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-missing-infrastructure-evidence;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1135,7 +1135,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-no-confirmation-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-no-confirmation-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-no-confirmation-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1168,7 +1168,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-residual-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-residual-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-residual-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1201,7 +1201,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-suspicious-stuck-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-suspicious-stuck-failures",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-suspicious-stuck-failures;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1234,7 +1234,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-tool-touched-infrastructure"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-tool-touched-infrastructure",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-tool-touched-infrastructure;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1267,7 +1267,7 @@
         "argparse:applypilot.fleet.apply_home_main:quarantine-unsafe-approved"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-unsafe-approved",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:quarantine-unsafe-approved;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1300,7 +1300,7 @@
         "argparse:applypilot.fleet.apply_home_main:readiness"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:readiness",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:readiness;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -1328,7 +1328,7 @@
         "argparse:applypilot.fleet.apply_home_main:repair-orphan-challenges"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:repair-orphan-challenges",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:repair-orphan-challenges;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1361,7 +1361,7 @@
         "argparse:applypilot.fleet.apply_home_main:resolve-challenge"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:resolve-challenge",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:resolve-challenge;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1394,7 +1394,7 @@
         "argparse:applypilot.fleet.apply_home_main:resolve-crash"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:resolve-crash",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:resolve-crash;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1427,7 +1427,7 @@
         "argparse:applypilot.fleet.apply_home_main:resume-if-safe"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:resume-if-safe",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:resume-if-safe;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1460,7 +1460,7 @@
         "argparse:applypilot.fleet.apply_home_main:retire-stale-parked-challenges"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:retire-stale-parked-challenges",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:retire-stale-parked-challenges;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1493,7 +1493,7 @@
         "argparse:applypilot.fleet.apply_home_main:retire-stale-unapproved"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:retire-stale-unapproved",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:retire-stale-unapproved;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1526,7 +1526,7 @@
         "argparse:applypilot.fleet.apply_home_main:retry-infrastructure-pending"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:retry-infrastructure-pending",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:retry-infrastructure-pending;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1559,7 +1559,7 @@
         "argparse:applypilot.fleet.apply_home_main:set-spend-cap"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:set-spend-cap",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:set-spend-cap;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1592,7 +1592,7 @@
         "argparse:applypilot.fleet.apply_home_main:status"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:status",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:status;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -1620,7 +1620,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:approve"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:approve",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:approve;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1653,7 +1653,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:challenges"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:challenges",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:challenges;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -1681,7 +1681,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:clear-halt"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:clear-halt",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:clear-halt;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1714,7 +1714,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:kill"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:kill",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:kill;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1747,7 +1747,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:lift-linkedin-canary"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:lift-linkedin-canary",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:lift-linkedin-canary;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1780,7 +1780,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:linkedin-canary"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:linkedin-canary",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:linkedin-canary;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1813,7 +1813,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:pull"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:pull",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:pull;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1846,7 +1846,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:push"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:push",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:push;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1879,7 +1879,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:resolve-challenge"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:resolve-challenge",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:resolve-challenge;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -1912,7 +1912,7 @@
         "argparse:applypilot.fleet.linkedin_home_main:status"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:status",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main#argparse:status;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -1940,7 +1940,7 @@
         "argparse:applypilot.fleet.machine_blackout_main:blackout"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.machine_blackout_main#argparse:blackout",
+      "canonicalTarget": "applypilot.fleet.machine_blackout_main#argparse:blackout;sourceBlobSha256=943bbfda203307acd603658bb1fc5a323bbeed46062bfd06c40aeed9ad5dfefb",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -1971,7 +1971,7 @@
         "argparse:applypilot.fleet.machine_blackout_main:clear"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.machine_blackout_main#argparse:clear",
+      "canonicalTarget": "applypilot.fleet.machine_blackout_main#argparse:clear;sourceBlobSha256=943bbfda203307acd603658bb1fc5a323bbeed46062bfd06c40aeed9ad5dfefb",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2002,7 +2002,7 @@
         "argparse:applypilot.fleet.machine_blackout_main:status"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.machine_blackout_main#argparse:status",
+      "canonicalTarget": "applypilot.fleet.machine_blackout_main#argparse:status;sourceBlobSha256=943bbfda203307acd603658bb1fc5a323bbeed46062bfd06c40aeed9ad5dfefb",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2030,7 +2030,7 @@
         "argparse:scripts/sign-release-attestation.py:produce-railway"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/sign-release-attestation.py#argparse:produce-railway",
+      "canonicalTarget": "scripts/sign-release-attestation.py#argparse:produce-railway;sourceBlobSha256=b2c73602862e7d1be2d92260315855ee891fea3c1d1e73461c91f859abd9b796",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2061,7 +2061,7 @@
         "argparse:scripts/sign-release-attestation.py:produce-tests"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/sign-release-attestation.py#argparse:produce-tests",
+      "canonicalTarget": "scripts/sign-release-attestation.py#argparse:produce-tests;sourceBlobSha256=b2c73602862e7d1be2d92260315855ee891fea3c1d1e73461c91f859abd9b796",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2092,7 +2092,7 @@
         "argparse:scripts/sign-release-attestation.py:sign-nonrelease"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/sign-release-attestation.py#argparse:sign-nonrelease",
+      "canonicalTarget": "scripts/sign-release-attestation.py#argparse:sign-nonrelease;sourceBlobSha256=b2c73602862e7d1be2d92260315855ee891fea3c1d1e73461c91f859abd9b796",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2123,7 +2123,7 @@
         "cmd /c bootstrap-m2.bat"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "bootstrap-m2.bat",
+      "canonicalTarget": "bootstrap-m2.bat;sourceBlobSha256=b9d2b8de037a4a027d6ff556049af74af87ef6d6f0976cabf5028e58b9f313a9",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2152,7 +2152,7 @@
         "cmd /c bootstrap-m4.bat"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "bootstrap-m4.bat",
+      "canonicalTarget": "bootstrap-m4.bat;sourceBlobSha256=b354a95733a4a1f5d42a64351bb037e24a5a97f221c3bbee32fd59db9976c48d",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2181,7 +2181,7 @@
         "http:POST:/ack_command"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_ack_command#http:post:/ack_command",
+      "canonicalTarget": "applypilot.fleet.broker:_ack_command#http:post:/ack_command;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -2212,7 +2212,7 @@
         "http:POST:/get_answer"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_get_answer#http:post:/get_answer",
+      "canonicalTarget": "applypilot.fleet.broker:_get_answer#http:post:/get_answer;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -2240,7 +2240,7 @@
         "http:POST:/get_config"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_get_config#http:post:/get_config",
+      "canonicalTarget": "applypilot.fleet.broker:_get_config#http:post:/get_config;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -2268,7 +2268,7 @@
         "http:POST:/heartbeat"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_heartbeat#http:post:/heartbeat",
+      "canonicalTarget": "applypilot.fleet.broker:_heartbeat#http:post:/heartbeat;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -2299,7 +2299,7 @@
         "http:POST:/lease"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_lease#http:post:/lease",
+      "canonicalTarget": "applypilot.fleet.broker:_lease#http:post:/lease;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": true,
@@ -2332,7 +2332,7 @@
         "http:POST:/poll_commands"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_poll_commands#http:post:/poll_commands",
+      "canonicalTarget": "applypilot.fleet.broker:_poll_commands#http:post:/poll_commands;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -2363,7 +2363,7 @@
         "http:POST:/raise_challenge"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_raise_challenge#http:post:/raise_challenge",
+      "canonicalTarget": "applypilot.fleet.broker:_raise_challenge#http:post:/raise_challenge;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -2394,7 +2394,7 @@
         "http:POST:/request_otp"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_request_otp#http:post:/request_otp",
+      "canonicalTarget": "applypilot.fleet.broker:_request_otp#http:post:/request_otp;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -2427,7 +2427,7 @@
         "http:POST:/write_result"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.broker:_write_result#http:post:/write_result",
+      "canonicalTarget": "applypilot.fleet.broker:_write_result#http:post:/write_result;sourceBlobSha256=b60583d61f6975a0e211ef048cd4cb16e2a43032719f97e1d243ef201503be15",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": true,
@@ -2460,7 +2460,7 @@
         "applypilot"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:app",
+      "canonicalTarget": "applypilot.cli:app;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -2492,7 +2492,7 @@
         "applypilot-answer-exceptions"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.answer_exceptions_main:main",
+      "canonicalTarget": "applypilot.fleet.answer_exceptions_main:main;sourceBlobSha256=7aaaffe9ce1f08b421d7fd514c047128227c980dd4c3e2b5d5186f2687f0ee88",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -2523,7 +2523,7 @@
         "applypilot-fleet-apply"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_worker_main:main",
+      "canonicalTarget": "applypilot.fleet.apply_worker_main:main;sourceBlobSha256=23f7fe3b7deb318a3dbfa987a13e8c6c3e3badb2b3e5aa2e715f1dccda800c0b",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -2554,7 +2554,7 @@
         "applypilot-fleet-apply-home"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.apply_home_main:main",
+      "canonicalTarget": "applypilot.fleet.apply_home_main:main;sourceBlobSha256=d7a4dc97351c131c8e8058295978a2df2122ad64c5b68227d5a16237d94f20a0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -2586,7 +2586,7 @@
         "applypilot-fleet-autotriage"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.autotriage_main:main",
+      "canonicalTarget": "applypilot.fleet.autotriage_main:main;sourceBlobSha256=54cefe9fe59ac9ec760b6afdf8a2b22095b58beb4635ca4f55df5d6000320505",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2615,7 +2615,7 @@
         "applypilot-fleet-codex-bridge"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:main",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:main;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2645,7 +2645,7 @@
         "applypilot-fleet-compute"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.compute_worker_main:main",
+      "canonicalTarget": "applypilot.fleet.compute_worker_main:main;sourceBlobSha256=8801f9f9e4fffebb424123d08e81a7156d6aaa147af5d8483f13aae0190a3990",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2674,7 +2674,7 @@
         "applypilot-fleet-compute-home"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.compute_home_main:main",
+      "canonicalTarget": "applypilot.fleet.compute_home_main:main;sourceBlobSha256=9cea4ceb73fe0eb5e22c3c77bb7b947d6053deda10e112afae5555dd6a862aef",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2705,7 +2705,7 @@
         "applypilot-fleet-control"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.machine_blackout_main:main",
+      "canonicalTarget": "applypilot.fleet.machine_blackout_main:main;sourceBlobSha256=943bbfda203307acd603658bb1fc5a323bbeed46062bfd06c40aeed9ad5dfefb",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2734,7 +2734,7 @@
         "applypilot-fleet-deadman"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.deadman:main",
+      "canonicalTarget": "applypilot.fleet.deadman:main;sourceBlobSha256=119f867ac20e6990dd8d69b38f4f0dc9c268547e9b45bb0a84c64fe6210c046a",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2761,7 +2761,7 @@
         "applypilot-fleet-dedup-repair"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.dedup_repair_main:main",
+      "canonicalTarget": "applypilot.fleet.dedup_repair_main:main;sourceBlobSha256=9ff7b7472396df2555c2b6504fa02bd82dc62fec68124f79aab022a91c9f17dd",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2790,7 +2790,7 @@
         "applypilot-fleet-diagnose"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.diagnoser_main:main",
+      "canonicalTarget": "applypilot.fleet.diagnoser_main:main;sourceBlobSha256=e45b28d7ac47dcfc84574df9900abf80458167750d7af357734ecac1984ed0cc",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2819,7 +2819,7 @@
         "applypilot-fleet-discovery"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.discovery_main:main_worker",
+      "canonicalTarget": "applypilot.fleet.discovery_main:main_worker;sourceBlobSha256=b7995a28f37bd4699255ef4bfe1ce6de143516d02a3c289e2120e54861027b35",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2848,7 +2848,7 @@
         "applypilot-fleet-discovery-home"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.discovery_main:main_home",
+      "canonicalTarget": "applypilot.fleet.discovery_main:main_home;sourceBlobSha256=b7995a28f37bd4699255ef4bfe1ce6de143516d02a3c289e2120e54861027b35",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2877,7 +2877,7 @@
         "applypilot-fleet-doctor"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.doctor:main",
+      "canonicalTarget": "applypilot.fleet.doctor:main;sourceBlobSha256=15f4dabdf58f84e44ea1338f079de55906bdbaeeab5349d4ae109e30938d4f6e",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2906,7 +2906,7 @@
         "applypilot-fleet-frontier"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.frontier_main:main",
+      "canonicalTarget": "applypilot.fleet.frontier_main:main;sourceBlobSha256=e090ab5eb98bd00bf9bfa55ca35ab20a1fa564d231aa02f26456c7567215727d",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -2936,7 +2936,7 @@
         "applypilot-fleet-linkedin"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_worker_main:main",
+      "canonicalTarget": "applypilot.fleet.linkedin_worker_main:main;sourceBlobSha256=1171dc3c9c7edfddb2b98f724af5369b452e763cccf7aa36a48a22ae65ad44ad",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -2968,7 +2968,7 @@
         "applypilot-fleet-linkedin-home"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.linkedin_home_main:main",
+      "canonicalTarget": "applypilot.fleet.linkedin_home_main:main;sourceBlobSha256=e7e21aaf90784f5c92ad41c95130bc7227a697d735b30ee74c75d548b4dc9c4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -3001,7 +3001,7 @@
         "applypilot-fleet-migrate-schema"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.schema_main:main",
+      "canonicalTarget": "applypilot.fleet.schema_main:main;sourceBlobSha256=7b91d8d4b25cf0946d78010b7397fe94facb86033065561713d25186c2543936",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3031,7 +3031,7 @@
         "applypilot-fleet-otp-home"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.otp_responder_main:main",
+      "canonicalTarget": "applypilot.fleet.otp_responder_main:main;sourceBlobSha256=f42047721bd58d97cfc1570cb13cbe015c7e033eb4c0259f9500003082102b7a",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3063,7 +3063,7 @@
         "applypilot-fleet-reaudit-applied"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.historical_apply_reaudit_main:main",
+      "canonicalTarget": "applypilot.fleet.historical_apply_reaudit_main:main;sourceBlobSha256=0f6f9d29a10599774cc3ab120c6afb4487385f41a5dc760e9934767d2a44aa63",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -3095,7 +3095,7 @@
         "applypilot-fleet-reconcile-email"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.email_reconcile_main:main",
+      "canonicalTarget": "applypilot.fleet.email_reconcile_main:main;sourceBlobSha256=1cf480b15d7925686c88b95a339bd2f592cbefecf477c6d98a9b2665cfcee2e8",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3126,7 +3126,7 @@
         "applypilot-fleet-remediate"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.remediator_main:main",
+      "canonicalTarget": "applypilot.fleet.remediator_main:main;sourceBlobSha256=12b62c9e8e1ced48acd937f029598a77c1427b3d49b38c9508d239892e81d98c",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3156,7 +3156,7 @@
         "applypilot-fleet-repair-report"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.repair_report_main:main",
+      "canonicalTarget": "applypilot.fleet.repair_report_main:main;sourceBlobSha256=975c364c083ff5b6a2771b19ca8ab675b2cbce143595e86c710080fefd294676",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3185,7 +3185,7 @@
         "applypilot-fleet-watchdog"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.watchdog:main",
+      "canonicalTarget": "applypilot.fleet.watchdog:main;sourceBlobSha256=e0f66ad58e5d5db1650aa260fbdeb86de1adea1dd849a588da2de97ba59de2cb",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3214,7 +3214,7 @@
         "applypilot-greenhouse-shadow"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.apply.greenhouse_shadow_main:main",
+      "canonicalTarget": "applypilot.apply.greenhouse_shadow_main:main;sourceBlobSha256=c43145aa0f929225f859224d40949fa4b333378666488fd606d2f1322119503f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -3244,7 +3244,7 @@
         "applypilot-workday-onboard"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.workday_onboard_main:main",
+      "canonicalTarget": "applypilot.fleet.workday_onboard_main:main;sourceBlobSha256=babcb8ef7a8a89b2f576157365bac8b6a6a261f44238d2bf94830b2ab49bff56",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -3275,7 +3275,7 @@
         "applypilot-workday-rollout"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.workday_rollout_main:main",
+      "canonicalTarget": "applypilot.fleet.workday_rollout_main:main;sourceBlobSha256=0c120a3ceb5633454fccf46464ecb1048267d0467f9e8612811da7bca3b17271",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -3307,7 +3307,7 @@
         "container:Dockerfile.authority-migrator:entrypoint:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "Dockerfile.authority-migrator#entrypoint:1:[\"python3\", \"/app/scripts/run-private-authority-migrator.py\"]",
+      "canonicalTarget": "Dockerfile.authority-migrator#entrypoint:1:[\"python3\", \"/app/scripts/run-private-authority-migrator.py\"];sourceBlobSha256=c371f4a01392168c26d6386525e7be8454c8bc42efa8930ba1b4ffb5122d4874",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3337,7 +3337,7 @@
         "container:Dockerfile:cmd:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "Dockerfile#cmd:1:[\"/app/entrypoint.sh\"]",
+      "canonicalTarget": "Dockerfile#cmd:1:[\"/app/entrypoint.sh\"];sourceBlobSha256=f26330a38d6c95575c105b2312fb23299cc281ea6685cca048c1f0a051688204",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3366,7 +3366,7 @@
         "generated-wrapper:fleet-agent.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-agent.ps1#generated-wrapper",
+      "canonicalTarget": "fleet-agent.ps1#generated-wrapper;sourceBlobSha256=1d1ac7fdbc239c64f6e6bc106d9478b945fe7262f90497d9c8996b7f193ad0f9",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3395,7 +3395,7 @@
         "generated-wrapper:fleet-daily-unguard.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-daily-unguard.ps1#generated-wrapper",
+      "canonicalTarget": "fleet-daily-unguard.ps1#generated-wrapper;sourceBlobSha256=6d5d1cf51f100fd52e2648e019a5789943fb3018876b7504f0e92708630e88e0",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3424,7 +3424,7 @@
         "generated-wrapper:register-apply-cycle.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-apply-cycle.ps1#generated-wrapper",
+      "canonicalTarget": "register-apply-cycle.ps1#generated-wrapper;sourceBlobSha256=a92c41d15626592f1180972a7b0244cd0821b79039824752232a8192c05cbfdc",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": true,
@@ -3456,7 +3456,7 @@
         "generated-wrapper:register-discover-score.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-discover-score.ps1#generated-wrapper",
+      "canonicalTarget": "register-discover-score.ps1#generated-wrapper;sourceBlobSha256=96599b414327f7f60581206ed0dfb13912702a3e1933f7e00ccf76ed62350cfc",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3485,7 +3485,7 @@
         "generated-wrapper:register-fleet-tasks.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-fleet-tasks.ps1#generated-wrapper",
+      "canonicalTarget": "register-fleet-tasks.ps1#generated-wrapper;sourceBlobSha256=1ae034c288ef28ce35697e895e2283426916de2a74bd88f909993e4ace46418f",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3515,7 +3515,7 @@
         "launchctl:com.applypilot.fleetworker"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "com.applypilot.fleetworker.plist.template#label=com.applypilot.fleetworker;programArguments=[\"/bin/bash\",\"__INSTALL_DIR__/run-worker-mac.sh\"];install=setup-mac-worker.sh:$HOME/Library/LaunchAgents/com.applypilot.fleetworker.plist;load=launchctl load -w",
+      "canonicalTarget": "com.applypilot.fleetworker.plist.template#label=com.applypilot.fleetworker;programArguments=[\"/bin/bash\",\"__INSTALL_DIR__/run-worker-mac.sh\"];install=setup-mac-worker.sh:$HOME/Library/LaunchAgents/com.applypilot.fleetworker.plist;load=launchctl load -w;sourceBlobSha256=482cbf20688766128bfe551294209755790d45888a258244c79293809c73fc5f",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": true,
@@ -3548,7 +3548,7 @@
         "mcp:caps"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:caps#mcp:caps",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:caps#mcp:caps;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3579,7 +3579,7 @@
         "mcp:challenges"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:challenges#mcp:challenges",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:challenges#mcp:challenges;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3607,7 +3607,7 @@
         "mcp:fleet_status"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:fleet_status#mcp:fleet_status",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:fleet_status#mcp:fleet_status;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3635,7 +3635,7 @@
         "mcp:health_report"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:health_report#mcp:health_report",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:health_report#mcp:health_report;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3663,7 +3663,7 @@
         "mcp:pause_scope"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:pause_scope#mcp:pause_scope",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:pause_scope#mcp:pause_scope;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3694,7 +3694,7 @@
         "mcp:quarantine_job"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:quarantine_job#mcp:quarantine_job",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:quarantine_job#mcp:quarantine_job;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3725,7 +3725,7 @@
         "mcp:recent_results"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:recent_results#mcp:recent_results",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:recent_results#mcp:recent_results;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3756,7 +3756,7 @@
         "mcp:restart_worker"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:restart_worker#mcp:restart_worker",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:restart_worker#mcp:restart_worker;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -3787,7 +3787,7 @@
         "powershell -File Invoke-FleetMakeCurrent.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "Invoke-FleetMakeCurrent.ps1",
+      "canonicalTarget": "Invoke-FleetMakeCurrent.ps1;sourceBlobSha256=03fd5242ad2eafd0754e8261fced0d1b768ffd74fc60cd080b1d9b71f4fc6c71",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3816,7 +3816,7 @@
         "powershell -File Invoke-FleetReconcile.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "Invoke-FleetReconcile.ps1",
+      "canonicalTarget": "Invoke-FleetReconcile.ps1;sourceBlobSha256=b678a5fe47a642f083293b9b4b76faef704139a5d3b3a262a7b414499cdc367d",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3845,7 +3845,7 @@
         "powershell -File backup-brain.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-brain.ps1",
+      "canonicalTarget": "backup-brain.ps1;sourceBlobSha256=97e4f40f1973df8c3dc49c0781ee0c7a0ac693044475e27ede5b4d377ab5383d",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3874,7 +3874,7 @@
         "powershell -File backup-fleet-pg.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1",
+      "canonicalTarget": "backup-fleet-pg.ps1;sourceBlobSha256=831479d4cb87ea3a9aa78fe70110384fd7e291e94497da9541b872a17294fca6",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3903,7 +3903,7 @@
         "powershell -File bridge-resbuild.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "bridge-resbuild.ps1",
+      "canonicalTarget": "bridge-resbuild.ps1;sourceBlobSha256=32b9c4d1dbc2149c565743cc18e54742f3e78131cca8958d64a0f2567cde7234",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3932,7 +3932,7 @@
         "powershell -File check-fleet-ready.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "check-fleet-ready.ps1",
+      "canonicalTarget": "check-fleet-ready.ps1;sourceBlobSha256=c1ccd30d0ddded4b37b94514a02aee8e726b1acbb56da5f86fb133f4a3c61190",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3961,7 +3961,7 @@
         "powershell -File check-tarpon-discovery.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "check-tarpon-discovery.ps1",
+      "canonicalTarget": "check-tarpon-discovery.ps1;sourceBlobSha256=d08f9725616076f66630d1b56611a7a5afe03e9e848949c0b4dd4504d25db65a",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -3990,7 +3990,7 @@
         "powershell -File fleet-agent.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-agent.ps1",
+      "canonicalTarget": "fleet-agent.ps1;sourceBlobSha256=1d1ac7fdbc239c64f6e6bc106d9478b945fe7262f90497d9c8996b7f193ad0f9",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4019,7 +4019,7 @@
         "powershell -File fleet-daily-unguard.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-daily-unguard.ps1",
+      "canonicalTarget": "fleet-daily-unguard.ps1;sourceBlobSha256=6d5d1cf51f100fd52e2648e019a5789943fb3018876b7504f0e92708630e88e0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4048,7 +4048,7 @@
         "powershell -File fleet-health.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-health.ps1",
+      "canonicalTarget": "fleet-health.ps1;sourceBlobSha256=73d951becc1df7fb9c1f2ad565b072e811343981d4072f1993334f2857a8b9b3",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4077,7 +4077,7 @@
         "powershell -File keepalive-apply.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "keepalive-apply.ps1",
+      "canonicalTarget": "keepalive-apply.ps1;sourceBlobSha256=7d68205f49d4316e2529a460418b595e87a7b6343ccb728e3742a5c4f9ddaac7",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4106,7 +4106,7 @@
         "powershell -File load-canary-home.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "load-canary-home.ps1",
+      "canonicalTarget": "load-canary-home.ps1;sourceBlobSha256=8db997b56f2595746084d5d37c44ec7b0ff9cb85ebfae35bfe476dc8bac08ba7",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4135,7 +4135,7 @@
         "powershell -File load-canary-remote.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "load-canary-remote.ps1",
+      "canonicalTarget": "load-canary-remote.ps1;sourceBlobSha256=62c86166f97cf785f273e04a74c402b1bcadba7811f09a1f95a38bc64627a3bc",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4164,7 +4164,7 @@
         "powershell -File register-apply-cycle.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-apply-cycle.ps1",
+      "canonicalTarget": "register-apply-cycle.ps1;sourceBlobSha256=a92c41d15626592f1180972a7b0244cd0821b79039824752232a8192c05cbfdc",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -4196,7 +4196,7 @@
         "powershell -File register-discover-score.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-discover-score.ps1",
+      "canonicalTarget": "register-discover-score.ps1;sourceBlobSha256=96599b414327f7f60581206ed0dfb13912702a3e1933f7e00ccf76ed62350cfc",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4225,7 +4225,7 @@
         "powershell -File register-fleet-crash-liveness.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-fleet-crash-liveness.ps1",
+      "canonicalTarget": "register-fleet-crash-liveness.ps1;sourceBlobSha256=69fa23e4557ebe40194b3eb2b22fada681b3f54f12b08e0ff9616e4fa5fac317",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4254,7 +4254,7 @@
         "powershell -File register-fleet-tasks.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-fleet-tasks.ps1",
+      "canonicalTarget": "register-fleet-tasks.ps1;sourceBlobSha256=1ae034c288ef28ce35697e895e2283426916de2a74bd88f909993e4ace46418f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4283,7 +4283,7 @@
         "powershell -File register-keepalive.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-keepalive.ps1",
+      "canonicalTarget": "register-keepalive.ps1;sourceBlobSha256=1f5f06678813192955b0fcb4a13e78125627a2a23422fbe3619539d79402fd70",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4312,7 +4312,7 @@
         "powershell -File register-otp-responder-startup.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-otp-responder-startup.ps1",
+      "canonicalTarget": "register-otp-responder-startup.ps1;sourceBlobSha256=00f6a775f39a2a35321d9165718d0678bc8e9a047e231dd7f49c89493db467d7",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4341,7 +4341,7 @@
         "powershell -File run-applypilot-sales.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-applypilot-sales.ps1",
+      "canonicalTarget": "run-applypilot-sales.ps1;sourceBlobSha256=0ac863623f5b4ffc6d839efd50252c913faca4697fa14803490f9a2170659e49",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4370,7 +4370,7 @@
         "powershell -File run-applypilot.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-applypilot.ps1",
+      "canonicalTarget": "run-applypilot.ps1;sourceBlobSha256=ab7c53079be8ef0488ce6b163dcffd0a857d109595ef5ecf94d97ecf3f3723b9",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4399,7 +4399,7 @@
         "powershell -File run-compute-home-loop.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-compute-home-loop.ps1",
+      "canonicalTarget": "run-compute-home-loop.ps1;sourceBlobSha256=b5c8136517bf95253b1e6dc29f0c8097a60148e9a70753309e91af467827e7fd",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4428,7 +4428,7 @@
         "powershell -File run-discover-score-on-machine2.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-discover-score-on-machine2.ps1",
+      "canonicalTarget": "run-discover-score-on-machine2.ps1;sourceBlobSha256=2393e26ce6d844622a5d6deb6d51db604f564a6008477af3b4c7fa87a2f2536d",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4457,7 +4457,7 @@
         "powershell -File run-discovery-home-loop.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-discovery-home-loop.ps1",
+      "canonicalTarget": "run-discovery-home-loop.ps1;sourceBlobSha256=07f94fcc7a8699ac3641fea263d2077fc31227cbaa4323111ed57c5e6432a613",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4486,7 +4486,7 @@
         "powershell -File run-fleet-autotriage.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-fleet-autotriage.ps1",
+      "canonicalTarget": "run-fleet-autotriage.ps1;sourceBlobSha256=b8d0064ea7e6938fcd9e5970346a627695a60fe37daee24a4ca69b746bba7739",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4515,7 +4515,7 @@
         "powershell -File run-fleet-compute.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-fleet-compute.ps1",
+      "canonicalTarget": "run-fleet-compute.ps1;sourceBlobSha256=0203a21234e8feb32ab3789978203926e87d7a6b6f861bb4af15e8474d9a02ee",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4544,7 +4544,7 @@
         "powershell -File run-fleet-console.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-fleet-console.ps1",
+      "canonicalTarget": "run-fleet-console.ps1;sourceBlobSha256=141c398244399be7da292a96663132b90d6747089df5357422990f31928b4cec",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4573,7 +4573,7 @@
         "powershell -File run-fleet-crash-liveness.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-fleet-crash-liveness.ps1",
+      "canonicalTarget": "run-fleet-crash-liveness.ps1;sourceBlobSha256=7e28503e720850eec991fb120832c8e6034d58d65d90232eb748267b3d8371ff",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4602,7 +4602,7 @@
         "powershell -File run-fleet-discovery.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-fleet-discovery.ps1",
+      "canonicalTarget": "run-fleet-discovery.ps1;sourceBlobSha256=5b210f455fc033cd4c7b92366ba480cbed367d27968e17ed359b927446059668",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4631,7 +4631,7 @@
         "powershell -File run-fleet-doctor.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-fleet-doctor.ps1",
+      "canonicalTarget": "run-fleet-doctor.ps1;sourceBlobSha256=0178d9956a72055a6a4cab0d12ceb078a178202e90cef0435c97350ab0e7244e",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4660,7 +4660,7 @@
         "powershell -File run-fleet-worker.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-fleet-worker.ps1",
+      "canonicalTarget": "run-fleet-worker.ps1;sourceBlobSha256=fc5373a27f93ef303f931e5c1c84c974b540dc82641284d6ca1551a6756981de",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4689,7 +4689,7 @@
         "powershell -File run-fleet-workers.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-fleet-workers.ps1",
+      "canonicalTarget": "run-fleet-workers.ps1;sourceBlobSha256=00f83b9da5cfda36060f81db8f82ee794a182beaa1e379007234c4a111cc7eaa",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4718,7 +4718,7 @@
         "powershell -File run-otp-responder.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-otp-responder.ps1",
+      "canonicalTarget": "run-otp-responder.ps1;sourceBlobSha256=969d516819ffb51b8a9c1dc872516be54fd83f9289810d262eafd768c164fa57",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4747,7 +4747,7 @@
         "powershell -File run-tarpon-linkedin.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-tarpon-linkedin.ps1",
+      "canonicalTarget": "run-tarpon-linkedin.ps1;sourceBlobSha256=c597d4385510810410575104098127e5c7b3b5e254084922cd94044dbd2c3d54",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4776,7 +4776,7 @@
         "powershell -File scripts/New-PhaseASignedReceipt.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/New-PhaseASignedReceipt.ps1",
+      "canonicalTarget": "scripts/New-PhaseASignedReceipt.ps1;sourceBlobSha256=2507c4672a4088dcac39bd198abcbb915e4ffb69e4b4f750a28d9dc44f31e371",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4805,7 +4805,7 @@
         "powershell -File scripts/backup-railway-postgres.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/backup-railway-postgres.ps1",
+      "canonicalTarget": "scripts/backup-railway-postgres.ps1;sourceBlobSha256=b96a9dbc810c7cb5c6c39ec97f34bafc377abc064c68c909082cfbf0a0bffb54",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4834,7 +4834,7 @@
         "powershell -File scripts/emergency-contain-legacy-authority.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/emergency-contain-legacy-authority.ps1",
+      "canonicalTarget": "scripts/emergency-contain-legacy-authority.ps1;sourceBlobSha256=ca1198961a90a0148ad24de71d17804a8a8db27bc80a2d16ec8a69165b84e5ee",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4863,7 +4863,7 @@
         "powershell -File scripts/provision-phase-a-evidence-store.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/provision-phase-a-evidence-store.ps1",
+      "canonicalTarget": "scripts/provision-phase-a-evidence-store.ps1;sourceBlobSha256=4842e1d58f4ab681bf29d33fc3dc7997b00f845bd31b3e6b9e13ae3fe3b50f79",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4892,7 +4892,7 @@
         "powershell -File scripts/run-canonical-outcomes-review.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/run-canonical-outcomes-review.ps1",
+      "canonicalTarget": "scripts/run-canonical-outcomes-review.ps1;sourceBlobSha256=616dbd449c7773d3a4d01f8cf943c1b00c9d0f34c5873dfaba8663e45092d921",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4921,7 +4921,7 @@
         "powershell -File scripts/runtime-launch-channel.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/runtime-launch-channel.ps1",
+      "canonicalTarget": "scripts/runtime-launch-channel.ps1;sourceBlobSha256=29ee95a479558ff5e668006d4fbc43708a4b079b5d5b6b27db3e5be7ae58d988",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4950,7 +4950,7 @@
         "powershell -File scripts/setup-fleet-pg-tailscale.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/setup-fleet-pg-tailscale.ps1",
+      "canonicalTarget": "scripts/setup-fleet-pg-tailscale.ps1;sourceBlobSha256=4aa6375f9e88536c1369eb4f5c2d760fee5aaba07cc62cb23951c9d6a5e35f76",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -4979,7 +4979,7 @@
         "powershell -File scripts/setup-fleet-worker.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/setup-fleet-worker.ps1",
+      "canonicalTarget": "scripts/setup-fleet-worker.ps1;sourceBlobSha256=5cb9c280ad62a32c7fcb2357a4fa4cdc83da09780540da6036c6e1f12eb6fa9d",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5008,7 +5008,7 @@
         "powershell -File setup-fleet-discovery.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-fleet-discovery.ps1",
+      "canonicalTarget": "setup-fleet-discovery.ps1;sourceBlobSha256=4033bdd5a0ca1c1c5a973a408fabf754176dd867ad8c268d02efe214a26a80f8",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5037,7 +5037,7 @@
         "powershell -File setup-fleet-machine.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-fleet-machine.ps1",
+      "canonicalTarget": "setup-fleet-machine.ps1;sourceBlobSha256=10b9bc23f53e0224d2180548d1f7b7c2d7e009e45200d5c328113a52e85e13d4",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5066,7 +5066,7 @@
         "powershell -File setup-fleet-pg-tailscale.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-fleet-pg-tailscale.ps1",
+      "canonicalTarget": "setup-fleet-pg-tailscale.ps1;sourceBlobSha256=0335a413be5fd979f5f76dafe343d7983446bdf8caa7f0f168656378634c1c10",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5095,7 +5095,7 @@
         "powershell -File setup-fleet-ssh-access.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-fleet-ssh-access.ps1",
+      "canonicalTarget": "setup-fleet-ssh-access.ps1;sourceBlobSha256=e5d74fdd2ccf93930e80ab9e32722b1660a3fd649283c5b833e00d7b366e5924",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5124,7 +5124,7 @@
         "powershell -File setup-fleet-worker.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-fleet-worker.ps1",
+      "canonicalTarget": "setup-fleet-worker.ps1;sourceBlobSha256=50b99c048dde6624240e53e794eb9230558edd53a403633dab0ad450ffe1e067",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5153,7 +5153,7 @@
         "powershell -File stage-bundle-on-home.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "stage-bundle-on-home.ps1",
+      "canonicalTarget": "stage-bundle-on-home.ps1;sourceBlobSha256=16d793815e44caa26df8d3b2247959d7194bd0b3361e2cb64592cfaa9d910c3a",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5182,7 +5182,7 @@
         "powershell -File status-m4.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "status-m4.ps1",
+      "canonicalTarget": "status-m4.ps1;sourceBlobSha256=69b04f1d02d45a0a4cdb72c984322a2e7ddd66d48940c2b780ebeca75510bc4c",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5211,7 +5211,7 @@
         "powershell -File swap-recovered-brain.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "swap-recovered-brain.ps1",
+      "canonicalTarget": "swap-recovered-brain.ps1;sourceBlobSha256=897f1434afb66cab85131f8cb8e7bdd40d6627a6a2296f6af1892fba1fe0fb40",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5240,7 +5240,7 @@
         "Import-Module scripts/PhaseAEvidenceStore.psm1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/PhaseAEvidenceStore.psm1",
+      "canonicalTarget": "scripts/PhaseAEvidenceStore.psm1;sourceBlobSha256=349045438e690a54322a7e40933267b7044ee79e7286e3d6ed346248e75cd598",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -5269,7 +5269,7 @@
         "Import-Module scripts/PhaseAWindowsFile.psm1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/PhaseAWindowsFile.psm1",
+      "canonicalTarget": "scripts/PhaseAWindowsFile.psm1;sourceBlobSha256=3664b0b7798fc9fb3ac1e63a8bbe0a5506514f96faee38155a73e4cbc3c6c07c",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -5298,7 +5298,7 @@
         "python applypilot-webdriver-cost-research/generate_report.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot-webdriver-cost-research/generate_report.py",
+      "canonicalTarget": "applypilot-webdriver-cost-research/generate_report.py;sourceBlobSha256=d3b31e63563dc03900e6941ad1e6f74fae546397a486d7c5089a66a11c06bee2",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5327,7 +5327,7 @@
         "python fleet-agent-query.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-agent-query.py",
+      "canonicalTarget": "fleet-agent-query.py;sourceBlobSha256=852157a6f20a20ab3b966e8f3bc76c3771bcc1220461ba61294645e96fb38c37",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5354,7 +5354,7 @@
         "python fleet-agent-update-gate.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-agent-update-gate.py",
+      "canonicalTarget": "fleet-agent-update-gate.py;sourceBlobSha256=b725ebead2a191ff4fa5ff1f6afd604c1f6da50ad38b12ab5263fdc81ad242e1",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5383,7 +5383,7 @@
         "python fleet-agent-version.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-agent-version.py",
+      "canonicalTarget": "fleet-agent-version.py;sourceBlobSha256=3e7e7f5f79d28f0c75ebe8b0403f49445a5c67506721c8b426144b8dd695761c",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5411,7 +5411,7 @@
         "python fleet-blackout-query.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-blackout-query.py",
+      "canonicalTarget": "fleet-blackout-query.py;sourceBlobSha256=84e4a8f7d64225e21af6509f89a75e3a616d439b04a9727f8b85e87d71276f85",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5440,7 +5440,7 @@
         "python fleet-secret.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-secret.py",
+      "canonicalTarget": "fleet-secret.py;sourceBlobSha256=38952ffeb8ade8ca40ec7f6a163827895df34b394b9098ea0ac23d3158d0f561",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5469,7 +5469,7 @@
         "python fleet-status.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-status.py",
+      "canonicalTarget": "fleet-status.py;sourceBlobSha256=77ddfdfc5a89e2c1d66acaeaae1b8eb680e2d8bd7e810fc68ed315853772cd56",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5496,7 +5496,7 @@
         "python rescore-desc-cut.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "rescore-desc-cut.py",
+      "canonicalTarget": "rescore-desc-cut.py;sourceBlobSha256=fb40cb53ecd90b6fe935af710ed2e30b3bda837200b8f01f5f3926336ae43c24",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5525,7 +5525,7 @@
         "python scripts/bootstrap-fleet-pg-roles.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py",
+      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py;sourceBlobSha256=673451968e81e5ba01c2ce4b9c4e18d2024e5aa1fdf1a6fd1e6b6cfd56e11b58",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5555,7 +5555,7 @@
         "python scripts/brain-sqlite-to-postgres.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/brain-sqlite-to-postgres.py",
+      "canonicalTarget": "scripts/brain-sqlite-to-postgres.py;sourceBlobSha256=d0362ea86546591f56052e3304b87e13bfb80bb5660d97bac115a49d0843b0c0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5585,7 +5585,7 @@
         "python scripts/build-compatibility-manifest.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/build-compatibility-manifest.py",
+      "canonicalTarget": "scripts/build-compatibility-manifest.py;sourceBlobSha256=753222a4d2dd9e5cf78bcdb5fe2b1c986f52582b6fcd8cce227d13b499b3be60",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5614,7 +5614,7 @@
         "python scripts/inventory-brain-command-authority.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/inventory-brain-command-authority.py",
+      "canonicalTarget": "scripts/inventory-brain-command-authority.py;sourceBlobSha256=10670f734c998b4581d7a8358b2e445be84b265957731dbc9b883b3aea5a861e",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5641,7 +5641,7 @@
         "python scripts/register-brain-artifact-authority.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/register-brain-artifact-authority.py",
+      "canonicalTarget": "scripts/register-brain-artifact-authority.py;sourceBlobSha256=1a3d0df1829660fe48fc671e1000e30f372a8c3a47505bbbca6bc1693827e26c",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5670,7 +5670,7 @@
         "python scripts/rollback-fleet-pg-role.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/rollback-fleet-pg-role.py",
+      "canonicalTarget": "scripts/rollback-fleet-pg-role.py;sourceBlobSha256=64480ed6811254fbfbc53b642c883557fe2a2c130c74b60b47f03b2fc0e24ad1",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5700,7 +5700,7 @@
         "python scripts/run-private-authority-migrator.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/run-private-authority-migrator.py",
+      "canonicalTarget": "scripts/run-private-authority-migrator.py;sourceBlobSha256=b9dfa1ff2e6143e56a19d3515b621cb99561f3002e4b6ff244db4af7a956095d",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5730,7 +5730,7 @@
         "python scripts/sign-release-attestation.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/sign-release-attestation.py",
+      "canonicalTarget": "scripts/sign-release-attestation.py;sourceBlobSha256=b2c73602862e7d1be2d92260315855ee891fea3c1d1e73461c91f859abd9b796",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5759,7 +5759,7 @@
         "python scripts/upgrade-brain-authority-existing-topology.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py",
+      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py;sourceBlobSha256=899b8ee76feb68eb48ce9df044588126b85715b536a3a03c693157df12294af0",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5791,7 +5791,7 @@
         "python scripts/verify-brain-command-authority.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/verify-brain-command-authority.py",
+      "canonicalTarget": "scripts/verify-brain-command-authority.py;sourceBlobSha256=01c9a80b02d9a9378269603c0f76110fd126b3736870f68c8b9b9c728b55b65a",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5818,7 +5818,7 @@
         "python scripts/verify-runtime-launch-principals.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/verify-runtime-launch-principals.py",
+      "canonicalTarget": "scripts/verify-runtime-launch-principals.py;sourceBlobSha256=ea23f35a02481f054dde87e91af3e804efe32f1d3a605d08dcbd46163e1713d5",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5846,7 +5846,7 @@
         "python src/applypilot/__main__.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot:__main__",
+      "canonicalTarget": "applypilot:__main__;sourceBlobSha256=aed4a567117ecf46fc36990896ffe13d913fe5a10e1773b184b20c4facc73d44",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5876,7 +5876,7 @@
         "python src/applypilot/apply/container_worker.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.apply.container_worker:__main__",
+      "canonicalTarget": "applypilot.apply.container_worker:__main__;sourceBlobSha256=cc347cb0afb9de5232d1ff318af1b7912050ca2392c0806a0c816bc36d626659",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -5908,7 +5908,7 @@
         "python src/applypilot/apply/fleet_sync.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.apply.fleet_sync:__main__",
+      "canonicalTarget": "applypilot.apply.fleet_sync:__main__;sourceBlobSha256=1556623f090556db8818655affd74c88fa39072a85f924537b88d220ccec7160",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -5943,7 +5943,7 @@
         "python src/applypilot/apply/greenhouse_shadow_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.apply.greenhouse_shadow_main:__main__",
+      "canonicalTarget": "applypilot.apply.greenhouse_shadow_main:__main__;sourceBlobSha256=c43145aa0f929225f859224d40949fa4b333378666488fd606d2f1322119503f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -5974,7 +5974,7 @@
         "python src/applypilot/cli.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:__main__",
+      "canonicalTarget": "applypilot.cli:__main__;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -6007,7 +6007,7 @@
         "python src/applypilot/fleet/answer_exceptions_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.answer_exceptions_main:__main__",
+      "canonicalTarget": "applypilot.fleet.answer_exceptions_main:__main__;sourceBlobSha256=7aaaffe9ce1f08b421d7fd514c047128227c980dd4c3e2b5d5186f2687f0ee88",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -6039,7 +6039,7 @@
         "python src/applypilot/fleet/autotriage_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.autotriage_main:__main__",
+      "canonicalTarget": "applypilot.fleet.autotriage_main:__main__;sourceBlobSha256=54cefe9fe59ac9ec760b6afdf8a2b22095b58beb4635ca4f55df5d6000320505",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6069,7 +6069,7 @@
         "python src/applypilot/fleet/codex_bridge.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.codex_bridge:__main__",
+      "canonicalTarget": "applypilot.fleet.codex_bridge:__main__;sourceBlobSha256=17aa00e1b98be64611ff4045d86507b01045eff0e3d5091fc781d4d31c6b6536",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6100,7 +6100,7 @@
         "python src/applypilot/fleet/console_app.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.console_app:__main__",
+      "canonicalTarget": "applypilot.fleet.console_app:__main__;sourceBlobSha256=dc34e63a3d129f3348c13370fd6baf4ee485cbb0a5e94536b80b4c4c12a6a489",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6130,7 +6130,7 @@
         "python src/applypilot/fleet/deadman.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.deadman:__main__",
+      "canonicalTarget": "applypilot.fleet.deadman:__main__;sourceBlobSha256=119f867ac20e6990dd8d69b38f4f0dc9c268547e9b45bb0a84c64fe6210c046a",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6158,7 +6158,7 @@
         "python src/applypilot/fleet/dedup_repair_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.dedup_repair_main:__main__",
+      "canonicalTarget": "applypilot.fleet.dedup_repair_main:__main__;sourceBlobSha256=9ff7b7472396df2555c2b6504fa02bd82dc62fec68124f79aab022a91c9f17dd",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6188,7 +6188,7 @@
         "python src/applypilot/fleet/diagnoser_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.diagnoser_main:__main__",
+      "canonicalTarget": "applypilot.fleet.diagnoser_main:__main__;sourceBlobSha256=e45b28d7ac47dcfc84574df9900abf80458167750d7af357734ecac1984ed0cc",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6218,7 +6218,7 @@
         "python src/applypilot/fleet/doctor.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.doctor:__main__",
+      "canonicalTarget": "applypilot.fleet.doctor:__main__;sourceBlobSha256=15f4dabdf58f84e44ea1338f079de55906bdbaeeab5349d4ae109e30938d4f6e",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6248,7 +6248,7 @@
         "python src/applypilot/fleet/email_reconcile_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.email_reconcile_main:__main__",
+      "canonicalTarget": "applypilot.fleet.email_reconcile_main:__main__;sourceBlobSha256=1cf480b15d7925686c88b95a339bd2f592cbefecf477c6d98a9b2665cfcee2e8",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6280,7 +6280,7 @@
         "python src/applypilot/fleet/historical_apply_reaudit_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.historical_apply_reaudit_main:__main__",
+      "canonicalTarget": "applypilot.fleet.historical_apply_reaudit_main:__main__;sourceBlobSha256=0f6f9d29a10599774cc3ab120c6afb4487385f41a5dc760e9934767d2a44aa63",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -6313,7 +6313,7 @@
         "python src/applypilot/fleet/launch_guard.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.launch_guard:__main__",
+      "canonicalTarget": "applypilot.fleet.launch_guard:__main__;sourceBlobSha256=32bdd247fd78d910bd803192e4692b272761e2b19d0759a163770bcfe3d7f559",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6341,7 +6341,7 @@
         "python src/applypilot/fleet/machine_blackout_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.machine_blackout_main:__main__",
+      "canonicalTarget": "applypilot.fleet.machine_blackout_main:__main__;sourceBlobSha256=943bbfda203307acd603658bb1fc5a323bbeed46062bfd06c40aeed9ad5dfefb",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6371,7 +6371,7 @@
         "python src/applypilot/fleet/remediator_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.remediator_main:__main__",
+      "canonicalTarget": "applypilot.fleet.remediator_main:__main__;sourceBlobSha256=12b62c9e8e1ced48acd937f029598a77c1427b3d49b38c9508d239892e81d98c",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6402,7 +6402,7 @@
         "python src/applypilot/fleet/repair_report_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.repair_report_main:__main__",
+      "canonicalTarget": "applypilot.fleet.repair_report_main:__main__;sourceBlobSha256=975c364c083ff5b6a2771b19ca8ab675b2cbce143595e86c710080fefd294676",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6432,7 +6432,7 @@
         "python src/applypilot/fleet/schema_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.schema_main:__main__",
+      "canonicalTarget": "applypilot.fleet.schema_main:__main__;sourceBlobSha256=7b91d8d4b25cf0946d78010b7397fe94facb86033065561713d25186c2543936",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6463,7 +6463,7 @@
         "python src/applypilot/fleet/work_hours.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.work_hours:__main__",
+      "canonicalTarget": "applypilot.fleet.work_hours:__main__;sourceBlobSha256=af655d8ec29e0cae7da56b4a0d8e6d99e76fe3b6483d220fb135d5f43f0b3967",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6491,7 +6491,7 @@
         "python src/applypilot/fleet/workday_onboard_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.workday_onboard_main:__main__",
+      "canonicalTarget": "applypilot.fleet.workday_onboard_main:__main__;sourceBlobSha256=babcb8ef7a8a89b2f576157365bac8b6a6a261f44238d2bf94830b2ab49bff56",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -6523,7 +6523,7 @@
         "python src/applypilot/fleet/workday_rollout_main.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.fleet.workday_rollout_main:__main__",
+      "canonicalTarget": "applypilot.fleet.workday_rollout_main:__main__;sourceBlobSha256=0c120a3ceb5633454fccf46464ecb1048267d0467f9e8612811da7bca3b17271",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -6555,7 +6555,7 @@
         "scheduled-task-action:backup-brain.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-brain.ps1#scheduled-task-action:1",
+      "canonicalTarget": "backup-brain.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:7736915b069eeccf6c0316e4400226e8954ca21c480ff8f586467b1ac96cca86;sourceBlobSha256=97e4f40f1973df8c3dc49c0781ee0c7a0ac693044475e27ede5b4d377ab5383d",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6584,7 +6584,7 @@
         "scheduled-task-action:backup-fleet-pg.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-action:1",
+      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:7736915b069eeccf6c0316e4400226e8954ca21c480ff8f586467b1ac96cca86;sourceBlobSha256=831479d4cb87ea3a9aa78fe70110384fd7e291e94497da9541b872a17294fca6",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6613,7 +6613,7 @@
         "scheduled-task-action:fleet-daily-unguard.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-daily-unguard.ps1#scheduled-task-action:1",
+      "canonicalTarget": "fleet-daily-unguard.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:70826bd3cf70fade90f1f53b8c951414491e74a2301a43db2ed981b3d1e92cfa;sourceBlobSha256=6d5d1cf51f100fd52e2648e019a5789943fb3018876b7504f0e92708630e88e0",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6635,14 +6635,14 @@
       ],
       "sourcePath": "fleet-daily-unguard.ps1",
       "surfaceKind": "scheduled-task-action",
-      "symbol": "line-152"
+      "symbol": "line-153"
     },
     {
       "aliases": [
         "scheduled-task-action:register-apply-cycle.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-apply-cycle.ps1#scheduled-task-action:1",
+      "canonicalTarget": "register-apply-cycle.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:d2610923db2d02b46d72bfab1c373d560371aac7cde1f2ecc9c40ffab28911de;sourceBlobSha256=a92c41d15626592f1180972a7b0244cd0821b79039824752232a8192c05cbfdc",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": true,
@@ -6674,7 +6674,7 @@
         "scheduled-task-action:register-discover-score.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-discover-score.ps1#scheduled-task-action:1",
+      "canonicalTarget": "register-discover-score.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:d2610923db2d02b46d72bfab1c373d560371aac7cde1f2ecc9c40ffab28911de;sourceBlobSha256=96599b414327f7f60581206ed0dfb13912702a3e1933f7e00ccf76ed62350cfc",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6703,7 +6703,7 @@
         "scheduled-task-action:register-fleet-crash-liveness.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-fleet-crash-liveness.ps1#scheduled-task-action:1",
+      "canonicalTarget": "register-fleet-crash-liveness.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:be0656a9adbc73265679212a51e99d50b235b701833bb2bfc35dca1a5d25277e;sourceBlobSha256=69fa23e4557ebe40194b3eb2b22fada681b3f54f12b08e0ff9616e4fa5fac317",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6725,14 +6725,14 @@
       ],
       "sourcePath": "register-fleet-crash-liveness.ps1",
       "surfaceKind": "scheduled-task-action",
-      "symbol": "line-26"
+      "symbol": "line-27"
     },
     {
       "aliases": [
         "scheduled-task-action:register-fleet-tasks.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-fleet-tasks.ps1#scheduled-task-action:1",
+      "canonicalTarget": "register-fleet-tasks.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:d2610923db2d02b46d72bfab1c373d560371aac7cde1f2ecc9c40ffab28911de;sourceBlobSha256=1ae034c288ef28ce35697e895e2283426916de2a74bd88f909993e4ace46418f",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6761,7 +6761,7 @@
         "scheduled-task-action:register-keepalive.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-keepalive.ps1#scheduled-task-action:1",
+      "canonicalTarget": "register-keepalive.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:c2e09c18d43ff376ac7c17d62b973dd3003022fc37b2d082e720296844427f03;sourceBlobSha256=1f5f06678813192955b0fcb4a13e78125627a2a23422fbe3619539d79402fd70",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6790,7 +6790,7 @@
         "scheduled-task-action:register-otp-responder-startup.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-otp-responder-startup.ps1#scheduled-task-action:1",
+      "canonicalTarget": "register-otp-responder-startup.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:d2610923db2d02b46d72bfab1c373d560371aac7cde1f2ecc9c40ffab28911de;sourceBlobSha256=00f6a775f39a2a35321d9165718d0678bc8e9a047e231dd7f49c89493db467d7",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6819,7 +6819,7 @@
         "scheduled-task-identity:backup-brain.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-brain.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "backup-brain.ps1#scheduled-task-identity:1;user=absent;principal=absent;sourceBlobSha256=97e4f40f1973df8c3dc49c0781ee0c7a0ac693044475e27ede5b4d377ab5383d",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6848,7 +6848,7 @@
         "scheduled-task-identity:backup-fleet-pg.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-identity:1;user=absent;principal=absent;sourceBlobSha256=831479d4cb87ea3a9aa78fe70110384fd7e291e94497da9541b872a17294fca6",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6877,7 +6877,7 @@
         "scheduled-task-identity:fleet-daily-unguard.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "fleet-daily-unguard.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "fleet-daily-unguard.ps1#scheduled-task-identity:1;user=absent;principal=absent;sourceBlobSha256=6d5d1cf51f100fd52e2648e019a5789943fb3018876b7504f0e92708630e88e0",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6906,44 +6906,12 @@
         "scheduled-task-identity:register-apply-cycle.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-apply-cycle.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "register-apply-cycle.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=a92c41d15626592f1180972a7b0244cd0821b79039824752232a8192c05cbfdc",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": true,
       "failClosedBehavior": "deny-not-live-writer",
       "id": "scheduled-task-identity:register-apply-cycle.ps1:1",
-      "installed": false,
-      "liveEligibility": false,
-      "owner": "operator",
-      "pauseScopes": [
-        "apply",
-        "none"
-      ],
-      "readWriteClass": "control",
-      "repository": "applypilot",
-      "resourcesRead": [
-        "employer-ats",
-        "repository-source"
-      ],
-      "resourcesWritten": [
-        "employer-ats",
-        "repository-source"
-      ],
-      "sourcePath": "register-apply-cycle.ps1",
-      "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-164"
-    },
-    {
-      "aliases": [
-        "scheduled-task-identity:register-apply-cycle.ps1:2"
-      ],
-      "authoritySource": "none",
-      "canonicalTarget": "register-apply-cycle.ps1#scheduled-task-identity:2",
-      "capabilities": [],
-      "directInvocation": false,
-      "employerMutation": true,
-      "failClosedBehavior": "deny-not-live-writer",
-      "id": "scheduled-task-identity:register-apply-cycle.ps1:2",
       "installed": false,
       "liveEligibility": false,
       "owner": "operator",
@@ -6970,7 +6938,7 @@
         "scheduled-task-identity:register-discover-score.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-discover-score.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "register-discover-score.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=96599b414327f7f60581206ed0dfb13912702a3e1933f7e00ccf76ed62350cfc",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6999,7 +6967,7 @@
         "scheduled-task-identity:register-fleet-crash-liveness.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-fleet-crash-liveness.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "register-fleet-crash-liveness.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=69fa23e4557ebe40194b3eb2b22fada681b3f54f12b08e0ff9616e4fa5fac317",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -7021,48 +6989,19 @@
       ],
       "sourcePath": "register-fleet-crash-liveness.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-39"
+      "symbol": "line-40"
     },
     {
       "aliases": [
         "scheduled-task-identity:register-fleet-tasks.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-fleet-tasks.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "register-fleet-tasks.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=1ae034c288ef28ce35697e895e2283426916de2a74bd88f909993e4ace46418f",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
       "failClosedBehavior": "deny-not-live-writer",
       "id": "scheduled-task-identity:register-fleet-tasks.ps1:1",
-      "installed": false,
-      "liveEligibility": false,
-      "owner": "operator",
-      "pauseScopes": [
-        "none"
-      ],
-      "readWriteClass": "control",
-      "repository": "applypilot",
-      "resourcesRead": [
-        "repository-source"
-      ],
-      "resourcesWritten": [
-        "repository-source"
-      ],
-      "sourcePath": "register-fleet-tasks.ps1",
-      "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-248"
-    },
-    {
-      "aliases": [
-        "scheduled-task-identity:register-fleet-tasks.ps1:2"
-      ],
-      "authoritySource": "none",
-      "canonicalTarget": "register-fleet-tasks.ps1#scheduled-task-identity:2",
-      "capabilities": [],
-      "directInvocation": false,
-      "employerMutation": false,
-      "failClosedBehavior": "deny-not-live-writer",
-      "id": "scheduled-task-identity:register-fleet-tasks.ps1:2",
       "installed": false,
       "liveEligibility": false,
       "owner": "operator",
@@ -7086,7 +7025,7 @@
         "scheduled-task-identity:register-keepalive.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-keepalive.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "register-keepalive.ps1#scheduled-task-identity:1;user=absent;principal=absent;sourceBlobSha256=1f5f06678813192955b0fcb4a13e78125627a2a23422fbe3619539d79402fd70",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -7115,7 +7054,7 @@
         "scheduled-task-identity:register-otp-responder-startup.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "register-otp-responder-startup.ps1#scheduled-task-identity:1",
+      "canonicalTarget": "register-otp-responder-startup.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=00f6a775f39a2a35321d9165718d0678bc8e9a047e231dd7f49c89493db467d7",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -7145,7 +7084,7 @@
         "systemd:applypilot-fleet-worker.service"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-linux-worker.sh#generated-systemd:applypilot-fleet-worker.service;destinationTemplate=/etc/systemd/system/${SERVICE_NAME}.service;resolvedDefaultDestination=/etc/systemd/system/applypilot-fleet-worker.service;User=$USER;ExecStart=$INSTALL_DIR/run-worker-linux.sh;activation=sudo systemctl enable --now \"$SERVICE_NAME\" >/dev/null",
+      "canonicalTarget": "setup-linux-worker.sh#generated-systemd:applypilot-fleet-worker.service;destinationTemplate=/etc/systemd/system/${SERVICE_NAME}.service;resolvedDefaultDestination=/etc/systemd/system/applypilot-fleet-worker.service;User=$USER;ExecStart=$INSTALL_DIR/run-worker-linux.sh;activation=sudo systemctl enable --now \"$SERVICE_NAME\" >/dev/null;sourceBlobSha256=f1d7b851de4b806eeec6c2a78b834cb3ec4fb9990a8ca2f7a6f70bb862207f07",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": true,
@@ -7178,7 +7117,7 @@
         "sh deploy/entrypoint.sh"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "deploy/entrypoint.sh",
+      "canonicalTarget": "deploy/entrypoint.sh;sourceBlobSha256=b7391deb927d3522d743c9c006ebae6533c5577ccc24f649f6f8bde2d15d02cd",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7207,7 +7146,7 @@
         "sh run-worker-mac.sh"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "run-worker-mac.sh",
+      "canonicalTarget": "run-worker-mac.sh;sourceBlobSha256=e4b17bc2b7a3082c1042b02a008613d88d34ff83febb0abebde20a48024c2020",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7236,7 +7175,7 @@
         "sh setup-fleet-ssh-access-mac.sh"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-fleet-ssh-access-mac.sh",
+      "canonicalTarget": "setup-fleet-ssh-access-mac.sh;sourceBlobSha256=afa8ea15b042927be7cb59b7feec7d59afd1e590a280ce7d5c3497561bccc670",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7265,7 +7204,7 @@
         "sh setup-linux-worker.sh"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-linux-worker.sh",
+      "canonicalTarget": "setup-linux-worker.sh;sourceBlobSha256=f1d7b851de4b806eeec6c2a78b834cb3ec4fb9990a8ca2f7a6f70bb862207f07",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7294,7 +7233,7 @@
         "sh setup-mac-worker.sh"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "setup-mac-worker.sh",
+      "canonicalTarget": "setup-mac-worker.sh;sourceBlobSha256=f81cd16eebf969b5e8982a5f620e16dc2c845c893ba5fda9b545f2577a2682bd",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7323,7 +7262,7 @@
         "typer:analytics"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:analytics_command#typer:analytics",
+      "canonicalTarget": "applypilot.cli:analytics_command#typer:analytics;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7352,7 +7291,7 @@
         "typer:answer"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:answer_command#typer:answer",
+      "canonicalTarget": "applypilot.cli:answer_command#typer:answer;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7381,7 +7320,7 @@
         "typer:application-history"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:application_history_command#typer:application-history",
+      "canonicalTarget": "applypilot.cli:application_history_command#typer:application-history;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7408,7 +7347,7 @@
         "typer:apply-cost-report"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:apply_cost_report_command#typer:apply-cost-report",
+      "canonicalTarget": "applypilot.cli:apply_cost_report_command#typer:apply-cost-report;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -7439,7 +7378,7 @@
         "typer:apply-failures"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:apply_failures_command#typer:apply-failures",
+      "canonicalTarget": "applypilot.cli:apply_failures_command#typer:apply-failures;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -7470,7 +7409,7 @@
         "typer:apply"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:apply#typer:apply",
+      "canonicalTarget": "applypilot.cli:apply#typer:apply;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -7501,7 +7440,7 @@
         "typer:assist-apply"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:assist_apply_command#typer:assist-apply",
+      "canonicalTarget": "applypilot.cli:assist_apply_command#typer:assist-apply;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -7532,7 +7471,7 @@
         "typer:audit-duplicates"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:audit_duplicates_command#typer:audit-duplicates",
+      "canonicalTarget": "applypilot.cli:audit_duplicates_command#typer:audit-duplicates;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7559,7 +7498,7 @@
         "typer:audit-scores"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:audit_scores_command#typer:audit-scores",
+      "canonicalTarget": "applypilot.cli:audit_scores_command#typer:audit-scores;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7586,7 +7525,7 @@
         "typer:boost-output"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:boost_output_command#typer:boost-output",
+      "canonicalTarget": "applypilot.cli:boost_output_command#typer:boost-output;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7615,7 +7554,7 @@
         "typer:canonical cache-backfill"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_backfill#typer:canonical cache-backfill",
+      "canonicalTarget": "applypilot.cli:canonical_backfill#typer:canonical cache-backfill;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7644,7 +7583,7 @@
         "typer:canonical cache-outcome-review-queue"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_outcome_review_queue#typer:canonical cache-outcome-review-queue",
+      "canonicalTarget": "applypilot.cli:canonical_outcome_review_queue#typer:canonical cache-outcome-review-queue;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7675,7 +7614,7 @@
         "typer:canonical cache-outcome-review"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_outcome_review#typer:canonical cache-outcome-review",
+      "canonicalTarget": "applypilot.cli:canonical_outcome_review#typer:canonical cache-outcome-review;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7704,7 +7643,7 @@
         "typer:canonical canary-arm"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_canary_arm#typer:canonical canary-arm",
+      "canonicalTarget": "applypilot.cli:canonical_canary_arm#typer:canonical canary-arm;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7733,7 +7672,7 @@
         "typer:canonical canary-stop"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_canary_stop#typer:canonical canary-stop",
+      "canonicalTarget": "applypilot.cli:canonical_canary_stop#typer:canonical canary-stop;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7762,7 +7701,7 @@
         "typer:canonical promote"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_promote#typer:canonical promote",
+      "canonicalTarget": "applypilot.cli:canonical_promote#typer:canonical promote;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7791,7 +7730,7 @@
         "typer:canonical retire"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_retire#typer:canonical retire",
+      "canonicalTarget": "applypilot.cli:canonical_retire#typer:canonical retire;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7820,7 +7759,7 @@
         "typer:canonical status"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_status#typer:canonical status",
+      "canonicalTarget": "applypilot.cli:canonical_status#typer:canonical status;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7847,7 +7786,7 @@
         "typer:canonical validate"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:canonical_validate#typer:canonical validate",
+      "canonicalTarget": "applypilot.cli:canonical_validate#typer:canonical validate;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7876,7 +7815,7 @@
         "typer:capsolver-check"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:capsolver_check#typer:capsolver-check",
+      "canonicalTarget": "applypilot.cli:capsolver_check#typer:capsolver-check;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7903,7 +7842,7 @@
         "typer:dashboard"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:dashboard#typer:dashboard",
+      "canonicalTarget": "applypilot.cli:dashboard#typer:dashboard;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7930,7 +7869,7 @@
         "typer:dedupe-jobs"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:dedupe_jobs_command#typer:dedupe-jobs",
+      "canonicalTarget": "applypilot.cli:dedupe_jobs_command#typer:dedupe-jobs;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7961,7 +7900,7 @@
         "typer:diagnose-fits"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:diagnose_fits_command#typer:diagnose-fits",
+      "canonicalTarget": "applypilot.cli:diagnose_fits_command#typer:diagnose-fits;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -7990,7 +7929,7 @@
         "typer:doctor"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:doctor#typer:doctor",
+      "canonicalTarget": "applypilot.cli:doctor#typer:doctor;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8017,7 +7956,7 @@
         "typer:export-applications"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:export_applications_command#typer:export-applications",
+      "canonicalTarget": "applypilot.cli:export_applications_command#typer:export-applications;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8044,7 +7983,7 @@
         "typer:export-jobs"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:export_jobs_command#typer:export-jobs",
+      "canonicalTarget": "applypilot.cli:export_jobs_command#typer:export-jobs;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8072,7 +8011,7 @@
         "typer:export-outcomes"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:export_outcomes_command#typer:export-outcomes",
+      "canonicalTarget": "applypilot.cli:export_outcomes_command#typer:export-outcomes;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8099,7 +8038,7 @@
         "typer:fleet-capsolver-check"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:fleet_capsolver_check#typer:fleet-capsolver-check",
+      "canonicalTarget": "applypilot.cli:fleet_capsolver_check#typer:fleet-capsolver-check;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8127,7 +8066,7 @@
         "typer:import-decisions"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:import_decisions_command#typer:import-decisions",
+      "canonicalTarget": "applypilot.cli:import_decisions_command#typer:import-decisions;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8156,7 +8095,7 @@
         "typer:indeed-resolve-apply-urls"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:indeed_resolve_apply_urls_command#typer:indeed-resolve-apply-urls",
+      "canonicalTarget": "applypilot.cli:indeed_resolve_apply_urls_command#typer:indeed-resolve-apply-urls;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -8187,7 +8126,7 @@
         "typer:init"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:init#typer:init",
+      "canonicalTarget": "applypilot.cli:init#typer:init;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8216,7 +8155,7 @@
         "typer:linkedin-login"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:linkedin_login_command#typer:linkedin-login",
+      "canonicalTarget": "applypilot.cli:linkedin_login_command#typer:linkedin-login;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -8249,7 +8188,7 @@
         "typer:linkedin-resolve-apply-urls"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:linkedin_resolve_apply_urls_command#typer:linkedin-resolve-apply-urls",
+      "canonicalTarget": "applypilot.cli:linkedin_resolve_apply_urls_command#typer:linkedin-resolve-apply-urls;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -8282,7 +8221,7 @@
         "typer:linkedin-split"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:linkedin_split_command#typer:linkedin-split",
+      "canonicalTarget": "applypilot.cli:linkedin_split_command#typer:linkedin-split;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -8315,7 +8254,7 @@
         "typer:mark-applied"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:mark_applied_command#typer:mark-applied",
+      "canonicalTarget": "applypilot.cli:mark_applied_command#typer:mark-applied;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8344,7 +8283,7 @@
         "typer:outcomes-alerts digest"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_alerts_digest_command#typer:outcomes-alerts digest",
+      "canonicalTarget": "applypilot.cli:outcomes_alerts_digest_command#typer:outcomes-alerts digest;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8373,7 +8312,7 @@
         "typer:outcomes-dashboard"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_dashboard_command#typer:outcomes-dashboard",
+      "canonicalTarget": "applypilot.cli:outcomes_dashboard_command#typer:outcomes-dashboard;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8400,7 +8339,7 @@
         "typer:outcomes-export"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_export_command#typer:outcomes-export",
+      "canonicalTarget": "applypilot.cli:outcomes_export_command#typer:outcomes-export;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8427,7 +8366,7 @@
         "typer:outcomes-lanes"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_lanes_command#typer:outcomes-lanes",
+      "canonicalTarget": "applypilot.cli:outcomes_lanes_command#typer:outcomes-lanes;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8456,7 +8395,7 @@
         "typer:outcomes-learn export"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_learn_export_command#typer:outcomes-learn export",
+      "canonicalTarget": "applypilot.cli:outcomes_learn_export_command#typer:outcomes-learn export;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8483,7 +8422,7 @@
         "typer:outcomes-operator"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_operator_command#typer:outcomes-operator",
+      "canonicalTarget": "applypilot.cli:outcomes_operator_command#typer:outcomes-operator;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8512,7 +8451,7 @@
         "typer:outcomes-promote"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_promote_command#typer:outcomes-promote",
+      "canonicalTarget": "applypilot.cli:outcomes_promote_command#typer:outcomes-promote;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8541,7 +8480,7 @@
         "typer:outcomes-review queue"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_review_queue_command#typer:outcomes-review queue",
+      "canonicalTarget": "applypilot.cli:outcomes_review_queue_command#typer:outcomes-review queue;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8572,7 +8511,7 @@
         "typer:outcomes-review resolve"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_review_resolve_command#typer:outcomes-review resolve",
+      "canonicalTarget": "applypilot.cli:outcomes_review_resolve_command#typer:outcomes-review resolve;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8601,7 +8540,7 @@
         "typer:outcomes-scan"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:outcomes_scan_command#typer:outcomes-scan",
+      "canonicalTarget": "applypilot.cli:outcomes_scan_command#typer:outcomes-scan;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8628,7 +8567,7 @@
         "typer:parse-health"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:parse_health_command#typer:parse-health",
+      "canonicalTarget": "applypilot.cli:parse_health_command#typer:parse-health;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8657,7 +8596,7 @@
         "typer:parse-spot-audit"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:parse_spot_audit_command#typer:parse-spot-audit",
+      "canonicalTarget": "applypilot.cli:parse_spot_audit_command#typer:parse-spot-audit;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8684,7 +8623,7 @@
         "typer:preapply-check"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:preapply_check_command#typer:preapply-check",
+      "canonicalTarget": "applypilot.cli:preapply_check_command#typer:preapply-check;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8711,7 +8650,7 @@
         "typer:reenrich"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:reenrich_command#typer:reenrich",
+      "canonicalTarget": "applypilot.cli:reenrich_command#typer:reenrich;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8740,7 +8679,7 @@
         "typer:resbuild-promote"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:resbuild_promote_command#typer:resbuild-promote",
+      "canonicalTarget": "applypilot.cli:resbuild_promote_command#typer:resbuild-promote;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8769,7 +8708,7 @@
         "typer:resbuild-revert"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:resbuild_revert_command#typer:resbuild-revert",
+      "canonicalTarget": "applypilot.cli:resbuild_revert_command#typer:resbuild-revert;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8798,7 +8737,7 @@
         "typer:rescore-jobs"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:rescore_jobs#typer:rescore-jobs",
+      "canonicalTarget": "applypilot.cli:rescore_jobs#typer:rescore-jobs;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8829,7 +8768,7 @@
         "typer:reset-generated"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:reset_generated_command#typer:reset-generated",
+      "canonicalTarget": "applypilot.cli:reset_generated_command#typer:reset-generated;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8858,7 +8797,7 @@
         "typer:resolve-ats-boards"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:resolve_ats_boards_command#typer:resolve-ats-boards",
+      "canonicalTarget": "applypilot.cli:resolve_ats_boards_command#typer:resolve-ats-boards;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8887,7 +8826,7 @@
         "typer:resolve-company-apply-urls"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:resolve_company_apply_urls_command#typer:resolve-company-apply-urls",
+      "canonicalTarget": "applypilot.cli:resolve_company_apply_urls_command#typer:resolve-company-apply-urls;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -8918,7 +8857,7 @@
         "typer:run"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:run#typer:run",
+      "canonicalTarget": "applypilot.cli:run#typer:run;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8947,7 +8886,7 @@
         "typer:scan-gmail"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:scan_gmail_command#typer:scan-gmail",
+      "canonicalTarget": "applypilot.cli:scan_gmail_command#typer:scan-gmail;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -8975,7 +8914,7 @@
         "typer:score-jobs"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:score_jobs#typer:score-jobs",
+      "canonicalTarget": "applypilot.cli:score_jobs#typer:score-jobs;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9006,7 +8945,7 @@
         "typer:smart-health"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:smart_health_command#typer:smart-health",
+      "canonicalTarget": "applypilot.cli:smart_health_command#typer:smart-health;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9035,7 +8974,7 @@
         "typer:status"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:status#typer:status",
+      "canonicalTarget": "applypilot.cli:status#typer:status;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9062,7 +9001,7 @@
         "typer:supervise-apply"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:supervise_apply_command#typer:supervise-apply",
+      "canonicalTarget": "applypilot.cli:supervise_apply_command#typer:supervise-apply;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": true,
@@ -9093,7 +9032,7 @@
         "typer:tenants halt"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:tenants_halt_command#typer:tenants halt",
+      "canonicalTarget": "applypilot.cli:tenants_halt_command#typer:tenants halt;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9122,7 +9061,7 @@
         "typer:tenants list"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:tenants_list_command#typer:tenants list",
+      "canonicalTarget": "applypilot.cli:tenants_list_command#typer:tenants list;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9149,7 +9088,7 @@
         "typer:tenants session"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:tenants_session_command#typer:tenants session",
+      "canonicalTarget": "applypilot.cli:tenants_session_command#typer:tenants session;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9178,7 +9117,7 @@
         "typer:tenants set"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:tenants_set_command#typer:tenants set",
+      "canonicalTarget": "applypilot.cli:tenants_set_command#typer:tenants set;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9207,7 +9146,7 @@
         "typer:track"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:track_command#typer:track",
+      "canonicalTarget": "applypilot.cli:track_command#typer:track;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9236,7 +9175,7 @@
         "typer:update-application"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:update_application_command#typer:update-application",
+      "canonicalTarget": "applypilot.cli:update_application_command#typer:update-application;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9265,7 +9204,7 @@
         "typer:usage"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:usage_command#typer:usage",
+      "canonicalTarget": "applypilot.cli:usage_command#typer:usage;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -9294,7 +9233,7 @@
         "typer:verify-live"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "applypilot.cli:verify_live_command#typer:verify-live",
+      "canonicalTarget": "applypilot.cli:verify_live_command#typer:verify-live;sourceBlobSha256=75df8d2686ed91bef37ae2dc7a6fcc67ad9f623602f4e2d7bd544b5639ce0dce",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,

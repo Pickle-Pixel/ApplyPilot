@@ -41,8 +41,10 @@ def main(argv: list[str] | None = None) -> int:
         help="matrix document to verify (defaults to the checked-in runtime matrix)",
     )
     arguments = parser.parse_args(argv)
-    matrix_path = arguments.matrix or (
-        arguments.repo_root / "config" / "brain-command-authority-matrix.runtime.json"
+    # Relative matrix paths are repository-relative. Keep the default relative
+    # too, so a relative --repo-root is not accidentally prefixed twice.
+    matrix_path = arguments.matrix or Path(
+        "config/brain-command-authority-matrix.runtime.json"
     )
 
     try:
