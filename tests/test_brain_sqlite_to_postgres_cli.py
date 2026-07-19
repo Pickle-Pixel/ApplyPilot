@@ -13,6 +13,8 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from psycopg import sql as pg_sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.rows import dict_row
 
 from applypilot.brain.importer import SOURCE_TABLES, SealedSnapshotReceipt, SourceFileAudit
@@ -48,6 +50,11 @@ class _Result:
         return self.row
 
 
+_LOGIN_ROLE = "canonical_import_login"
+_IDENTITY_ROLE = "brain_schema_migrator"
+_DEFAULT_SEARCH_PATH = "\"$user\", public"
+
+
 class _Connection:
     def __init__(
         self,
@@ -73,6 +80,14 @@ class _Connection:
         self.identity_row_count = identity_row_count
         self.incarnation_high = incarnation_high
         self.statements: list[str] = []
+        # Session role/search_path state so tests can prove the singleton read is scoped to the
+        # least-privilege role and that neither the role nor the search_path leaks afterwards.
+        self.role = _LOGIN_ROLE
+        self.search_path = _DEFAULT_SEARCH_PATH
+        self.rollbacks = 0
+        self.commits = 0
+        # The privileged singleton SELECT is only visible when the migrator role is active.
+        self.identity_readable_only_as_role: str | None = _IDENTITY_ROLE
 
     def __enter__(self):
         return self
@@ -80,10 +95,38 @@ class _Connection:
     def __exit__(self, exc_type, exc, traceback) -> None:
         return None
 
+    def rollback(self):
+        self.rollbacks += 1
+
+    def commit(self):
+        self.commits += 1
+
     def execute(self, query: str, params=()):
         normalized = " ".join(query.split())
         self.statements.append(normalized)
+        upper = normalized.upper()
+        if upper.startswith("SET ROLE "):
+            self.role = normalized.split(None, 2)[2].strip().strip(";").strip('"')
+            return _Result(None)
+        if upper.startswith("RESET ROLE"):
+            self.role = _LOGIN_ROLE
+            return _Result(None)
+        if upper.startswith("SET SEARCH_PATH"):
+            self.search_path = normalized.split("TO", 1)[-1].strip() if "TO" in upper else normalized
+            return _Result(None)
+        if upper.startswith("RESET SEARCH_PATH"):
+            self.search_path = _DEFAULT_SEARCH_PATH
+            return _Result(None)
+        if "AS CURRENT_USER" in upper:
+            return _Result({"current_user": self.role})
         if "identity_row_count" in normalized:
+            if (
+                self.identity_readable_only_as_role is not None
+                and self.role != self.identity_readable_only_as_role
+            ):
+                raise psycopg.errors.InsufficientPrivilege(
+                    "permission denied for table applypilot_database_identity"
+                )
             low = self.identity["database_incarnation_id"]
             high = self.incarnation_high if self.incarnation_high is not None else low
             return _Result(
@@ -546,6 +589,41 @@ def test_incarnation_is_read_from_singleton_not_a_spoofable_guc(monkeypatch, tmp
     assert "applypilot.database_incarnation_id" not in joined
 
 
+def test_durable_identity_read_is_scoped_to_least_privilege_role_without_leak(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # The fake singleton refuses to answer unless the migrator role is active, so a green run
+    # proves the CLI genuinely wraps every durable read (pre- and post-operation) in the scoped
+    # SET ROLE rather than relying on ambient superuser privilege.
+    connection = _Connection()
+    cli, _source, _snapshot, sealed, _marker = _prepare(monkeypatch, tmp_path, connection=connection)
+    monkeypatch.setattr(
+        cli, "import_sqlite_to_postgres", lambda *_a, **_k: ImportSummary(1, sealed.sha256, {"jobs": 1}, {})
+    )
+
+    cli.execute(_arguments(tmp_path))
+
+    statements = [statement.upper() for statement in connection.statements]
+    read_positions = [i for i, s in enumerate(statements) if "IDENTITY_ROW_COUNT" in s]
+    set_role_positions = [i for i, s in enumerate(statements) if s.startswith("SET ROLE BRAIN_SCHEMA_MIGRATOR")]
+    search_path_positions = [i for i, s in enumerate(statements) if s.startswith("SET SEARCH_PATH TO PG_CATALOG, PUBLIC")]
+    reset_role_positions = [i for i, s in enumerate(statements) if s.startswith("RESET ROLE")]
+    # Both the pre-operation and the post-operation durable reads are exercised on success.
+    assert len(read_positions) == 2
+    for read_at in read_positions:
+        set_before = max((p for p in set_role_positions if p < read_at), default=None)
+        path_before = max((p for p in search_path_positions if p < read_at), default=None)
+        reset_after = min((p for p in reset_role_positions if p > read_at), default=None)
+        assert set_before is not None and path_before is not None and reset_after is not None
+        # No other statement runs between elevating the role and the guarded read.
+        assert set_before < path_before < read_at
+    # After the run neither the role nor the hardened search_path leaks onto the connection, and
+    # each scoped read was torn down with a rollback.
+    assert connection.role == _LOGIN_ROLE
+    assert connection.search_path == _DEFAULT_SEARCH_PATH
+    assert connection.rollbacks >= 2
+
+
 @pytest.mark.parametrize(
     ("connection_kwargs", "message"),
     [
@@ -783,6 +861,30 @@ class _OpenConnection:
         return False
 
 
+def _provision_v8_identity_singleton(connection) -> None:
+    """Create the V8 durable identity singleton owned by ``brain_schema_migrator``.
+
+    Ownership -- not a widened table grant -- is what the real V8 schema uses to let the migrator
+    read the singleton, so the scoped ``SET ROLE brain_schema_migrator`` in the CLI reaches it
+    exactly as it would in production while an ordinary login role cannot.
+    """
+    connection.execute(
+        "DO $$ BEGIN CREATE ROLE brain_schema_migrator NOLOGIN; "
+        "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+    )
+    connection.execute("GRANT USAGE, CREATE ON SCHEMA public TO brain_schema_migrator")
+    connection.execute("SET ROLE brain_schema_migrator")
+    connection.execute(
+        "CREATE TABLE public.applypilot_database_identity ("
+        "singleton_id smallint PRIMARY KEY DEFAULT 1,"
+        "database_incarnation_id uuid NOT NULL DEFAULT gen_random_uuid(),"
+        "initialized_at timestamptz NOT NULL DEFAULT now())"
+    )
+    connection.execute("REVOKE ALL ON public.applypilot_database_identity FROM PUBLIC")
+    connection.execute("INSERT INTO public.applypilot_database_identity (singleton_id) VALUES (1)")
+    connection.execute("RESET ROLE")
+
+
 def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypatch, tmp_path: Path, fleet_db) -> None:
     connection = psycopg.connect(fleet_db, row_factory=dict_row)
     try:
@@ -798,13 +900,7 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
             "CREATE TEMP TABLE brain_migration_run_events (migration_run_event_id bigint PRIMARY KEY, "
             "migration_run_id bigint, source_namespace text NOT NULL, event_type text NOT NULL, metadata jsonb)"
         )
-        connection.execute(
-            "CREATE TABLE public.applypilot_database_identity ("
-            "singleton_id smallint PRIMARY KEY DEFAULT 1,"
-            "database_incarnation_id uuid NOT NULL DEFAULT gen_random_uuid(),"
-            "initialized_at timestamptz NOT NULL DEFAULT now())"
-        )
-        connection.execute("INSERT INTO public.applypilot_database_identity (singleton_id) VALUES (1)")
+        _provision_v8_identity_singleton(connection)
         identity = connection.execute(
             "SELECT current_database() AS database,(pg_control_system()).system_identifier::text AS system_identifier,"
             "(SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid,"
@@ -900,3 +996,250 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
         except Exception:
             pass
         connection.close()
+
+
+# --- Canonical non-superuser PostgreSQL 18 login proofs -----------------------------------------
+#
+# These exercise the real repair: the durable identity singleton is SELECT-visible only to the
+# ``brain_schema_migrator`` owner, and the canonical import identity is a NOINHERIT LOGIN that is
+# *not* postgres and holds the migrator role only via SET. They prove the pre/post reads succeed
+# through the scoped SET ROLE, that a wrong/absent/mismatched singleton still fails before any
+# write, and that neither the role nor the hardened search_path leaks after success, after a
+# failure, or across a reused (pooled) connection.
+
+_CANONICAL_LOGIN = "canonical_import_login"
+_CANONICAL_LOGIN_PASSWORD = "canonical-login-disposable-test-only"
+
+
+def _provision_canonical_login(admin, admin_dsn: str) -> str:
+    """Provision a NOINHERIT LOGIN that reaches the singleton only via ``SET ROLE``.
+
+    The login is a member of ``brain_schema_migrator`` WITH INHERIT FALSE, SET TRUE: it may assume
+    the role for the guarded read but never passively holds its privileges, and it is deliberately
+    neither ``postgres`` nor a superuser. The V8 singleton is created owned by the migrator, so the
+    login cannot read it directly.
+    """
+    _provision_v8_identity_singleton(admin)
+    admin.execute(
+        pg_sql.SQL(
+            "DO $$ BEGIN CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+            "NOREPLICATION NOBYPASSRLS; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+        ).format(pg_sql.Identifier(_CANONICAL_LOGIN))
+    )
+    admin.execute(
+        pg_sql.SQL("ALTER ROLE {} PASSWORD {}").format(
+            pg_sql.Identifier(_CANONICAL_LOGIN), pg_sql.Literal(_CANONICAL_LOGIN_PASSWORD)
+        )
+    )
+    admin.execute(
+        pg_sql.SQL("GRANT brain_schema_migrator TO {} WITH INHERIT FALSE, SET TRUE").format(
+            pg_sql.Identifier(_CANONICAL_LOGIN)
+        )
+    )
+    admin.execute(pg_sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(pg_sql.Identifier(_CANONICAL_LOGIN)))
+    admin.commit()
+    parameters = conninfo_to_dict(admin_dsn)
+    parameters.update(user=_CANONICAL_LOGIN, password=_CANONICAL_LOGIN_PASSWORD)
+    return make_conninfo(**parameters)
+
+
+def _drop_canonical_login(admin) -> None:
+    admin.rollback()
+    admin.execute("DROP TABLE IF EXISTS public.applypilot_database_identity")
+    if admin.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (_CANONICAL_LOGIN,)).fetchone() is not None:
+        admin.execute(pg_sql.SQL("DROP OWNED BY {} CASCADE").format(pg_sql.Identifier(_CANONICAL_LOGIN)))
+        admin.execute(pg_sql.SQL("DROP ROLE {}").format(pg_sql.Identifier(_CANONICAL_LOGIN)))
+    admin.commit()
+
+
+def _read_identity(admin) -> dict:
+    return admin.execute(
+        "SELECT current_database() AS database,(pg_control_system()).system_identifier::text AS system_identifier,"
+        "(SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid,"
+        "(SELECT database_incarnation_id::text FROM public.applypilot_database_identity WHERE singleton_id=1)"
+        " AS database_incarnation_id,current_setting('server_version_num') AS server_version_num"
+    ).fetchone()
+
+
+def _bind_identity_arguments(arguments: list[str], identity: dict, *, incarnation: str | None = None) -> list[str]:
+    bound = list(arguments)
+    for option, value in (
+        ("--expected-database", identity["database"]),
+        ("--expected-system-identifier", identity["system_identifier"]),
+        ("--expected-database-oid", identity["database_oid"]),
+        ("--expected-database-incarnation-id", incarnation or identity["database_incarnation_id"]),
+    ):
+        bound[bound.index(option) + 1] = value
+    return bound
+
+
+def _session_role_and_search_path(conn) -> tuple[str, str]:
+    row = conn.execute(
+        "SELECT current_user AS role, current_setting('search_path') AS search_path"
+    ).fetchone()
+    return row["role"], row["search_path"]
+
+
+def _assert_pg18_login(login_conn) -> None:
+    caps = login_conn.execute(
+        "SELECT rolcanlogin,rolinherit,rolsuper FROM pg_roles WHERE rolname=current_user"
+    ).fetchone()
+    assert caps == {"rolcanlogin": True, "rolinherit": False, "rolsuper": False}
+    assert int(login_conn.execute("SELECT current_setting('server_version_num') AS v").fetchone()["v"]) >= 180000
+
+
+@pytest.mark.parametrize("mode", ["bulk-import", "final-delta-finalize"])
+def test_canonical_noinherit_login_reads_identity_via_scoped_role_without_leak(
+    monkeypatch, tmp_path: Path, fleet_db, mode: str
+) -> None:
+    admin = psycopg.connect(fleet_db, row_factory=dict_row)
+    try:
+        login_dsn = _provision_canonical_login(admin, fleet_db)
+        identity = _read_identity(admin)
+        login_conn = psycopg.connect(login_dsn, row_factory=dict_row)
+        try:
+            _assert_pg18_login(login_conn)
+            # The canonical login genuinely cannot read the singleton directly: only the scoped
+            # SET ROLE in the CLI can, which is exactly what makes the run below a real proof.
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                login_conn.execute("SELECT count(*) FROM public.applypilot_database_identity")
+            login_conn.rollback()
+
+            cli, _source, _snapshot, sealed, marker = _prepare(monkeypatch, tmp_path)
+            monkeypatch.setattr(
+                cli, "import_sqlite_to_postgres",
+                lambda *_a, **_k: ImportSummary(7, sealed.sha256, {"jobs": 3}, {}),
+            )
+            parity = _parity(3)
+            monkeypatch.setattr(
+                cli, "finalize_sqlite_to_postgres_import",
+                lambda *_a, **_k: ImportSummary(
+                    7, sealed.sha256, {name: int(r["target_count"]) for name, r in parity.items()},
+                    {}, finalized=True, parity=parity, terminal_event_id=207,
+                ),
+            )
+            monkeypatch.setattr(cli, "_connect_postgres", lambda *_a, **_k: _OpenConnection(login_conn))
+            if mode == "bulk-import":
+                arguments = _bind_identity_arguments(_arguments(tmp_path), identity)
+            else:
+                arguments = _bind_identity_arguments(_final_arguments(tmp_path, marker), identity)
+
+            receipt = json.loads(cli.execute(arguments).read_text(encoding="utf-8"))
+
+            # The connection is left idle (committed) after the post-operation read.
+            assert login_conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+            # The pre- and post-operation durable reads both succeeded through the scoped role, and
+            # the exact incarnation flowed into the receipt and the incarnation-bound run key.
+            assert receipt["destination"]["databaseIncarnationId"] == identity["database_incarnation_id"]
+            destination = {
+                "database": identity["database"],
+                "systemIdentifier": identity["system_identifier"],
+                "databaseOid": identity["database_oid"],
+                "databaseIncarnationId": identity["database_incarnation_id"],
+                "serverVersionNum": identity["server_version_num"],
+            }
+            expected_run_key = cli._run_key(
+                "release-2026-07-18", NONCE, mode, cli._durable_destination_binding(destination)
+            )
+            assert receipt["command"]["runKey"] == expected_run_key
+            cli.verify_receipt(receipt, key=IMPORT_KEY, expected_key_id=IMPORT_KEY_ID, label="brain import receipt")
+            # No leak: the reused connection is back to the login role and default search_path, and
+            # can still not read the singleton without re-electing the role.
+            assert _session_role_and_search_path(login_conn) == (_CANONICAL_LOGIN, '"$user", public')
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                login_conn.execute("SELECT count(*) FROM public.applypilot_database_identity")
+            login_conn.rollback()
+        finally:
+            login_conn.close()
+    finally:
+        _drop_canonical_login(admin)
+        admin.close()
+
+
+def test_canonical_noinherit_login_recover_reads_identity_via_scoped_role(
+    monkeypatch, tmp_path: Path, fleet_db
+) -> None:
+    admin = psycopg.connect(fleet_db, row_factory=dict_row)
+    try:
+        login_dsn = _provision_canonical_login(admin, fleet_db)
+        identity = _read_identity(admin)
+        login_conn = psycopg.connect(login_dsn, row_factory=dict_row)
+        try:
+            _assert_pg18_login(login_conn)
+            cli, _source, _snapshot, sealed, marker = _prepare(monkeypatch, tmp_path)
+            parity = _parity(5)
+            monkeypatch.setattr(
+                cli, "import_sqlite_to_postgres",
+                lambda *_a, **_k: ImportSummary(9, sealed.sha256, {"jobs": 5}, {}),
+            )
+            monkeypatch.setattr(
+                cli, "recover_finalized_sqlite_to_postgres_import",
+                lambda *_a, **_k: ImportSummary(
+                    9, sealed.sha256, {name: int(r["target_count"]) for name, r in parity.items()},
+                    {}, finalized=True, parity=parity, terminal_event_id=209, recovered=True,
+                ),
+            )
+            monkeypatch.setattr(cli, "_connect_postgres", lambda *_a, **_k: _OpenConnection(login_conn))
+            arguments = _bind_identity_arguments(_final_arguments(tmp_path, marker, "--recover-terminal"), identity)
+
+            receipt = json.loads(cli.execute(arguments).read_text(encoding="utf-8"))
+
+            assert receipt["result"]["recovered"] is True
+            assert receipt["destination"]["databaseIncarnationId"] == identity["database_incarnation_id"]
+            assert _session_role_and_search_path(login_conn) == (_CANONICAL_LOGIN, '"$user", public')
+        finally:
+            login_conn.close()
+    finally:
+        _drop_canonical_login(admin)
+        admin.close()
+
+
+@pytest.mark.parametrize(
+    ("scenario", "message"),
+    [
+        ("absent", "missing or ambiguous"),
+        ("mismatched", "incarnation does not match"),
+    ],
+)
+def test_canonical_noinherit_login_rejects_bad_singleton_before_writes_without_leak(
+    monkeypatch, tmp_path: Path, fleet_db, scenario: str, message: str
+) -> None:
+    admin = psycopg.connect(fleet_db, row_factory=dict_row)
+    try:
+        login_dsn = _provision_canonical_login(admin, fleet_db)
+        identity = _read_identity(admin)
+        if scenario == "absent":
+            # Empty the singleton by re-creating an unseeded migrator-owned table.
+            admin.execute("SET ROLE brain_schema_migrator")
+            admin.execute("DELETE FROM public.applypilot_database_identity")
+            admin.execute("RESET ROLE")
+            admin.commit()
+        login_conn = psycopg.connect(login_dsn, row_factory=dict_row)
+        try:
+            _assert_pg18_login(login_conn)
+            cli, _source, _snapshot, _sealed, _marker = _prepare(monkeypatch, tmp_path)
+            monkeypatch.setattr(
+                cli, "import_sqlite_to_postgres",
+                lambda *_a, **_k: pytest.fail("a bad singleton must fail before any import"),
+            )
+            monkeypatch.setattr(cli, "_connect_postgres", lambda *_a, **_k: _OpenConnection(login_conn))
+            if scenario == "mismatched":
+                incarnation = "00000000-0000-0000-0000-0000000000aa"
+            else:
+                incarnation = identity["database_incarnation_id"]
+            arguments = _bind_identity_arguments(_arguments(tmp_path), identity, incarnation=incarnation)
+
+            with pytest.raises(cli.CLIError, match=message):
+                cli.execute(arguments)
+
+            # After the failure the scoped role and hardened search_path are fully torn down: no
+            # dangling transaction remains (checked before any probe query reopens one) and the
+            # reused connection is back to the login role and default search_path, so a pooled
+            # connection is safe to reuse.
+            assert login_conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+            assert _session_role_and_search_path(login_conn) == (_CANONICAL_LOGIN, '"$user", public')
+        finally:
+            login_conn.close()
+    finally:
+        _drop_canonical_login(admin)
+        admin.close()

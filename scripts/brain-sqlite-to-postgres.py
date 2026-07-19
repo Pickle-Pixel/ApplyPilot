@@ -14,6 +14,7 @@ import re
 import sys
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -408,19 +409,80 @@ def _is_canonical_uuid(value: object) -> bool:
         return False
 
 
+_DURABLE_IDENTITY_READ_ROLE = "brain_schema_migrator"
+
+
+@contextmanager
+def _durable_identity_role(pg):
+    """Run a durable-identity read under the least-privileged canonical role.
+
+    The canonical import LOGIN is ``NOINHERIT`` and is never granted direct SELECT on the V8
+    ``public.applypilot_database_identity`` singleton; only its owner ``brain_schema_migrator``
+    (and the V8 verifier/authority roles) may read it. The read therefore executes under an
+    explicit ``SET ROLE brain_schema_migrator`` with a hardened ``search_path`` of
+    ``pg_catalog, public`` and nothing else. The role and search_path are always torn down --
+    the read-only transaction is rolled back and the role/search_path reset -- on success, on
+    exception, and after an ambiguous commit/recovery, so neither can leak onto a pooled or
+    reused connection. No table grant is widened and no superuser/GUC/environment/argument
+    fallback is consulted.
+    """
+    try:
+        pg.execute(f"SET ROLE {_DURABLE_IDENTITY_READ_ROLE}")
+        pg.execute("SET search_path TO pg_catalog, public")
+        active = pg.execute("SELECT current_user AS current_user").fetchone()
+        if not isinstance(active, Mapping) or active.get("current_user") != _DURABLE_IDENTITY_READ_ROLE:
+            raise CLIError("least-privileged durable database identity role is not active")
+        yield
+    finally:
+        _restore_login_role(pg)
+
+
+def _restore_login_role(pg) -> None:
+    """Fail-safe restore of the canonical login role and default search_path.
+
+    Rolling back discards the read-only identity transaction and -- because ``SET`` is
+    transactional -- reverts the scoped role and search_path while returning the connection to
+    the idle state the importer's own boundary guard requires. The explicit ``RESET`` afterwards
+    is defense-in-depth for an autocommit session where the ``SET`` persisted at session scope,
+    so nothing leaks onto a pooled or reused connection even after a failure.
+    """
+    rollback = getattr(pg, "rollback", None)
+    commit = getattr(pg, "commit", None)
+    if callable(rollback):
+        try:
+            rollback()
+        except Exception:
+            pass
+    try:
+        pg.execute("RESET ROLE")
+        pg.execute("RESET search_path")
+        if callable(commit):
+            commit()
+    except Exception:
+        if callable(rollback):
+            try:
+                rollback()
+            except Exception:
+                pass
+
+
 def _read_database_incarnation(pg) -> str:
     """Read the durable incarnation from the ``applypilot_database_identity`` singleton itself.
 
     The ambient ``applypilot.database_incarnation_id`` GUC is deliberately never consulted, so a
     spoofed session setting has no effect. A missing, empty, ambiguous (multiple), or malformed
-    singleton fails closed rather than silently importing into an unbound destination.
+    singleton fails closed rather than silently importing into an unbound destination. The
+    privileged singleton SELECT runs under a tightly scoped least-privilege role (see
+    ``_durable_identity_role``) so the canonical NOINHERIT import LOGIN never needs a direct
+    table grant.
     """
-    row = pg.execute(
-        "SELECT count(*) AS identity_row_count,"
-        " min(database_incarnation_id::text) AS incarnation_low,"
-        " max(database_incarnation_id::text) AS incarnation_high"
-        " FROM public.applypilot_database_identity WHERE singleton_id=1"
-    ).fetchone()
+    with _durable_identity_role(pg):
+        row = pg.execute(
+            "SELECT count(*) AS identity_row_count,"
+            " min(database_incarnation_id::text) AS incarnation_low,"
+            " max(database_incarnation_id::text) AS incarnation_high"
+            " FROM public.applypilot_database_identity WHERE singleton_id=1"
+        ).fetchone()
     if not isinstance(row, Mapping):
         raise CLIError("connected PostgreSQL database identity singleton is unavailable")
     count = row.get("identity_row_count")

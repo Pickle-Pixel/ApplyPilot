@@ -110,8 +110,28 @@ $env:APPLYPILOT_BRAIN_IMPORT_ATTESTATION_KEY_B64 = '<protected 32-byte-or-longer
 $env:APPLYPILOT_BRAIN_IMPORT_ATTESTATION_KEY_ID = '<brain-import-key-id>'
 $env:APPLYPILOT_WRITER_FREEZE_ATTESTATION_KEY_B64 = '<different protected key, base64>'
 $env:APPLYPILOT_WRITER_FREEZE_ATTESTATION_KEY_ID = '<writer-freeze-key-id>'
-python scripts/brain-sqlite-to-postgres.py --mode bulk-import --source C:\absolute\canonical.sqlite --sealed-snapshot C:\absolute\evidence\bulk.sqlite --postgres-dsn-env BRAIN_IMPORT_DSN --expected-database <database> --expected-system-identifier <system-identifier> --expected-database-oid <database-oid> --release-id <release-id> --release-nonce <32-128-url-safe-characters> --output C:\absolute\evidence\bulk-receipt.json
+python scripts/brain-sqlite-to-postgres.py --mode bulk-import --source C:\absolute\canonical.sqlite --sealed-snapshot C:\absolute\evidence\bulk.sqlite --postgres-dsn-env BRAIN_IMPORT_DSN --expected-database <database> --expected-system-identifier <system-identifier> --expected-database-oid <database-oid> --expected-database-incarnation-id <database-incarnation-id> --release-id <release-id> --release-nonce <32-128-url-safe-characters> --output C:\absolute\evidence\bulk-receipt.json
 ```
+
+`--expected-database-incarnation-id` is required for every mode (bulk, final, and
+recovery); the command refuses to run without an exact canonical UUID and there is
+no ambient/GUC/environment fallback. Discover the value with least privilege —
+never as `postgres` and without widening any table grant — by assuming the
+singleton's owning role from the canonical NOINHERIT import login (which is a
+`SET`-only member of `brain_schema_migrator`):
+
+```sql
+-- Connected as the canonical import login (NOT a superuser):
+SET ROLE brain_schema_migrator;
+SELECT database_incarnation_id FROM public.applypilot_database_identity WHERE singleton_id = 1;
+RESET ROLE;
+```
+
+The CLI itself reads this same singleton the same way: each pre- and
+post-operation durable-identity read runs under a tightly scoped
+`SET ROLE brain_schema_migrator` with `search_path = pg_catalog, public`, and the
+role/search_path are always reset and the read-only transaction rolled back, so
+nothing leaks onto a reused connection.
 
 Use `--dry-run` only with `bulk-import`; it delegates to the importer's real
 dry-run API. A repeated import uses the same release binding, mode, and sealed
@@ -136,17 +156,23 @@ the promotion commit. Expiry during a long-running import is therefore a hard
 failure even if the marker was valid when the command started.
 
 ```powershell
-python scripts/brain-sqlite-to-postgres.py --mode final-delta-finalize --source C:\absolute\canonical.sqlite --sealed-snapshot C:\absolute\evidence\final.sqlite --postgres-dsn-env BRAIN_IMPORT_DSN --expected-database <database> --expected-system-identifier <system-identifier> --expected-database-oid <database-oid> --release-id <release-id> --release-nonce <32-128-url-safe-characters> --writer-freeze-marker C:\absolute\evidence\writer-freeze.json --output C:\absolute\evidence\final-receipt.json
+python scripts/brain-sqlite-to-postgres.py --mode final-delta-finalize --source C:\absolute\canonical.sqlite --sealed-snapshot C:\absolute\evidence\final.sqlite --postgres-dsn-env BRAIN_IMPORT_DSN --expected-database <database> --expected-system-identifier <system-identifier> --expected-database-oid <database-oid> --expected-database-incarnation-id <database-incarnation-id> --release-id <release-id> --release-nonce <32-128-url-safe-characters> --writer-freeze-marker C:\absolute\evidence\writer-freeze.json --output C:\absolute\evidence\final-receipt.json
 ```
 
-If the destination exposes a database-incarnation identifier, also pass
-`--expected-database-incarnation-id`. The final command checks live DB/WAL/SHM
-identity before import, before parity, after finalization, and after receipt
-publication. Any drift or marker replacement removes the receipt. If the
-durable terminal event commits but publication fails, rerun the same binding
-with `--recover-terminal`; recovery accepts only the stored completed event and
-its full clean per-table parity counts and hashes on the same bound database,
-PostgreSQL system identifier, database OID, and optional database incarnation.
+`--expected-database-incarnation-id` is mandatory here too. The final command
+checks live DB/WAL/SHM identity before import, before parity, after finalization,
+and after receipt publication. Any drift or marker replacement removes the
+receipt. If the durable terminal event commits but publication fails, rerun the
+same binding — including the same `--expected-database-incarnation-id` — with
+`--recover-terminal`:
+
+```powershell
+python scripts/brain-sqlite-to-postgres.py --mode final-delta-finalize --source C:\absolute\canonical.sqlite --sealed-snapshot C:\absolute\evidence\final.sqlite --postgres-dsn-env BRAIN_IMPORT_DSN --expected-database <database> --expected-system-identifier <system-identifier> --expected-database-oid <database-oid> --expected-database-incarnation-id <database-incarnation-id> --release-id <release-id> --release-nonce <32-128-url-safe-characters> --writer-freeze-marker C:\absolute\evidence\writer-freeze.json --output C:\absolute\evidence\final-recovery-receipt.json --recover-terminal
+```
+
+Recovery accepts only the stored completed event and its full clean per-table
+parity counts and hashes on the same bound database, PostgreSQL system
+identifier, database OID, and database incarnation.
 
 Final receipts use an authenticated two-phase publication protocol. The receipt
 itself is always `promotable: false`; a clean finalization marks it
