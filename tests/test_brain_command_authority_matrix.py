@@ -450,6 +450,7 @@ def test_launchd_nonpersistent_load_fails_closed(tmp_path):
         ("User=$USER", "User=$USER\nUser=root", "exactly one User"),
         ('sudo systemctl enable --now "$SERVICE_NAME"', 'sudo systemctl enable "$SERVICE_NAME"', "enable --now"),
         ('ExecStart=$INSTALL_DIR/run-worker.sh', 'ExecStart=$(resolve-worker)', "dynamically ambiguous"),
+        ('ExecStart=$INSTALL_DIR/run-worker.sh', 'ExecStart=${INSTALL_DIR}/run-worker.sh', "dynamically ambiguous"),
         ('service_file="/etc/systemd/system/${SERVICE_NAME}.service"', 'service_file="/etc/systemd/system/${UNKNOWN}.service"', "dynamically ambiguous"),
     ],
 )
@@ -488,6 +489,44 @@ sudo systemctl enable --now demo-worker.timer
     assert "OnCalendar=*-*-* 03:15:00" in timer["canonicalTarget"]
     assert "resolvedDefaultDestination=/etc/systemd/system/demo-worker.timer" in timer["canonicalTarget"]
     assert "activation=sudo systemctl enable --now demo-worker.timer" in timer["canonicalTarget"]
+
+
+def test_generated_systemd_activation_requires_exact_unit_token(tmp_path):
+    _minimal_repo(tmp_path)
+    _write(
+        tmp_path / "setup-timer.sh",
+        """#!/bin/sh
+sudo tee /etc/systemd/system/demo-worker.timer >/dev/null <<EOF
+[Timer]
+OnCalendar=daily
+EOF
+sudo systemctl enable --now demo-worker.timer.bak
+""",
+    )
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="exactly one bound enable --now"):
+        authority.discover(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("script", "message"),
+    [
+        ("cat unit.service > /etc/systemd/system/demo.service\n", "unsupported shell systemd generator"),
+        ("printf '[Service]' > /etc/systemd/system/demo.service\n", "unsupported shell systemd generator"),
+        ("install unit.service /etc/systemd/system/demo.service\n", "unsupported shell systemd generator"),
+        ("cp unit.timer /etc/systemd/system/demo.timer\n", "unsupported shell systemd generator"),
+        (
+            "cat worker.plist > $HOME/Library/LaunchAgents/com.demo.worker.plist\n",
+            "unsupported inline launchd generator",
+        ),
+    ],
+)
+def test_unsupported_shell_service_generators_fail_closed(tmp_path, script, message):
+    _minimal_repo(tmp_path)
+    _write(tmp_path / "install.sh", "#!/bin/sh\n" + script)
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match=message):
+        authority.discover(tmp_path)
 
 
 def test_generated_systemd_unit_collision_fails_closed(tmp_path):
@@ -540,6 +579,95 @@ def test_structural_service_discovery_is_hermetic_to_untracked_and_symlink(tmp_p
     assert authority.canonical_json(authority.discover(tmp_path)) == baseline
 
 
+def test_committed_launcher_blob_drift_invalidates_matrix_row(tmp_path):
+    _minimal_repo(tmp_path)
+    _write(tmp_path / "run.ps1", "Write-Output 'first'\n")
+    _init_git_repo(tmp_path)
+    matrix_path = _write_fixture_matrix(tmp_path)
+    _commit(tmp_path, "matrix")
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    before = {row["id"]: row for row in matrix["rows"]}["powershell-launcher:run.ps1"]
+    assert "sourceBlobSha256=" in before["canonicalTarget"]
+
+    _write(tmp_path / "run.ps1", "Write-Output 'changed semantics'\n")
+    _commit(tmp_path, "change launcher")
+    discovered = authority.discover(tmp_path)
+    rows = authority.validate_matrix(matrix)
+    with pytest.raises(authority.AuthorityError, match="canonicalTarget.*drifted"):
+        authority.check_coverage(discovered, rows)
+
+
+def test_scheduled_task_binds_static_action_and_user_and_dynamic_markers(tmp_path):
+    _minimal_repo(tmp_path)
+    _write(
+        tmp_path / "tasks.ps1",
+        "$argument = '-File worker.ps1'\n"
+        "$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME\n"
+        "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argument\n"
+        "Register-ScheduledTask -TaskName 'demo' -Action $action -Principal $principal\n"
+        "$other = New-ScheduledTaskAction -Execute 'python.exe' -Argument '-m demo'\n"
+        "Register-ScheduledTask -TaskName 'static' -Action $other -User 'svc-demo'\n",
+    )
+    _init_git_repo(tmp_path)
+    surfaces = {surface["id"]: surface for surface in authority.discover(tmp_path)}
+
+    dynamic_action = surfaces["scheduled-task-action:tasks.ps1:1"]["canonicalTarget"]
+    assert 'execute="powershell.exe"' in dynamic_action
+    assert "argument=dynamic-sha256:" in dynamic_action
+    dynamic_registration = surfaces["scheduled-task-identity:tasks.ps1:1"]["canonicalTarget"]
+    assert "principal=dynamic-sha256:" in dynamic_registration
+    assert "user=absent" in dynamic_registration
+
+    static_action = surfaces["scheduled-task-action:tasks.ps1:2"]["canonicalTarget"]
+    assert 'execute="python.exe"' in static_action
+    assert 'argument="-m demo"' in static_action
+    static_registration = surfaces["scheduled-task-identity:tasks.ps1:2"]["canonicalTarget"]
+    assert 'user="svc-demo"' in static_registration
+    assert "principal=absent" in static_registration
+
+
+def test_scheduled_task_comments_do_not_create_phantom_rows(tmp_path):
+    _minimal_repo(tmp_path)
+    _write(
+        tmp_path / "tasks.ps1",
+        "# Register-ScheduledTask -TaskName 'phantom'\n"
+        "    # New-ScheduledTaskAction -Execute 'evil.exe'\n"
+        "$action = New-ScheduledTaskAction -Execute 'powershell.exe'\n"
+        "Register-ScheduledTask -TaskName 'real' -Action $action\n",
+    )
+    _init_git_repo(tmp_path)
+    surfaces = {surface["id"]: surface for surface in authority.discover(tmp_path)}
+    assert sorted(key for key in surfaces if key.startswith("scheduled-task-action:")) == [
+        "scheduled-task-action:tasks.ps1:1"
+    ]
+    assert sorted(key for key in surfaces if key.startswith("scheduled-task-identity:")) == [
+        "scheduled-task-identity:tasks.ps1:1"
+    ]
+
+
+def test_scheduled_task_duplicate_static_field_fails_closed(tmp_path):
+    _minimal_repo(tmp_path)
+    _write(
+        tmp_path / "tasks.ps1",
+        "New-ScheduledTaskAction -Execute 'powershell.exe' -Execute 'cmd.exe'\n",
+    )
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="duplicate.*Execute"):
+        authority.discover(tmp_path)
+
+
+def test_powershell_generated_systemd_unit_fails_closed(tmp_path):
+    _minimal_repo(tmp_path)
+    _write(
+        tmp_path / "install.ps1",
+        "$unit = '[Service] ExecStart=/opt/demo'\n"
+        "Set-Content -Path '/etc/systemd/system/demo.service' -Value $unit\n",
+    )
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="unsupported PowerShell systemd generator"):
+        authority.discover(tmp_path)
+
+
 def test_missing_committed_file_fails_closed(tmp_path):
     """Reading an absent committed blob, and a deleted tracked file, both fail
     closed rather than silently proceeding."""
@@ -587,7 +715,9 @@ def test_discovers_new_pyproject_console_script(tmp_path):
     _init_git_repo(tmp_path)
     surfaces = {s["id"]: s for s in authority.discover(tmp_path)}
     assert "console-script:demo-extra" in surfaces
-    assert surfaces["console-script:demo-extra"]["canonicalTarget"] == "demo.cli:extra"
+    target = surfaces["console-script:demo-extra"]["canonicalTarget"]
+    assert target.startswith("demo.cli:extra;sourceBlobSha256=")
+    assert len(target.rsplit("=", 1)[-1]) == 64
 
 
 def test_alias_forms_python_m_direct_and_command(real_discovered):
@@ -1035,6 +1165,37 @@ def test_verify_cli_emits_receipt_on_clean_tree():
     )
     assert receipt["counts"]["unclassified"] == 0
     assert receipt["runtimeKind"] == authority.RUNTIME_KIND
+
+
+def test_verify_cli_accepts_matrix_path_relative_to_repo_root(tmp_path):
+    _minimal_repo(tmp_path)
+    _init_git_repo(tmp_path)
+    _write_fixture_matrix(tmp_path)
+    _commit(tmp_path, "matrix")
+    result = _run_cli(
+        VERIFY_CLI,
+        "--repo-root",
+        str(tmp_path),
+        "--matrix",
+        "config/brain-command-authority-matrix.runtime.json",
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["matrixPath"] == (
+        "config/brain-command-authority-matrix.runtime.json"
+    )
+
+
+def test_verify_cli_accepts_relative_repo_root_with_default_matrix(tmp_path):
+    _minimal_repo(tmp_path)
+    _init_git_repo(tmp_path)
+    _write_fixture_matrix(tmp_path)
+    _commit(tmp_path, "matrix")
+    relative_root = os.path.relpath(tmp_path, Path.cwd())
+    result = _run_cli(VERIFY_CLI, "--repo-root", relative_root)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["matrixPath"] == (
+        "config/brain-command-authority-matrix.runtime.json"
+    )
 
 
 @pytest.mark.skipif(

@@ -981,9 +981,51 @@ def _one_unit_field(body: str, name: str, relative: str) -> str:
             f"generated systemd unit in {relative!r} must have exactly one {name}"
         )
     value = values[0]
-    if "$(" in value or "`" in value or "${" in value and ":" in value:
+    if "$(" in value or "`" in value or "${" in value:
         raise AuthorityError(f"generated systemd {name} in {relative!r} is dynamically ambiguous")
     return value
+
+
+def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
+    """Fail closed when a tracked script writes a service by an unbound form.
+
+    The structural parsers deliberately support only the reviewed shell tee
+    heredoc and committed launchd-template forms.  Other common writers must
+    not silently degrade to an ordinary launcher row.
+    """
+    shell_writer = re.compile(r"(?i)\b(?:cat|printf|install|cp)\b")
+    systemd_destination = re.compile(
+        r"(?i)/etc/systemd/system/[^\s\"']+\.(?:service|timer)\b"
+    )
+    launchd_destination = re.compile(
+        r"(?i)(?:\$HOME|~)/Library/LaunchAgents/[^\s\"']+\.plist\b"
+    )
+    for relative in _repo_files(tree, (".sh",)):
+        for line in tree.read_text(relative).splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or not shell_writer.search(stripped):
+                continue
+            if systemd_destination.search(stripped):
+                raise AuthorityError(
+                    f"unsupported shell systemd generator in {relative!r}"
+                )
+            if launchd_destination.search(stripped):
+                raise AuthorityError(
+                    f"unsupported inline launchd generator in {relative!r}"
+                )
+
+    powershell_writer = re.compile(
+        r"(?i)\b(?:Set-Content|Out-File|WriteAllText)\b"
+    )
+    for relative in _repo_files(tree, (".ps1", ".psm1")):
+        for line in tree.read_text(relative).splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or not powershell_writer.search(stripped):
+                continue
+            if systemd_destination.search(stripped):
+                raise AuthorityError(
+                    f"unsupported PowerShell systemd generator in {relative!r}"
+                )
 
 
 def _discover_generated_systemd_units(tree: "_RepoTree") -> list[dict[str, Any]]:
@@ -1040,13 +1082,16 @@ def _discover_generated_systemd_units(tree: "_RepoTree") -> list[dict[str, Any]]
 
             target_tokens = {unit_name, unit_name[: -len(suffix)]}
             if unit_variable is not None:
-                target_tokens.update({f'"${unit_variable}"', f"${unit_variable}"})
+                target_tokens.add(f"${unit_variable}")
             activation_lines = []
             for line in text.splitlines():
                 stripped = line.strip()
                 if not re.match(r"^(?:sudo\s+)?systemctl\s+enable\b", stripped):
                     continue
-                if any(token in stripped for token in target_tokens):
+                activation_tokens = {
+                    token.strip("\"'") for token in stripped.split()
+                }
+                if target_tokens & activation_tokens:
                     activation_lines.append(" ".join(stripped.split()))
             if len(activation_lines) != 1 or "--now" not in activation_lines[0].split():
                 raise AuthorityError(
@@ -1095,22 +1140,124 @@ def _discover_generated_systemd_units(tree: "_RepoTree") -> list[dict[str, Any]]
     return surfaces
 
 
+def _powershell_command_blocks(
+    text: str, command_pattern: re.Pattern[str]
+) -> list[tuple[int, str]]:
+    """Return non-comment PowerShell command blocks joined across backticks."""
+    lines = text.splitlines()
+    blocks: list[tuple[int, str]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.lstrip()
+        if stripped.startswith("#") or not command_pattern.search(line):
+            index += 1
+            continue
+        start = index
+        parts = [line.rstrip()]
+        while parts[-1].endswith("`"):
+            index += 1
+            if index >= len(lines):
+                raise AuthorityError("unterminated PowerShell command continuation")
+            parts.append(lines[index].rstrip())
+        blocks.append((start + 1, " ".join(part[:-1] if part.endswith("`") else part for part in parts)))
+        index += 1
+    return blocks
+
+
+_POWERSHELL_VALUE = (
+    r"'(?:''|[^'])*'|\"(?:`.|[^\"])*\"|"
+    r"\$[A-Za-z_][A-Za-z0-9_:\.\[\]]*|\([^)]*\)|[^\s]+"
+)
+
+
+def _powershell_parameter_binding(
+    block: str,
+    name: str,
+    *,
+    relative: str,
+    required: bool = False,
+) -> str:
+    matches = list(
+        re.finditer(
+            rf"(?i)(?:^|\s)-{re.escape(name)}\s+(?P<value>{_POWERSHELL_VALUE})",
+            block,
+        )
+    )
+    if len(matches) > 1:
+        raise AuthorityError(
+            f"scheduled task command in {relative!r} has duplicate {name} parameter"
+        )
+    if not matches:
+        if required:
+            raise AuthorityError(
+                f"scheduled task command in {relative!r} has no {name} parameter"
+            )
+        return "absent"
+    expression = matches[0].group("value")
+    if expression.startswith("'") and expression.endswith("'"):
+        value = expression[1:-1].replace("''", "'")
+        return canonical_json(value).decode("ascii")
+    if expression.startswith('"') and expression.endswith('"'):
+        value = expression[1:-1]
+        if "$" not in value and "`" not in value:
+            return canonical_json(value).decode("ascii")
+    normalized = " ".join(expression.split())
+    return f"dynamic-sha256:{sha256_hex(normalized.encode('utf-8'))}"
+
+
 def _discover_scheduled_tasks_and_wrappers(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
+    registration_pattern = re.compile(
+        r"(?i)\b(?:Register-ScheduledTask|schtasks(?:\.exe)?\s+/Create)\b"
+    )
+    action_pattern = re.compile(r"(?i)\bNew-ScheduledTaskAction\b")
     for relative in _repo_files(tree, (".ps1", ".psm1")):
         text = tree.read_text(relative)
-        registrations = list(re.finditer(r"(?im)^\s*(?!#).*\b(?:Register-ScheduledTask|schtasks(?:\.exe)?\s+/Create)\b", text))
-        actions = list(re.finditer(r"(?im)^\s*(?!#).*\bNew-ScheduledTaskAction\b", text))
-        for kind, matches in (("scheduled-task-identity", registrations), ("scheduled-task-action", actions)):
-            for ordinal, match in enumerate(matches, 1):
-                line = text.count("\n", 0, match.start()) + 1
+        registrations = _powershell_command_blocks(text, registration_pattern)
+        actions = _powershell_command_blocks(text, action_pattern)
+        for kind, blocks in (("scheduled-task-identity", registrations), ("scheduled-task-action", actions)):
+            for ordinal, (line, block) in enumerate(blocks, 1):
+                if kind == "scheduled-task-action":
+                    execute = _powershell_parameter_binding(
+                        block, "Execute", relative=relative, required=True
+                    )
+                    argument = _powershell_parameter_binding(
+                        block, "Argument", relative=relative
+                    )
+                    detail = f"execute={execute};argument={argument}"
+                elif re.search(r"(?i)\bschtasks(?:\.exe)?\s+/Create\b", block):
+                    command = _powershell_parameter_binding(
+                        re.sub(r"(?i)(?<!\S)/", " -", block),
+                        "TR",
+                        relative=relative,
+                        required=True,
+                    )
+                    user = _powershell_parameter_binding(
+                        re.sub(r"(?i)(?<!\S)/", " -", block),
+                        "RU",
+                        relative=relative,
+                    )
+                    detail = f"command={command};user={user};principal=absent"
+                else:
+                    user = _powershell_parameter_binding(
+                        block, "User", relative=relative
+                    )
+                    principal = _powershell_parameter_binding(
+                        block, "Principal", relative=relative
+                    )
+                    if user != "absent" and principal != "absent":
+                        raise AuthorityError(
+                            f"scheduled task command in {relative!r} has both User and Principal"
+                        )
+                    detail = f"user={user};principal={principal}"
                 surfaces.append(
                     _surface(
                         surface_id=f"{kind}:{relative}:{ordinal}",
                         source_path=relative,
                         symbol=f"line-{line}",
                         surface_kind=kind,
-                        canonical_target=f"{relative}#{kind}:{ordinal}",
+                        canonical_target=f"{relative}#{kind}:{ordinal};{detail}",
                         aliases=[f"{kind}:{relative}:{ordinal}"],
                         installed=False,
                         direct_invocation=False,
@@ -1171,6 +1318,8 @@ _PARSEABLE_EXTENSIONS = (
     ".ps1",
     ".psm1",
     ".sh",
+    ".bat",
+    ".cmd",
     ".plist",
     ".template",
     ".service",
@@ -1314,12 +1463,21 @@ def discover_from_tree(tree: _RepoTree) -> list[dict[str, Any]]:
     surfaces += _discover_http_actions(tree)
     surfaces += _discover_launchers(tree)
     surfaces += _discover_launchd_templates(tree)
+    _reject_unsupported_service_generators(tree)
     surfaces += _discover_generated_systemd_units(tree)
     surfaces += _discover_scheduled_tasks_and_wrappers(tree)
     surfaces += _discover_container_entrypoints(tree)
 
     seen: dict[str, dict[str, Any]] = {}
     for surface in surfaces:
+        source_path = surface["sourcePath"]
+        source_digest = sha256_hex(tree.read_bytes(source_path))
+        surface = {
+            **surface,
+            "canonicalTarget": (
+                f"{surface['canonicalTarget']};sourceBlobSha256={source_digest}"
+            ),
+        }
         surface_id = surface["id"]
         if surface_id in seen:
             raise AuthorityError(f"duplicate discovered surface id: {surface_id}")
@@ -1856,7 +2014,24 @@ def load_matrix_document(path: Path) -> tuple[dict[str, Any], bytes]:
     return matrix, content
 
 
+def _resolve_repository_paths(repo_root: Path, matrix_path: Path) -> tuple[Path, Path]:
+    """Resolve the matrix relative to its repository and require containment."""
+    try:
+        resolved_root = Path(repo_root).resolve(strict=True)
+        candidate = Path(matrix_path)
+        if not candidate.is_absolute():
+            candidate = resolved_root / candidate
+        resolved_matrix = candidate.resolve(strict=True)
+        resolved_matrix.relative_to(resolved_root)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise AuthorityError(
+            "matrix path must resolve to an existing file inside the repository"
+        ) from exc
+    return resolved_root, resolved_matrix
+
+
 def _evaluate_unverified(repo_root: Path, matrix_path: Path) -> dict[str, Any]:
+    repo_root, matrix_path = _resolve_repository_paths(repo_root, matrix_path)
     # Gate on a clean tracked tree first: even though discovery binds committed
     # blob bytes, the receipt asserts that the *checkout* matches those bytes, so
     # any tracked modification/staging/deletion/type-change must fail issuance.
