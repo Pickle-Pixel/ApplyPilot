@@ -872,33 +872,75 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
             evidence_node_ids_json TEXT,
             title_signals_json      TEXT,
             explanation            TEXT,
-            decision_snapshot_json  TEXT,
             input_hash             TEXT NOT NULL,
             created_at             TEXT NOT NULL,
             expires_at             TEXT,
+            decision_snapshot_json  TEXT,
             UNIQUE(job_url, policy_version, input_hash),
             FOREIGN KEY(job_url) REFERENCES jobs(url),
             FOREIGN KEY(policy_version, lane)
                 REFERENCES decision_policy_versions(policy_version, lane)
         )
     """)
-    job_decision_columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
-    }
-    if "decision_snapshot_json" not in job_decision_columns:
+    snapshot_column_name = "decision_snapshot_json"
+    snapshot_column = next(
+        (
+            row
+            for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+            if row[1] == snapshot_column_name
+        ),
+        None,
+    )
+    duplicate_column_error: sqlite3.OperationalError | None = None
+    if snapshot_column is None:
         try:
             conn.execute("ALTER TABLE job_decisions ADD COLUMN decision_snapshot_json TEXT")
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
             # Another startup process can complete the same additive migration
             # after our PRAGMA snapshot but before this ALTER obtains its lock.
-            # Suppress only that successfully completed race; every other DDL
-            # failure remains fatal.
-            concurrent_columns = {
-                row[1]
-                for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
-            }
-            if "decision_snapshot_json" not in concurrent_columns:
+            # Only a duplicate-column error can be evidence of that race.
+            error_message = str(exc).casefold()
+            if not (
+                "duplicate column name" in error_message
+                and snapshot_column_name in error_message
+            ):
                 raise
+            duplicate_column_error = exc
+        snapshot_column = next(
+            (
+                row
+                for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+                if row[1] == snapshot_column_name
+            ),
+            None,
+        )
+
+    compatible_snapshot_column = snapshot_column is not None and (
+        str(snapshot_column[2]).strip().upper() == "TEXT"
+        and snapshot_column[3] == 0
+        and snapshot_column[4] is None
+        and snapshot_column[5] == 0
+    )
+    if not compatible_snapshot_column:
+        observed_contract = (
+            None
+            if snapshot_column is None
+            else (
+                snapshot_column[1],
+                snapshot_column[2],
+                snapshot_column[3],
+                snapshot_column[4],
+                snapshot_column[5],
+            )
+        )
+        contract_error = RuntimeError(
+            "incompatible decision_snapshot_json column contract: "
+            "expected ('decision_snapshot_json', 'TEXT', 0, None, 0), "
+            f"observed {observed_contract!r}"
+        )
+        if duplicate_column_error is not None:
+            raise contract_error from duplicate_column_error
+        raise contract_error
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reviewed_outcomes (
             event_id          TEXT NOT NULL,

@@ -68,8 +68,21 @@ def _create_previous_canonical_schema(db_path) -> sqlite3.Connection:
             job_url TEXT NOT NULL,
             policy_version TEXT NOT NULL,
             lane TEXT NOT NULL CHECK(lane IN ('ats', 'linkedin')),
-            qualification_verdict TEXT NOT NULL,
-            action TEXT NOT NULL,
+            qualification_score REAL,
+            preference_score REAL,
+            outcome_score REAL,
+            final_score REAL,
+            qualification_verdict TEXT NOT NULL CHECK(
+                qualification_verdict IN ('qualified', 'unqualified', 'uncertain')
+            ),
+            action TEXT NOT NULL CHECK(action IN ('apply', 'review', 'reject')),
+            confidence REAL,
+            uncertainty_json TEXT,
+            blockers_json TEXT,
+            requirements_json TEXT,
+            evidence_node_ids_json TEXT,
+            title_signals_json TEXT,
+            explanation TEXT,
             input_hash TEXT NOT NULL,
             created_at TEXT NOT NULL,
             expires_at TEXT,
@@ -107,6 +120,49 @@ def _create_previous_canonical_schema(db_path) -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def _job_decision_table_info(conn: sqlite3.Connection) -> list[tuple]:
+    return [
+        tuple(row)
+        for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+    ]
+
+
+class _SnapshotColumnRaceConnection:
+    """Install a competing column after inspection and before the attempted ALTER."""
+
+    def __init__(
+        self,
+        inner: sqlite3.Connection,
+        db_path,
+        competing_declaration: str,
+    ) -> None:
+        self.inner = inner
+        self.db_path = db_path
+        self.competing_declaration = competing_declaration
+        self.raced = False
+
+    def execute(self, sql: str, parameters=()):
+        if (
+            not self.raced
+            and sql.strip().lower()
+            == "alter table job_decisions add column decision_snapshot_json text"
+        ):
+            self.raced = True
+            competitor = sqlite3.connect(self.db_path)
+            try:
+                competitor.execute(
+                    "ALTER TABLE job_decisions ADD COLUMN "
+                    f"decision_snapshot_json {self.competing_declaration}"
+                )
+                competitor.commit()
+            finally:
+                competitor.close()
+        return self.inner.execute(sql, parameters)
+
+    def __getattr__(self, name: str):
+        return getattr(self.inner, name)
 
 
 def test_init_db_creates_canonical_decision_schema(tmp_path) -> None:
@@ -238,6 +294,134 @@ def test_init_db_adds_decision_snapshot_without_rewriting_existing_decisions(tmp
         "SELECT decision_snapshot_json FROM job_decisions WHERE decision_id = ?",
         ("preserved-decision",),
     ).fetchone()[0] == snapshot
+
+
+def test_fresh_and_upgraded_job_decision_layouts_match_exactly(tmp_path) -> None:
+    fresh_path = tmp_path / "fresh-canonical.db"
+    upgraded_path = tmp_path / "upgraded-canonical.db"
+
+    fresh = database.init_db(fresh_path)
+    previous = _create_previous_canonical_schema(upgraded_path)
+    previous.close()
+    upgraded = database.init_db(upgraded_path)
+
+    fresh_layout = _job_decision_table_info(fresh)
+    upgraded_layout = _job_decision_table_info(upgraded)
+
+    assert fresh_layout == upgraded_layout
+    assert [row[1] for row in fresh_layout][-4:] == [
+        "input_hash",
+        "created_at",
+        "expires_at",
+        "decision_snapshot_json",
+    ]
+
+
+@pytest.mark.parametrize(
+    "competing_declaration",
+    (
+        "INTEGER",
+        "TEXT NOT NULL DEFAULT '{}'",
+    ),
+)
+def test_snapshot_migration_rejects_incompatible_competing_column(
+    tmp_path, competing_declaration: str
+) -> None:
+    db_path = tmp_path / "incompatible-race.db"
+    previous = _create_previous_canonical_schema(db_path)
+    previous.close()
+    connection = sqlite3.connect(db_path)
+
+    try:
+        racing_connection = _SnapshotColumnRaceConnection(
+            connection,
+            db_path,
+            competing_declaration,
+        )
+        with pytest.raises(RuntimeError, match="incompatible decision_snapshot_json"):
+            database.ensure_canonical_decision_tables(racing_connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    (
+        "INTEGER",
+        "TEXT NOT NULL",
+        "TEXT DEFAULT '{}'",
+        "TEXT NOT NULL DEFAULT '{}'",
+    ),
+)
+def test_snapshot_migration_rejects_preexisting_incompatible_column(
+    tmp_path, declaration: str
+) -> None:
+    db_path = tmp_path / "incompatible-existing.db"
+    connection = _create_previous_canonical_schema(db_path)
+    connection.execute(
+        "ALTER TABLE job_decisions ADD COLUMN "
+        f"decision_snapshot_json {declaration}"
+    )
+    connection.commit()
+
+    try:
+        with pytest.raises(RuntimeError, match="incompatible decision_snapshot_json"):
+            database.ensure_canonical_decision_tables(connection)
+    finally:
+        connection.close()
+
+
+def test_snapshot_migration_rejects_noncanonical_column_name(tmp_path) -> None:
+    db_path = tmp_path / "incompatible-name.db"
+    connection = _create_previous_canonical_schema(db_path)
+    connection.execute(
+        "ALTER TABLE job_decisions ADD COLUMN Decision_Snapshot_JSON TEXT"
+    )
+    connection.commit()
+
+    try:
+        with pytest.raises(RuntimeError, match="incompatible decision_snapshot_json"):
+            database.ensure_canonical_decision_tables(connection)
+    finally:
+        connection.close()
+
+
+def test_snapshot_migration_rejects_primary_key_column(tmp_path) -> None:
+    connection = sqlite3.connect(tmp_path / "incompatible-primary-key.db")
+    connection.execute(
+        "CREATE TABLE job_decisions(decision_snapshot_json TEXT PRIMARY KEY)"
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="incompatible decision_snapshot_json"):
+            database.ensure_canonical_decision_tables(connection)
+    finally:
+        connection.close()
+
+
+def test_snapshot_migration_preserves_nonduplicate_operational_error(tmp_path) -> None:
+    db_path = tmp_path / "nonduplicate-error.db"
+    connection = _create_previous_canonical_schema(db_path)
+    injected_error = sqlite3.OperationalError("injected nonduplicate DDL failure")
+
+    class FailingAlterConnection:
+        def execute(self, sql: str, parameters=()):
+            if (
+                sql.strip().lower()
+                == "alter table job_decisions add column decision_snapshot_json text"
+            ):
+                raise injected_error
+            return connection.execute(sql, parameters)
+
+        def __getattr__(self, name: str):
+            return getattr(connection, name)
+
+    try:
+        with pytest.raises(sqlite3.OperationalError) as raised:
+            database.ensure_canonical_decision_tables(FailingAlterConnection())
+        assert raised.value is injected_error
+    finally:
+        connection.close()
 
 
 def test_concurrent_snapshot_migration_is_idempotent(tmp_path) -> None:
