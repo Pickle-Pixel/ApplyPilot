@@ -17,7 +17,7 @@ from typing import Any, Sequence
 from applypilot.brain.artifact_authority import (
     ArtifactAuthorityError,
     canonical_manifest_bytes,
-    coordinate_artifact_registration,
+    coordinate_artifact_authority,
     parse_json_strict,
 )
 
@@ -426,7 +426,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
             return psycopg.connect(dsn)
 
-    receipt = coordinate_artifact_registration(
+    receipt = coordinate_artifact_authority(
         manifest,
         envelope,
         keys={args.key_id: hmac_key},

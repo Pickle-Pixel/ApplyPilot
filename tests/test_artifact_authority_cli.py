@@ -549,7 +549,7 @@ def test_dry_run_ignores_hostile_database_environment_and_opens_no_database(
             "request_id": manifest["requestId"],
         }
 
-    monkeypatch.setattr(cli, "coordinate_artifact_registration", coordinate)
+    monkeypatch.setattr(cli, "coordinate_artifact_authority", coordinate)
     receipt = tmp_path / "receipt.json"
     result = cli.run(
         SimpleNamespace(

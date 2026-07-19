@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import base64
+from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
+import io
 import importlib.util
 import json
 import os
@@ -17,6 +21,15 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 from applypilot.brain import schema
+from applypilot.brain.artifact_authority import (
+    PURPOSE as ARTIFACT_AUTHORITY_PURPOSE,
+    RetentionAttestation,
+    canonical_manifest_bytes,
+    coordinate_artifact_authority,
+    retention_signing_message,
+    signing_message,
+    validate_retention_attestation,
+)
 from applypilot.brain.lifecycle import arm_canary, authority_status, stop_canary
 from applypilot.brain.policy_artifacts import compile_policy_artifacts
 from applypilot.brain.sqlite_to_postgres import (
@@ -1843,6 +1856,7 @@ def test_pg18_catalog_pins_match_authoritative_fresh_fixtures() -> None:
         "v6": "413fdaacc60793dab624b7d12def0362d9539521be055d716bc9320450362329",
         "v7": "b8bcc3e3fedea82fe0149d3dd0372332e24b94579c692e949d9b9c3dce8a0ee5",
         "v8": "b1ae7f1df9e7c902d4954b4f1fa29c3fdf9d4c55516ff1f5011375b23163cebf",
+        "v9": "322c814379eb24c36a09a4f154efe15b986055f71433733d59d7bcbfc49a6102",
     }
 
 
@@ -4436,6 +4450,17 @@ def _install_v8_authority(connection) -> None:
     _append_v8(connection)
 
 
+def _append_v9(connection) -> None:
+    with connection.transaction():
+        connection.execute("ALTER SCHEMA public OWNER TO brain_schema_migrator")
+        with connection.cursor() as cursor:
+            schema.ensure_brain_schema_v9_in_transaction(
+                cursor, expected_controller_role="brain_controller_test_login"
+            )
+        connection.execute("RESET ROLE")
+        connection.execute("ALTER SCHEMA public OWNER TO pg_database_owner")
+
+
 def _register_v8_artifact(connection, *, request_id: str, digest: str, artifact_hash: str):
     params = _v7_registration_params(
         connection, request_id=request_id, digest=digest, artifact_hash=artifact_hash
@@ -5195,3 +5220,186 @@ def test_v8_concurrent_identical_attestation_is_idempotent(brain_pg) -> None:
         ).fetchone()["c"] == 1
         verifier.commit()
         schema.verify_brain_schema_v8(verifier)
+
+
+def test_v9_combined_operator_path_renews_and_persists_verifiable_evidence(brain_pg) -> None:
+    key = b"v9-retention-signing-key-material" * 2
+    content = b"content"
+    artifact_hash = hashlib.sha256(content).hexdigest()
+    provider_checksum = base64.b64encode(hashlib.sha256(content).digest()).decode()
+
+    class S3:
+        def __init__(self, retain_until: datetime) -> None:
+            self.retain_until = retain_until
+            self.head_count = 0
+            self.get_count = 0
+
+        def head_object(self, **_kwargs):
+            self.head_count += 1
+            return {
+                "VersionId": "version-v9",
+                "ContentLength": len(content),
+                "ContentType": "application/json",
+                "ChecksumSHA256": provider_checksum,
+                "ETag": '"etag-v9"',
+                "ObjectLockMode": "COMPLIANCE",
+                "ObjectLockRetainUntilDate": self.retain_until,
+                "ServerSideEncryption": "aws:kms",
+                "SSEKMSKeyId": "kms-key-v9",
+            }
+
+        def get_object(self, **_kwargs):
+            self.get_count += 1
+            return {
+                "Body": io.BytesIO(content),
+                "ChecksumSHA256": provider_checksum,
+                "ContentLength": len(content),
+                "VersionId": "version-v9",
+            }
+
+    with psycopg.connect(brain_pg, row_factory=dict_row) as owner:
+        _install_v8_authority(owner)
+        _append_v9(owner)
+        identity = owner.execute(
+            "SELECT (pg_control_system()).system_identifier::text AS system_id,"
+            "current_database() AS database_name"
+        ).fetchone()
+        assert owner.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is False
+        owner.commit()
+
+    issued = datetime.now(timezone.utc)
+    manifest = {
+        "schemaVersion": 1,
+        "purpose": ARTIFACT_AUTHORITY_PURPOSE,
+        "requestId": "99999999-9999-9999-9999-999999999999",
+        "issuedAt": issued.isoformat().replace("+00:00", "Z"),
+        "expiresAt": (issued + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
+        "destination": {
+            "systemId": identity["system_id"],
+            "databaseName": identity["database_name"],
+        },
+        "artifacts": [{
+            "ordinal": 1,
+            "artifactSha256": artifact_hash,
+            "byteCount": len(content),
+            "mediaType": "application/json",
+            "backend": "s3",
+            "bucket": "immutable",
+            "objectKey": "sha256/v9-content",
+            "versionId": "version-v9",
+            "etag": "etag-v9",
+            "awsChecksumSha256": provider_checksum,
+            "storageImmutable": True,
+            "encryptionMode": "customer_managed",
+            "encryptionKeyId": "kms-key-v9",
+            "policySourceId": "policy-v9",
+        }],
+    }
+    canonical = canonical_manifest_bytes(manifest)
+    envelope = {
+        "algorithm": "hmac-sha256",
+        "keyId": "key-v9",
+        "manifestSha256": hashlib.sha256(canonical).hexdigest(),
+        "signature": base64.urlsafe_b64encode(
+            hmac.new(key, signing_message(canonical), hashlib.sha256).digest()
+        ).rstrip(b"=").decode(),
+    }
+    s3 = S3(issued + timedelta(days=30))
+
+    def connection_factory():
+        connection = psycopg.connect(brain_pg, row_factory=dict_row)
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        connection.commit()
+        return connection
+
+    first = coordinate_artifact_authority(
+        manifest,
+        envelope,
+        keys={"key-v9": key},
+        expected_system_id=identity["system_id"],
+        expected_database_name=identity["database_name"],
+        s3_client=s3,
+        connection_factory=connection_factory,
+        now=issued,
+        lease_duration=timedelta(microseconds=1),
+    )
+    assert first["authoritative"] is False
+
+    renewed = coordinate_artifact_authority(
+        manifest,
+        envelope,
+        keys={"key-v9": key},
+        expected_system_id=identity["system_id"],
+        expected_database_name=identity["database_name"],
+        s3_client=s3,
+        connection_factory=connection_factory,
+        now=issued,
+    )
+    assert renewed["authoritative"] is True
+    assert s3.head_count == 4 and s3.get_count == 4
+
+    with psycopg.connect(brain_pg, row_factory=dict_row) as audit:
+        rows = audit.execute(
+            "SELECT attestation.*,location.verified_at AS location_verified_at "
+            "FROM public.brain_artifact_retention_attestations attestation "
+            "JOIN public.brain_artifact_locations location USING (artifact_hash) "
+            "WHERE attestation.artifact_hash=%s ORDER BY retention_attestation_id",
+            (artifact_hash,),
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["retain_until"] == rows[1]["retain_until"]
+        assert rows[0]["payload_sha256"] != rows[1]["payload_sha256"]
+        row = rows[-1]
+        persisted = bytes(row["canonical_payload"])
+        assert row["verified_at"] >= row["location_verified_at"]
+        assert hashlib.sha256(persisted).hexdigest() == row["payload_sha256"]
+        assert hmac.compare_digest(
+            base64.urlsafe_b64encode(
+                hmac.new(key, retention_signing_message(persisted), hashlib.sha256).digest()
+            ).rstrip(b"=").decode(),
+            row["signature"],
+        )
+        attestation = RetentionAttestation(
+            artifact_hash=row["artifact_hash"],
+            backend=row["backend"],
+            bucket_or_container=row["bucket_or_container"],
+            object_key=row["object_key"],
+            provider_version_id=row["provider_version_id"],
+            provider_checksum=row["provider_checksum"],
+            retention_until=row["retain_until"],
+            verified_at=row["verified_at"],
+            verification_lease_id=row["verification_lease_id"],
+            verification_expires_at=row["verification_lease_expires_at"],
+            canonical_bytes=persisted,
+            payload_sha256=row["payload_sha256"],
+            key_id=row["signing_key_id"],
+            signature=row["signature"],
+        )
+        validate_retention_attestation(
+            attestation, now=datetime.now(timezone.utc), keys={"key-v9": key}
+        )
+        audit.commit()
+        attest_sql = (
+            "SELECT brain_attest_artifact_retention("
+            "%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz,"
+            "%s::bytea,%s,%s,%s) AS id"
+        )
+        persisted_args = (
+            row["artifact_hash"], row["backend"], row["bucket_or_container"], row["object_key"],
+            row["provider_version_id"], row["provider_checksum"], row["retain_until"],
+            row["verified_at"], row["verification_lease_id"],
+            row["verification_lease_expires_at"], persisted, row["payload_sha256"],
+            row["signing_key_id"], row["signature"],
+        )
+        audit.execute("SET ROLE brain_artifact_authority_writer")
+        assert audit.execute(attest_sql, persisted_args).fetchone()["id"] == row[
+            "retention_attestation_id"
+        ]
+        with pytest.raises(psycopg.errors.UniqueViolation, match="conflicting signed"):
+            with audit.transaction():
+                audit.execute(attest_sql, (*persisted_args[:-1], "A" * 43))
+        audit.execute("RESET ROLE")
+        audit.commit()
+        schema.verify_brain_schema_v9(audit)
