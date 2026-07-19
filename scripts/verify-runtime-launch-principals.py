@@ -195,6 +195,31 @@ _FLEET_CONFIG_WRITE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _POWERSHELL_ASSIGNMENT_RE = re.compile(r"^\s*(\$[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+_DATABASE_CLIENT_RE = re.compile(
+    r"(?:\bpg_dump(?:\.exe)?\b|\bpsql(?:\.exe)?\b|\$(?:[A-Za-z_][A-Za-z0-9_]*)?(?:pgdump|psql)(?:[A-Za-z0-9_]*)?)",
+    re.IGNORECASE,
+)
+_POWERSHELL_ADMIN_ASSIGNMENT_RE = re.compile(
+    r"(?:\[[^\]\r\n]+\]\s*)?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"](?:postgres|fleet_worker)['\"]",
+    re.IGNORECASE,
+)
+_POWERSHELL_VARIABLE_ALIAS_RE = re.compile(
+    r"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?['\"]?\s*(?:[#;]|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SHELL_ADMIN_ASSIGNMENT_RE = re.compile(
+    r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]?(postgres|fleet_worker)['\"]?\s*(?:#.*)?$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SHELL_VARIABLE_ALIAS_RE = re.compile(
+    r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?['\"]?\s*(?:#.*)?$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DATABASE_CLIENT_USER_ARGUMENT_RE = re.compile(
+    r"(?:-U(?:\s+|=)|--username(?:\s+|=))\s*(?:"
+    r"['\"]?(postgres|fleet_worker)\b|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -277,6 +302,61 @@ def _raw_psql_fleet_config_write_lines(text: str) -> set[int]:
     return findings
 
 
+def _database_client_admin_parameter_flow_lines(text: str) -> set[int]:
+    """Return unsafe assignments and database-client sinks in a proven admin-role flow.
+
+    A literal-only scan misses the common ``param([string]$PgUser='postgres')`` ->
+    ``pg_dump -U $PgUser`` flow.  Resolve that deliberately small data-flow graph:
+    literal PowerShell or POSIX-shell assignments plus chains of simple/braced variable
+    aliases, then inspect bounded continued psql/pg_dump invocations. This is not a
+    general shell evaluator and therefore fails closed only on flows it can prove. Both
+    the source/alias assignments and the database-client sink are reported so the
+    sentinel proof cannot pass while leaving a dangerous default line unaccounted for.
+    """
+    def line_number(offset: int) -> int:
+        return text.count("\n", 0, offset) + 1
+
+    unsafe_origins: dict[str, set[int]] = {}
+    for pattern in (_POWERSHELL_ADMIN_ASSIGNMENT_RE, _SHELL_ADMIN_ASSIGNMENT_RE):
+        for match in pattern.finditer(text):
+            unsafe_origins.setdefault(match.group(1).casefold(), set()).add(
+                line_number(match.start())
+            )
+
+    changed = True
+    while changed:
+        changed = False
+        for pattern in (_POWERSHELL_VARIABLE_ALIAS_RE, _SHELL_VARIABLE_ALIAS_RE):
+            for match in pattern.finditer(text):
+                target, source = (part.casefold() for part in match.groups())
+                if source not in unsafe_origins:
+                    continue
+                propagated = unsafe_origins[source] | {line_number(match.start())}
+                previous = unsafe_origins.get(target, set())
+                if not propagated <= previous:
+                    unsafe_origins[target] = previous | propagated
+                    changed = True
+
+    lines = text.splitlines()
+    findings: set[int] = set()
+    for index, line in enumerate(lines):
+        if not _DATABASE_CLIENT_RE.search(line):
+            continue
+        block = line
+        cursor = index + 1
+        while block.rstrip().endswith(("`", "\\")) and cursor < min(len(lines), index + 30):
+            block += "\n" + lines[cursor]
+            cursor += 1
+        for match in _DATABASE_CLIENT_USER_ARGUMENT_RE.finditer(block):
+            literal, variable = match.groups()
+            if literal:
+                findings.add(index + 1)
+            elif variable and variable.casefold() in unsafe_origins:
+                findings.add(index + 1)
+                findings.update(unsafe_origins[variable.casefold()])
+    return findings
+
+
 def scan_text(text: str) -> list[Finding]:
     """Return every forbidden-principal match in ``text`` (path filled by caller)."""
     findings: list[Finding] = []
@@ -306,6 +386,10 @@ def scan_text(text: str) -> list[Finding]:
     }
     for lineno in sorted(_raw_psql_fleet_config_write_lines(text) - existing_raw_lines):
         findings.append(Finding(file="", line=lineno, pattern="raw_psql_fleet_config_write"))
+    for lineno in sorted(_database_client_admin_parameter_flow_lines(text)):
+        findings.append(
+            Finding(file="", line=lineno, pattern="database_client_admin_parameter_flow")
+        )
     return findings
 
 

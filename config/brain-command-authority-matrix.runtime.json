@@ -3878,7 +3878,7 @@
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
-      "failClosedBehavior": "deny-not-live-writer",
+      "failClosedBehavior": "deny-unverified-backup-writer",
       "id": "powershell-launcher:backup-fleet-pg.ps1",
       "installed": false,
       "liveEligibility": false,
@@ -3886,13 +3886,13 @@
       "pauseScopes": [
         "none"
       ],
-      "readWriteClass": "control",
+      "readWriteClass": "write",
       "repository": "applypilot",
       "resourcesRead": [
-        "repository-source"
+        "fleet-postgres"
       ],
       "resourcesWritten": [
-        "repository-source"
+        "backup-artifact"
       ],
       "sourcePath": "backup-fleet-pg.ps1",
       "surfaceKind": "powershell-launcher",
@@ -4809,7 +4809,7 @@
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
-      "failClosedBehavior": "deny-not-live-writer",
+      "failClosedBehavior": "deny-unverified-backup-writer",
       "id": "powershell-launcher:scripts/backup-railway-postgres.ps1",
       "installed": false,
       "liveEligibility": false,
@@ -4817,13 +4817,13 @@
       "pauseScopes": [
         "none"
       ],
-      "readWriteClass": "control",
+      "readWriteClass": "write",
       "repository": "applypilot",
       "resourcesRead": [
-        "repository-source"
+        "brain-postgres"
       ],
       "resourcesWritten": [
-        "repository-source"
+        "backup-artifact"
       ],
       "sourcePath": "scripts/backup-railway-postgres.ps1",
       "surfaceKind": "powershell-launcher",
@@ -6588,7 +6588,7 @@
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
-      "failClosedBehavior": "deny-not-live-writer",
+      "failClosedBehavior": "deny-unverified-backup-writer",
       "id": "scheduled-task-action:backup-fleet-pg.ps1:1",
       "installed": false,
       "liveEligibility": false,
@@ -6596,17 +6596,17 @@
       "pauseScopes": [
         "none"
       ],
-      "readWriteClass": "control",
+      "readWriteClass": "write",
       "repository": "applypilot",
       "resourcesRead": [
-        "repository-source"
+        "fleet-postgres"
       ],
       "resourcesWritten": [
-        "repository-source"
+        "backup-artifact"
       ],
       "sourcePath": "backup-fleet-pg.ps1",
       "surfaceKind": "scheduled-task-action",
-      "symbol": "line-26"
+      "symbol": "line-165"
     },
     {
       "aliases": [
@@ -6852,7 +6852,7 @@
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
-      "failClosedBehavior": "deny-not-live-writer",
+      "failClosedBehavior": "deny-unverified-backup-writer",
       "id": "scheduled-task-identity:backup-fleet-pg.ps1:1",
       "installed": false,
       "liveEligibility": false,
@@ -6860,17 +6860,17 @@
       "pauseScopes": [
         "none"
       ],
-      "readWriteClass": "control",
+      "readWriteClass": "write",
       "repository": "applypilot",
       "resourcesRead": [
-        "repository-source"
+        "fleet-postgres"
       ],
       "resourcesWritten": [
-        "repository-source"
+        "backup-artifact"
       ],
       "sourcePath": "backup-fleet-pg.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-30"
+      "symbol": "line-169"
     },
     {
       "aliases": [

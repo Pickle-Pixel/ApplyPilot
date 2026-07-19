@@ -90,6 +90,7 @@ OWNERS = (
 AUTHORITY_SOURCES = ("none",)
 
 RESOURCE_VOCABULARY = (
+    "backup-artifact",
     "brain-postgres",
     "brain-sqlite",
     "employer-ats",
@@ -1516,6 +1517,22 @@ def _validate_classification_against_surface(row: dict[str, Any], index: int) ->
         _require(
             row["employerMutation"] is True,
             f"row {index} structurally names employer mutation but is not flagged",
+        )
+    if row["sourcePath"] == "backup-fleet-pg.ps1":
+        _require(
+            row["readWriteClass"] == "write"
+            and row["resourcesRead"] == ["fleet-postgres"]
+            and row["resourcesWritten"] == ["backup-artifact"]
+            and row["failClosedBehavior"] == "deny-unverified-backup-writer",
+            f"row {index} fleet backup surface must bind fleet read to backup-artifact write",
+        )
+    if row["sourcePath"] == "scripts/backup-railway-postgres.ps1":
+        _require(
+            row["readWriteClass"] == "write"
+            and row["resourcesRead"] == ["brain-postgres"]
+            and row["resourcesWritten"] == ["backup-artifact"]
+            and row["failClosedBehavior"] == "deny-unverified-backup-writer",
+            f"row {index} Railway backup surface must bind brain read to backup-artifact write",
         )
 
 

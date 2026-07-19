@@ -25,3 +25,14 @@ RAWPSQL= & $psql --dbname=$Dsn -v ON_ERROR_STOP=1 -c "UPDATE fleet_config SET sp
 PSENVSRC= if ($env:FLEET_PG_DSN) { $env:FLEET_PG_DSN } else { $env:APPLYPILOT_FLEET_DSN }
 PSBRACE= ${env:APPLYPILOT_FLEET_DSN}
 PSINDIRECT= $q = "UPDATE fleet_config SET spend_cap_usd=0 WHERE id=1"; & $psql -c $q
+PGDUMP_USER=postgres
+pg_dump -U $PGDUMP_USER -d applypilot_fleet
+export SHARED_DUMP_USER=fleet_worker
+pg_dump --username=${SHARED_DUMP_USER} -Fc
+SHELL_ADMIN=postgres
+SHELL_DUMP_USER=$SHELL_ADMIN
+pg_dump --username=$SHELL_DUMP_USER -Fc
+[string]$PgUser = "postgres"
+& $pgDump -U $PgUser -d applypilot_fleet
+& pg_dump -U postgres -d applypilot_fleet
+& pg_dump --username=fleet_worker -Fc
