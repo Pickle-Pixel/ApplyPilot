@@ -1556,6 +1556,39 @@
     },
     {
       "aliases": [
+        "argparse:applypilot.fleet.apply_home_main:set-spend-cap"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.apply_home_main#argparse:set-spend-cap",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "argparse-subcommand:applypilot.fleet.apply_home_main:set-spend-cap",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres",
+        "repository-source"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres",
+        "repository-source"
+      ],
+      "sourcePath": "src/applypilot/fleet/apply_home_main.py",
+      "surfaceKind": "argparse-subcommand",
+      "symbol": "set-spend-cap"
+    },
+    {
+      "aliases": [
         "argparse:applypilot.fleet.apply_home_main:status"
       ],
       "authoritySource": "none",
@@ -3271,6 +3304,36 @@
     },
     {
       "aliases": [
+        "container:Dockerfile.authority-migrator:entrypoint:1"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "Dockerfile.authority-migrator#entrypoint:1:[\"python3\", \"/app/scripts/run-private-authority-migrator.py\"]",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "container-entrypoint:Dockerfile.authority-migrator:entrypoint:1",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "brain-admin",
+      "pauseScopes": [
+        "migration"
+      ],
+      "readWriteClass": "admin-ddl",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres",
+        "fleet-schema"
+      ],
+      "resourcesWritten": [
+        "fleet-schema"
+      ],
+      "sourcePath": "Dockerfile.authority-migrator",
+      "surfaceKind": "container-entrypoint",
+      "symbol": "ENTRYPOINT"
+    },
+    {
+      "aliases": [
         "container:Dockerfile:cmd:1"
       ],
       "authoritySource": "none",
@@ -3445,6 +3508,40 @@
       "sourcePath": "register-fleet-tasks.ps1",
       "surfaceKind": "generated-wrapper",
       "symbol": "<generated-wrapper>"
+    },
+    {
+      "aliases": [
+        "launchctl load -w $HOME/Library/LaunchAgents/com.applypilot.fleetworker.plist",
+        "launchctl:com.applypilot.fleetworker"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "com.applypilot.fleetworker.plist.template#label=com.applypilot.fleetworker;programArguments=[\"/bin/bash\",\"__INSTALL_DIR__/run-worker-mac.sh\"];install=setup-mac-worker.sh:$HOME/Library/LaunchAgents/com.applypilot.fleetworker.plist;load=launchctl load -w",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "launchd-plist:com.applypilot.fleetworker.plist.template",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres",
+        "repository-source"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres",
+        "repository-source"
+      ],
+      "sourcePath": "com.applypilot.fleetworker.plist.template",
+      "surfaceKind": "launchd-plist",
+      "symbol": "com.applypilot.fleetworker"
     },
     {
       "aliases": [
@@ -4821,6 +4918,35 @@
     },
     {
       "aliases": [
+        "powershell -File scripts/runtime-launch-channel.ps1"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/runtime-launch-channel.ps1",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "powershell-launcher:scripts/runtime-launch-channel.ps1",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "control",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "repository-source"
+      ],
+      "resourcesWritten": [
+        "repository-source"
+      ],
+      "sourcePath": "scripts/runtime-launch-channel.ps1",
+      "surfaceKind": "powershell-launcher",
+      "symbol": "<file>"
+    },
+    {
+      "aliases": [
         "powershell -File scripts/setup-fleet-pg-tailscale.ps1"
       ],
       "authoritySource": "none",
@@ -5571,6 +5697,36 @@
     },
     {
       "aliases": [
+        "python scripts/run-private-authority-migrator.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/run-private-authority-migrator.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "python-file:scripts/run-private-authority-migrator.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "brain-admin",
+      "pauseScopes": [
+        "migration"
+      ],
+      "readWriteClass": "admin-ddl",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "fleet-postgres",
+        "fleet-schema"
+      ],
+      "resourcesWritten": [
+        "fleet-schema"
+      ],
+      "sourcePath": "scripts/run-private-authority-migrator.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
         "python scripts/sign-release-attestation.py"
       ],
       "authoritySource": "none",
@@ -5654,6 +5810,33 @@
       ],
       "resourcesWritten": [],
       "sourcePath": "scripts/verify-brain-command-authority.py",
+      "surfaceKind": "python-file",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
+        "python scripts/verify-runtime-launch-principals.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "scripts/verify-runtime-launch-principals.py",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-file:scripts/verify-runtime-launch-principals.py",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "repository-source"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "scripts/verify-runtime-launch-principals.py",
       "surfaceKind": "python-file",
       "symbol": "__main__"
     },
@@ -6126,6 +6309,34 @@
     },
     {
       "aliases": [
+        "python -m applypilot.fleet.launch_guard",
+        "python src/applypilot/fleet/launch_guard.py"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "applypilot.fleet.launch_guard:__main__",
+      "capabilities": [],
+      "directInvocation": true,
+      "employerMutation": false,
+      "failClosedBehavior": "deny-not-live",
+      "id": "python-module:applypilot.fleet.launch_guard",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "operator",
+      "pauseScopes": [
+        "none"
+      ],
+      "readWriteClass": "read",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "repository-source"
+      ],
+      "resourcesWritten": [],
+      "sourcePath": "src/applypilot/fleet/launch_guard.py",
+      "surfaceKind": "python-module",
+      "symbol": "__main__"
+    },
+    {
+      "aliases": [
         "python -m applypilot.fleet.machine_blackout_main",
         "python src/applypilot/fleet/machine_blackout_main.py"
       ],
@@ -6424,7 +6635,7 @@
       ],
       "sourcePath": "fleet-daily-unguard.ps1",
       "surfaceKind": "scheduled-task-action",
-      "symbol": "line-146"
+      "symbol": "line-152"
     },
     {
       "aliases": [
@@ -6456,7 +6667,7 @@
       ],
       "sourcePath": "register-apply-cycle.ps1",
       "surfaceKind": "scheduled-task-action",
-      "symbol": "line-159"
+      "symbol": "line-168"
     },
     {
       "aliases": [
@@ -6543,7 +6754,7 @@
       ],
       "sourcePath": "register-fleet-tasks.ps1",
       "surfaceKind": "scheduled-task-action",
-      "symbol": "line-237"
+      "symbol": "line-252"
     },
     {
       "aliases": [
@@ -6601,7 +6812,7 @@
       ],
       "sourcePath": "register-otp-responder-startup.ps1",
       "surfaceKind": "scheduled-task-action",
-      "symbol": "line-39"
+      "symbol": "line-52"
     },
     {
       "aliases": [
@@ -6688,7 +6899,7 @@
       ],
       "sourcePath": "fleet-daily-unguard.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-153"
+      "symbol": "line-156"
     },
     {
       "aliases": [
@@ -6720,7 +6931,7 @@
       ],
       "sourcePath": "register-apply-cycle.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-155"
+      "symbol": "line-164"
     },
     {
       "aliases": [
@@ -6752,7 +6963,7 @@
       ],
       "sourcePath": "register-apply-cycle.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-161"
+      "symbol": "line-170"
     },
     {
       "aliases": [
@@ -6839,7 +7050,7 @@
       ],
       "sourcePath": "register-fleet-tasks.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-233"
+      "symbol": "line-248"
     },
     {
       "aliases": [
@@ -6868,7 +7079,7 @@
       ],
       "sourcePath": "register-fleet-tasks.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-240"
+      "symbol": "line-255"
     },
     {
       "aliases": [
@@ -6926,7 +7137,41 @@
       ],
       "sourcePath": "register-otp-responder-startup.ps1",
       "surfaceKind": "scheduled-task-identity",
-      "symbol": "line-46"
+      "symbol": "line-59"
+    },
+    {
+      "aliases": [
+        "systemctl enable --now applypilot-fleet-worker.service",
+        "systemd:applypilot-fleet-worker.service"
+      ],
+      "authoritySource": "none",
+      "canonicalTarget": "setup-linux-worker.sh#generated-systemd:applypilot-fleet-worker.service;destinationTemplate=/etc/systemd/system/${SERVICE_NAME}.service;resolvedDefaultDestination=/etc/systemd/system/applypilot-fleet-worker.service;User=$USER;ExecStart=$INSTALL_DIR/run-worker-linux.sh;activation=sudo systemctl enable --now \"$SERVICE_NAME\" >/dev/null",
+      "capabilities": [],
+      "directInvocation": false,
+      "employerMutation": true,
+      "failClosedBehavior": "deny-not-live-writer",
+      "id": "service-unit:setup-linux-worker.sh:generated:applypilot-fleet-worker.service",
+      "installed": false,
+      "liveEligibility": false,
+      "owner": "fleet-worker",
+      "pauseScopes": [
+        "apply"
+      ],
+      "readWriteClass": "write",
+      "repository": "applypilot",
+      "resourcesRead": [
+        "employer-ats",
+        "fleet-postgres",
+        "repository-source"
+      ],
+      "resourcesWritten": [
+        "employer-ats",
+        "fleet-postgres",
+        "repository-source"
+      ],
+      "sourcePath": "setup-linux-worker.sh",
+      "surfaceKind": "service-unit",
+      "symbol": "applypilot-fleet-worker.service"
     },
     {
       "aliases": [

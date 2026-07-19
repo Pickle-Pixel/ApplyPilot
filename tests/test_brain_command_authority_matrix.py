@@ -159,6 +159,49 @@ def create_job():
     _write(root / "Dockerfile", 'FROM python:3.13\nENTRYPOINT ["python"]\nCMD ["-m", "demo"]\n')
 
 
+def _write_structural_service_fixtures(root: Path) -> None:
+    _write(
+        root / "com.demo.worker.plist.template",
+        """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>com.demo.worker</string>
+<key>ProgramArguments</key><array>
+<string>/bin/bash</string><string>__INSTALL_DIR__/run-worker.sh</string>
+</array>
+</dict></plist>
+""",
+    )
+    _write(
+        root / "setup-mac.sh",
+        """#!/bin/sh
+PLIST="$HOME/Library/LaunchAgents/com.demo.worker.plist"
+sed 's|__INSTALL_DIR__|/opt/demo|g' "$PWD/com.demo.worker.plist.template" > "$PLIST"
+launchctl load -w "$PLIST"
+""",
+    )
+    _write(
+        root / "setup-linux.sh",
+        """#!/bin/sh
+SERVICE_NAME="${SERVICE_NAME:-demo-worker}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/demo}"
+write_service() {
+  local service_file
+  service_file="/etc/systemd/system/${SERVICE_NAME}.service"
+  sudo tee "$service_file" >/dev/null <<EOF
+[Unit]
+Description=Demo worker
+[Service]
+User=$USER
+ExecStart=$INSTALL_DIR/run-worker.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+  sudo systemctl enable --now "$SERVICE_NAME"
+}
+""",
+    )
+
+
 def _write_fixture_matrix(root: Path) -> Path:
     rows = []
     for surface in authority.discover(root):
@@ -321,6 +364,180 @@ def test_symlink_is_not_a_command_surface(tmp_path):
     assert not any("link_worker_main" in surface_id for surface_id in ids)
     # The committed symlink adds no surface, so discovery is unchanged.
     assert authority.discovery_digest(surfaces) == baseline_digest
+
+
+def test_structurally_binds_launchd_template_and_generated_systemd(tmp_path):
+    _minimal_repo(tmp_path)
+    _write_structural_service_fixtures(tmp_path)
+    _init_git_repo(tmp_path)
+    surfaces = {surface["id"]: surface for surface in authority.discover(tmp_path)}
+
+    launchd = surfaces["launchd-plist:com.demo.worker.plist.template"]
+    assert launchd["symbol"] == "com.demo.worker"
+    assert 'programArguments=["/bin/bash","__INSTALL_DIR__/run-worker.sh"]' in launchd["canonicalTarget"]
+    assert "install=setup-mac.sh:$HOME/Library/LaunchAgents/com.demo.worker.plist" in launchd["canonicalTarget"]
+    assert "load=launchctl load -w" in launchd["canonicalTarget"]
+
+    systemd = surfaces["service-unit:setup-linux.sh:generated:demo-worker.service"]
+    assert systemd["symbol"] == "demo-worker.service"
+    assert "destinationTemplate=/etc/systemd/system/${SERVICE_NAME}.service" in systemd["canonicalTarget"]
+    assert "resolvedDefaultDestination=/etc/systemd/system/demo-worker.service" in systemd["canonicalTarget"]
+    assert "User=$USER" in systemd["canonicalTarget"]
+    assert "ExecStart=$INSTALL_DIR/run-worker.sh" in systemd["canonicalTarget"]
+    assert 'activation=sudo systemctl enable --now "$SERVICE_NAME"' in systemd["canonicalTarget"]
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("<key>Label</key><string>com.demo.worker</string>", "", "static Label"),
+        ("<key>Label</key><string>com.demo.worker</string>", "<key>Label</key><string>${LABEL}</string>", "static Label"),
+        ("<key>ProgramArguments</key><array>", "<key>ProgramArguments</key><string>", "malformed XML"),
+    ],
+)
+def test_launchd_malformed_or_dynamic_structure_fails_closed(tmp_path, old, new, message):
+    _minimal_repo(tmp_path)
+    _write_structural_service_fixtures(tmp_path)
+    path = tmp_path / "com.demo.worker.plist.template"
+    path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match=message):
+        authority.discover(tmp_path)
+
+
+def test_launchd_missing_load_or_duplicate_label_fails_closed(tmp_path):
+    _minimal_repo(tmp_path)
+    _write_structural_service_fixtures(tmp_path)
+    mac = tmp_path / "setup-mac.sh"
+    original = mac.read_text(encoding="utf-8")
+    mac.write_text(original.replace('launchctl load -w "$PLIST"', "true"), encoding="utf-8")
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="exactly one bound launchctl load"):
+        authority.discover(tmp_path)
+
+    mac.write_text(original, encoding="utf-8")
+    second = (tmp_path / "com.demo.worker.plist.template").read_text(encoding="utf-8")
+    _write(tmp_path / "duplicate.plist.template", second)
+    mac.write_text(
+        original
+        + '\nPLIST2="$HOME/Library/LaunchAgents/duplicate.plist"\n'
+        + 'sed s/x/y/ "$PWD/duplicate.plist.template" > "$PLIST2"\n'
+        + 'launchctl load -w "$PLIST2"\n',
+        encoding="utf-8",
+    )
+    _commit(tmp_path, "duplicate label")
+    with pytest.raises(authority.AuthorityError, match="label collision"):
+        authority.discover(tmp_path)
+
+
+def test_launchd_nonpersistent_load_fails_closed(tmp_path):
+    _minimal_repo(tmp_path)
+    _write_structural_service_fixtures(tmp_path)
+    path = tmp_path / "setup-mac.sh"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("launchctl load -w", "launchctl load"),
+        encoding="utf-8",
+    )
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="persist with -w"):
+        authority.discover(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ('SERVICE_NAME="${SERVICE_NAME:-demo-worker}"', 'SERVICE_NAME="${SERVICE_NAME:-$(hostname)}"', "dynamic"),
+        ("User=$USER", "User=$USER\nUser=root", "exactly one User"),
+        ('sudo systemctl enable --now "$SERVICE_NAME"', 'sudo systemctl enable "$SERVICE_NAME"', "enable --now"),
+        ('ExecStart=$INSTALL_DIR/run-worker.sh', 'ExecStart=$(resolve-worker)', "dynamically ambiguous"),
+        ('service_file="/etc/systemd/system/${SERVICE_NAME}.service"', 'service_file="/etc/systemd/system/${UNKNOWN}.service"', "dynamically ambiguous"),
+    ],
+)
+def test_generated_systemd_dynamic_duplicate_or_incomplete_fails_closed(
+    tmp_path, old, new, message
+):
+    _minimal_repo(tmp_path)
+    _write_structural_service_fixtures(tmp_path)
+    path = tmp_path / "setup-linux.sh"
+    path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match=message):
+        authority.discover(tmp_path)
+
+
+def test_structurally_binds_generated_systemd_timer(tmp_path):
+    _minimal_repo(tmp_path)
+    _write(
+        tmp_path / "setup-timer.sh",
+        """#!/bin/sh
+sudo tee /etc/systemd/system/demo-worker.timer >/dev/null <<EOF
+[Unit]
+Description=Demo timer
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+sudo systemctl enable --now demo-worker.timer
+""",
+    )
+    _init_git_repo(tmp_path)
+    surfaces = {surface["id"]: surface for surface in authority.discover(tmp_path)}
+    timer = surfaces["service-unit:setup-timer.sh:generated:demo-worker.timer"]
+    assert "OnCalendar=*-*-* 03:15:00" in timer["canonicalTarget"]
+    assert "resolvedDefaultDestination=/etc/systemd/system/demo-worker.timer" in timer["canonicalTarget"]
+    assert "activation=sudo systemctl enable --now demo-worker.timer" in timer["canonicalTarget"]
+
+
+def test_generated_systemd_unit_collision_fails_closed(tmp_path):
+    _minimal_repo(tmp_path)
+    _write_structural_service_fixtures(tmp_path)
+    original = (tmp_path / "setup-linux.sh").read_text(encoding="utf-8")
+    _write(tmp_path / "duplicate-linux.sh", original)
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="unit collision"):
+        authority.discover(tmp_path)
+
+
+def test_structural_service_discovery_is_hermetic_to_untracked_and_symlink(tmp_path):
+    _minimal_repo(tmp_path)
+    _write_structural_service_fixtures(tmp_path)
+    _init_git_repo(tmp_path)
+    baseline = authority.canonical_json(authority.discover(tmp_path))
+
+    _write(
+        tmp_path / "evil.plist.template",
+        "<plist><dict><key>Label</key><string>evil</string></dict></plist>",
+    )
+    _write(
+        tmp_path / "evil-systemd.sh",
+        "sudo tee /etc/systemd/system/evil.service <<EOF\n[Service]\nUser=root\nExecStart=/evil\nEOF\n",
+    )
+    assert authority.canonical_json(authority.discover(tmp_path)) == baseline
+
+    env = _git_env()
+    blob = subprocess.run(
+        ["git", "-C", str(tmp_path), "hash-object", "-w", "--stdin"],
+        input=b"com.demo.worker.plist.template",
+        capture_output=True,
+        check=True,
+        env=env,
+    ).stdout.decode().strip()
+    subprocess.run(
+        [
+            "git", "-C", str(tmp_path), "update-index", "--add", "--cacheinfo",
+            f"120000,{blob},linked.plist.template",
+        ],
+        check=True,
+        env=env,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-q", "-m", "add service symlink"],
+        check=True,
+        env=env,
+    )
+    assert authority.canonical_json(authority.discover(tmp_path)) == baseline
 
 
 def test_missing_committed_file_fails_closed(tmp_path):

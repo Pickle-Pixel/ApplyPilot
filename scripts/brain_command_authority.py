@@ -35,6 +35,7 @@ import json
 import re
 import subprocess
 import tomllib
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -766,6 +767,334 @@ def _discover_launchers(tree: "_RepoTree") -> list[dict[str, Any]]:
     return surfaces
 
 
+_SHELL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_STATIC_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+
+
+def _shell_assignments(text: str, relative: str) -> dict[str, str]:
+    """Return unique, single-line shell assignments without evaluating shell.
+
+    Discovery deliberately understands only the small static assignment grammar
+    needed to bind committed service installers.  A duplicate assignment is not
+    silently resolved by shell ordering: it is ambiguous evidence and fails
+    closed when a structural service refers to that name.
+    """
+    values: dict[str, list[str]] = {}
+    pattern = re.compile(
+        r"(?m)^\s*(?:local\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)="
+        r"(?P<quote>[\"'])(?P<value>[^\r\n]*?)(?P=quote)\s*$"
+    )
+    for match in pattern.finditer(text):
+        values.setdefault(match.group("name"), []).append(match.group("value"))
+    return {
+        name: candidates[0]
+        for name, candidates in values.items()
+        if len(candidates) == 1
+    }
+
+
+def _static_shell_value(
+    value: str,
+    assignments: dict[str, str],
+    label: str,
+    seen: frozenset[str] = frozenset(),
+) -> str:
+    """Resolve `${NAME:-literal}` defaults and simple `$NAME` indirection.
+
+    Host-dependent values such as HOME/USER/INSTALL_DIR remain symbolic in the
+    binding.  Command substitution, backticks, parameter transforms, and
+    recursive or unresolved defaults are rejected rather than guessed.
+    """
+    if "$(" in value or "`" in value or "${!" in value:
+        raise AuthorityError(f"{label} is dynamic or executes shell code")
+
+    whole_reference = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", value)
+    if whole_reference and whole_reference.group(1) in assignments:
+        name = whole_reference.group(1)
+        if name in seen:
+            raise AuthorityError(f"{label} has recursive shell indirection")
+        return _static_shell_value(
+            assignments[name], assignments, label, seen | {name}
+        )
+
+    default_pattern = re.compile(
+        r"\$\{([A-Za-z_][A-Za-z0-9_]*):-([^{}$`]+)\}"
+    )
+    resolved = default_pattern.sub(lambda match: match.group(2), value)
+    if "${" in resolved and re.search(r"\$\{[^}]*[:?+=#%/]", resolved):
+        raise AuthorityError(f"{label} uses unsupported dynamic parameter expansion")
+    return resolved
+
+
+def _plist_mapping(relative: str, text: str) -> dict[str, ET.Element]:
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise AuthorityError(f"launchd template {relative!r} is malformed XML") from exc
+    if root.tag != "plist" or len(root) != 1 or root[0].tag != "dict":
+        raise AuthorityError(f"launchd template {relative!r} must contain one plist dict")
+    children = list(root[0])
+    if len(children) % 2:
+        raise AuthorityError(f"launchd template {relative!r} has an unmatched dict key")
+    mapping: dict[str, ET.Element] = {}
+    for index in range(0, len(children), 2):
+        key, value = children[index], children[index + 1]
+        if key.tag != "key" or not key.text or key.text in mapping:
+            raise AuthorityError(f"launchd template {relative!r} has a missing or duplicate key")
+        mapping[key.text] = value
+    return mapping
+
+
+def _launchd_install_binding(tree: "_RepoTree", relative: str) -> tuple[str, str, str]:
+    basename = relative.rsplit("/", 1)[-1]
+    bindings: list[tuple[str, str, str]] = []
+    for script in _repo_files(tree, (".sh",)):
+        text = tree.read_text(script)
+        install_lines = [
+            line
+            for line in text.splitlines()
+            if basename in line and re.search(r">\s*[\"']?\$[A-Za-z_][A-Za-z0-9_]*[\"']?\s*$", line)
+        ]
+        if not install_lines:
+            continue
+        if len(install_lines) != 1:
+            raise AuthorityError(
+                f"launchd template {relative!r} has ambiguous install actions in {script!r}"
+            )
+        destination_match = re.search(
+            r">\s*[\"']?\$([A-Za-z_][A-Za-z0-9_]*)[\"']?\s*$", install_lines[0]
+        )
+        assert destination_match is not None
+        destination_name = destination_match.group(1)
+        assignments = _shell_assignments(text, script)
+        if destination_name not in assignments:
+            raise AuthorityError(
+                f"launchd template {relative!r} install destination is dynamic in {script!r}"
+            )
+        destination = _static_shell_value(
+            assignments[destination_name], assignments, f"launchd destination in {script}"
+        )
+        if not destination.endswith(".plist") or not destination.startswith("$HOME/"):
+            raise AuthorityError(
+                f"launchd template {relative!r} has an unsupported install destination"
+            )
+        load_pattern = re.compile(
+            rf"(?m)^\s*launchctl\s+load\s+(?P<flags>(?:-[A-Za-z]+\s+)*)"
+            rf"[\"']?\${re.escape(destination_name)}[\"']?\s*$"
+        )
+        loads = list(load_pattern.finditer(text))
+        if len(loads) != 1:
+            raise AuthorityError(
+                f"launchd template {relative!r} must have exactly one bound launchctl load action"
+            )
+        flags = " ".join(loads[0].group("flags").split())
+        if "-w" not in flags.split():
+            raise AuthorityError(
+                f"launchd template {relative!r} load action must persist with -w"
+            )
+        load = "launchctl load" + (f" {flags}" if flags else "")
+        bindings.append((script, destination, load))
+    if len(bindings) != 1:
+        raise AuthorityError(
+            f"launchd template {relative!r} must have exactly one structural installer/load binding"
+        )
+    return bindings[0]
+
+
+def _discover_launchd_templates(tree: "_RepoTree") -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    labels: dict[str, str] = {}
+    destinations: dict[str, str] = {}
+    templates = [
+        path for path in tree.regular_paths() if path.lower().endswith(".plist.template")
+    ]
+    for relative in templates:
+        mapping = _plist_mapping(relative, tree.read_text(relative))
+        label_node = mapping.get("Label")
+        arguments_node = mapping.get("ProgramArguments")
+        if (
+            label_node is None
+            or label_node.tag != "string"
+            or not label_node.text
+            or not _STATIC_LABEL_RE.fullmatch(label_node.text)
+        ):
+            raise AuthorityError(f"launchd template {relative!r} has no static Label")
+        if arguments_node is None or arguments_node.tag != "array":
+            raise AuthorityError(f"launchd template {relative!r} has no ProgramArguments array")
+        arguments = [node.text or "" for node in arguments_node]
+        if (
+            not arguments
+            or any(node.tag != "string" or not value for node, value in zip(arguments_node, arguments))
+            or any("$(" in value or "`" in value or "${" in value for value in arguments)
+        ):
+            raise AuthorityError(
+                f"launchd template {relative!r} has dynamic or malformed ProgramArguments"
+            )
+        label = label_node.text
+        installer, destination, load = _launchd_install_binding(tree, relative)
+        if label in labels:
+            raise AuthorityError(
+                f"launchd label collision {label!r}: {labels[label]!r} and {relative!r}"
+            )
+        if destination in destinations:
+            raise AuthorityError(
+                f"launchd destination collision {destination!r}: "
+                f"{destinations[destination]!r} and {relative!r}"
+            )
+        labels[label] = relative
+        destinations[destination] = relative
+        encoded_arguments = canonical_json(arguments).decode("ascii")
+        surfaces.append(
+            _surface(
+                surface_id=f"launchd-plist:{relative}",
+                source_path=relative,
+                symbol=label,
+                surface_kind="launchd-plist",
+                canonical_target=(
+                    f"{relative}#label={label};programArguments={encoded_arguments};"
+                    f"install={installer}:{destination};load={load}"
+                ),
+                aliases=sorted(
+                    [
+                        f"launchctl:{label}",
+                        f"{load} {destination}",
+                    ]
+                ),
+                installed=False,
+                direct_invocation=False,
+            )
+        )
+    return surfaces
+
+
+_HEREDOC_RE = re.compile(
+    r"(?ms)^\s*(?:sudo\s+)?tee\s+(?P<destination>[^\s>]+)"
+    r"[^\r\n]*?<<(?P<quote>[\"']?)(?P<marker>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)\s*\r?\n"
+    r"(?P<body>.*?)^\s*(?P=marker)\s*$"
+)
+
+
+def _one_unit_field(body: str, name: str, relative: str) -> str:
+    values = re.findall(rf"(?m)^\s*{re.escape(name)}\s*=\s*(\S(?:.*\S)?)\s*$", body)
+    if len(values) != 1:
+        raise AuthorityError(
+            f"generated systemd unit in {relative!r} must have exactly one {name}"
+        )
+    value = values[0]
+    if "$(" in value or "`" in value or "${" in value and ":" in value:
+        raise AuthorityError(f"generated systemd {name} in {relative!r} is dynamically ambiguous")
+    return value
+
+
+def _discover_generated_systemd_units(tree: "_RepoTree") -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    unit_names: dict[str, str] = {}
+    destinations: dict[str, str] = {}
+    for relative in _repo_files(tree, (".sh",)):
+        text = tree.read_text(relative)
+        assignments = _shell_assignments(text, relative)
+        for match in _HEREDOC_RE.finditer(text):
+            body = match.group("body")
+            has_service = bool(re.search(r"(?m)^\s*\[Service\]\s*$", body))
+            has_timer = bool(re.search(r"(?m)^\s*\[Timer\]\s*$", body))
+            if not has_service and not has_timer:
+                continue
+            if has_service and has_timer:
+                raise AuthorityError(f"generated systemd unit in {relative!r} mixes service and timer")
+            raw_destination = match.group("destination").strip("\"'")
+            destination = _static_shell_value(
+                raw_destination, assignments, f"systemd destination in {relative}"
+            )
+            # Resolve a unique default for the variable embedded in a unit path.
+            referenced = re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", destination)
+            unit_variable = next((name for name in referenced if name in assignments), None)
+            resolved_destination = destination
+            if unit_variable is not None:
+                unit_stem = _static_shell_value(
+                    assignments[unit_variable], assignments, f"systemd unit name in {relative}"
+                )
+                if not _STATIC_LABEL_RE.fullmatch(unit_stem):
+                    raise AuthorityError(f"generated systemd unit name in {relative!r} is dynamic")
+                resolved_destination = re.sub(
+                    rf"\$\{{?{re.escape(unit_variable)}\}}?", unit_stem, destination
+                )
+            suffix = ".service" if has_service else ".timer"
+            if not resolved_destination.startswith("/etc/systemd/system/") or not resolved_destination.endswith(suffix):
+                raise AuthorityError(
+                    f"generated systemd unit in {relative!r} has unsupported destination"
+                )
+            unit_name = resolved_destination.rsplit("/", 1)[-1]
+            if not _STATIC_LABEL_RE.fullmatch(unit_name):
+                raise AuthorityError(
+                    f"generated systemd unit name in {relative!r} is dynamically ambiguous"
+                )
+            if unit_name in unit_names:
+                raise AuthorityError(
+                    f"generated systemd unit collision {unit_name!r}: "
+                    f"{unit_names[unit_name]!r} and {relative!r}"
+                )
+            if resolved_destination in destinations:
+                raise AuthorityError(
+                    f"generated systemd destination collision {resolved_destination!r}"
+                )
+
+            target_tokens = {unit_name, unit_name[: -len(suffix)]}
+            if unit_variable is not None:
+                target_tokens.update({f'"${unit_variable}"', f"${unit_variable}"})
+            activation_lines = []
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not re.match(r"^(?:sudo\s+)?systemctl\s+enable\b", stripped):
+                    continue
+                if any(token in stripped for token in target_tokens):
+                    activation_lines.append(" ".join(stripped.split()))
+            if len(activation_lines) != 1 or "--now" not in activation_lines[0].split():
+                raise AuthorityError(
+                    f"generated systemd unit {unit_name!r} must have exactly one bound enable --now action"
+                )
+
+            if has_service:
+                user = _one_unit_field(body, "User", relative)
+                exec_start = _one_unit_field(body, "ExecStart", relative)
+                detail = f"User={user};ExecStart={exec_start}"
+            else:
+                timer_fields = sorted(
+                    re.findall(r"(?m)^\s*(On[A-Za-z]+)\s*=\s*(\S(?:.*\S)?)\s*$", body)
+                )
+                if not timer_fields:
+                    raise AuthorityError(
+                        f"generated systemd timer in {relative!r} has no static On* schedule"
+                    )
+                if any("$(" in value or "`" in value or "${" in value for _, value in timer_fields):
+                    raise AuthorityError(
+                        f"generated systemd timer in {relative!r} has a dynamic schedule"
+                    )
+                detail = ";".join(f"{name}={value}" for name, value in timer_fields)
+            activation = activation_lines[0]
+            unit_names[unit_name] = relative
+            destinations[resolved_destination] = relative
+            surfaces.append(
+                _surface(
+                    surface_id=f"service-unit:{relative}:generated:{unit_name}",
+                    source_path=relative,
+                    symbol=unit_name,
+                    surface_kind="service-unit",
+                    canonical_target=(
+                        f"{relative}#generated-systemd:{unit_name};"
+                        f"destinationTemplate={destination};"
+                        f"resolvedDefaultDestination={resolved_destination};"
+                        f"{detail};activation={activation}"
+                    ),
+                    aliases=sorted(
+                        [f"systemd:{unit_name}", f"systemctl enable --now {unit_name}"]
+                    ),
+                    installed=False,
+                    direct_invocation=False,
+                )
+            )
+    return surfaces
+
+
 def _discover_scheduled_tasks_and_wrappers(tree: "_RepoTree") -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
     for relative in _repo_files(tree, (".ps1", ".psm1")):
@@ -837,7 +1166,16 @@ def _discover_container_entrypoints(tree: "_RepoTree") -> list[dict[str, Any]]:
     return surfaces
 
 
-_PARSEABLE_EXTENSIONS = (".py", ".ps1", ".psm1")
+_PARSEABLE_EXTENSIONS = (
+    ".py",
+    ".ps1",
+    ".psm1",
+    ".sh",
+    ".plist",
+    ".template",
+    ".service",
+    ".timer",
+)
 
 
 def _is_parseable_path(relpath: str) -> bool:
@@ -975,6 +1313,8 @@ def discover_from_tree(tree: _RepoTree) -> list[dict[str, Any]]:
     surfaces += _discover_argparse_subcommands(tree)
     surfaces += _discover_http_actions(tree)
     surfaces += _discover_launchers(tree)
+    surfaces += _discover_launchd_templates(tree)
+    surfaces += _discover_generated_systemd_units(tree)
     surfaces += _discover_scheduled_tasks_and_wrappers(tree)
     surfaces += _discover_container_entrypoints(tree)
 
