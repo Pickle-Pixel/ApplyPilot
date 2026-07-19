@@ -26,7 +26,7 @@ def main(argv=None) -> int:
         prog="applypilot-fleet-remediate",
         description="Re-queue usage-limit-casualty jobs (3-guard double-apply gate). ATS only.")
     p.add_argument("--dsn", default=None,
-                   help="Postgres DSN (default: DATABASE_URL / APPLYPILOT_FLEET_DSN env).")
+                   help="explicit mapped fleet DSN (default: FLEET_PG_DSN env; no generic fallback).")
     p.add_argument("--max-requeue", type=int, default=50, dest="max_requeue",
                    help="per-pass blast-radius cap (default 50)")
     p.add_argument("--max-per-job", type=int, default=2, dest="max_per_job",

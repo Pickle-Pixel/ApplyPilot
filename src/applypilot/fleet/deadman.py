@@ -541,7 +541,9 @@ def main(argv=None) -> int:  # pragma: no cover - thin CLI glue
     )
     p.add_argument(
         "--dsn",
-        default=os.environ.get("FLEET_PG_DSN") or os.environ.get("APPLYPILOT_FLEET_DSN"),
+        default=os.environ.get("FLEET_PG_DSN"),
+        help="explicit mapped fleet DSN (default: FLEET_PG_DSN). Never the postgres admin "
+             "or shared fleet_worker role; no generic DATABASE_URL/APPLYPILOT_FLEET_DSN fallback.",
     )
     p.add_argument(
         "--alert-dir",
@@ -558,7 +560,7 @@ def main(argv=None) -> int:  # pragma: no cover - thin CLI glue
     args = p.parse_args(argv)
 
     if not args.dsn:
-        print("[fleet-deadman] no --dsn / FLEET_PG_DSN / APPLYPILOT_FLEET_DSN set", flush=True)
+        print("[fleet-deadman] no --dsn / FLEET_PG_DSN set", flush=True)
         return 1
 
     from applypilot.apply import pgqueue

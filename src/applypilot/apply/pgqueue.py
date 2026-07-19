@@ -189,6 +189,56 @@ def get_dsn(dsn: str | None = None) -> str:
     return dsn
 
 
+# Admin / shared launch principals that MUST NOT back a runtime fleet DSN. The mapped
+# topology gives every node a unique login; ``postgres`` is the ambiguous local admin and
+# ``fleet_worker`` is the retired shared role.
+FORBIDDEN_LAUNCH_PRINCIPALS = frozenset({"postgres", "fleet_worker"})
+
+
+def assert_mapped_principal(dsn: str) -> str:
+    """Reuse the hardened conninfo parser to reject admin/shared launch principals.
+
+    This is the single, hardened principal parser -- there is deliberately no second,
+    weaker regex parser. It rejects the postgres admin / shared fleet_worker principal
+    selected via a libpq keyword DSN, a PostgreSQL URL DSN (including percent-encoded and
+    query-string identities), mixed case / quoted spellings, the ambient PGUSER form, and
+    the indirect service / passfile forms that hide the principal. It returns the
+    validated principal and never logs the DSN value.
+    """
+    ambient_user = os.environ.get("PGUSER")
+    if ambient_user and ambient_user.strip().lower() in FORBIDDEN_LAUNCH_PRINCIPALS:
+        raise RuntimeError(
+            "Ambient PGUSER selects an admin/shared fleet principal; connection details were not logged."
+        )
+
+    try:
+        params = conninfo_to_dict(dsn)
+    except (psycopg.Error, ValueError) as exc:
+        raise RuntimeError("Invalid fleet Postgres DSN; connection details were not logged.") from exc
+
+    indirect = sorted(_INDIRECT_CONNINFO_OPTIONS.intersection(params))
+    if indirect:
+        names = ", ".join(indirect)
+        raise RuntimeError(
+            f"Fleet Postgres DSN indirection hides the launch principal: {names}; "
+            "connection details were not logged."
+        )
+
+    user = params.get("user")
+    if not user or not user.strip():
+        # No explicit user -> libpq would fall back to PGUSER / the OS user, which is not a
+        # verified unique mapped principal. Fail closed rather than guess.
+        raise RuntimeError(
+            "Fleet Postgres DSN does not name an explicit mapped principal; connection details were not logged."
+        )
+    if user.strip().lower() in FORBIDDEN_LAUNCH_PRINCIPALS:
+        raise RuntimeError(
+            "Fleet Postgres DSN selects a forbidden admin/shared principal (postgres/fleet_worker); "
+            "connection details were not logged."
+        )
+    return user
+
+
 def connect(dsn: str | None = None, *, autocommit: bool = False) -> psycopg.Connection:
     """Open a hardened dict-row psycopg connection to the fleet Postgres."""
     return psycopg.connect(_prepare_conninfo(get_dsn(dsn)), autocommit=autocommit, row_factory=dict_row)

@@ -36,7 +36,7 @@ def main(argv=None) -> int:
         prog="applypilot-fleet-autotriage",
         description="Autonomous bounded LLM/rule triage for recent apply failures.",
     )
-    p.add_argument("--dsn", default=None, help="Postgres DSN (default: DATABASE_URL / APPLYPILOT_FLEET_DSN env).")
+    p.add_argument("--dsn", default=None, help="explicit mapped fleet DSN (default: FLEET_PG_DSN env; no generic fallback).")
     p.add_argument("--brain-path", default=None, help="SQLite brain path for confirming-email vetoes.")
     p.add_argument("--limit", type=int, default=50, help="Max recent failure rows to triage per pass.")
     p.add_argument("--window-minutes", type=int, default=1440, help="Failure lookback window.")

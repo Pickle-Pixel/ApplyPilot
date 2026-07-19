@@ -204,8 +204,10 @@ def _sanitize_status_line(line: object, *dsns: str, conninfo_to_dict=None) -> st
 
 label = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("APPLYPILOT_FLEET_LABEL", "home")
 role = sys.argv[2] if len(sys.argv) > 2 else "fleet"
-fleet_dsn = (os.environ.get("FLEET_PG_DSN") or "").strip()
-applypilot_fleet_dsn = (os.environ.get("APPLYPILOT_FLEET_DSN") or "").strip()
+fleet_dsn = os.environ.get("FLEET_PG_DSN", "").strip()
+# APPLYPILOT_FLEET_DSN is NOT a connection source anymore (no generic fallback); it is read
+# only so a stale value can be redacted from diagnostics and rejected if it disagrees.
+applypilot_fleet_dsn = os.environ.get("APPLYPILOT_FLEET_DSN", "").strip()
 conninfo_parser = None
 
 try:
@@ -228,9 +230,9 @@ try:
         )
     ):
         raise RuntimeError("Inconsistent fleet Postgres DSN references")
-    dsn = fleet_dsn or applypilot_fleet_dsn
+    dsn = fleet_dsn
     if not dsn:
-        raise RuntimeError("No fleet Postgres DSN: set FLEET_PG_DSN or APPLYPILOT_FLEET_DSN")
+        raise RuntimeError("No fleet Postgres DSN: set FLEET_PG_DSN")
     conn = pgqueue.connect(dsn)
     conn.read_only = True
     print(

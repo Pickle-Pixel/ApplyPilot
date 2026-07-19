@@ -2216,7 +2216,7 @@ function Get-ControlEvidence {
   $code = @'
 import json, os
 import psycopg
-dsn = os.environ.get("FLEET_PG_DSN") or os.environ.get("APPLYPILOT_FLEET_DSN")
+dsn = os.environ.get("FLEET_PG_DSN")
 if not dsn:
     raise RuntimeError("fleet DSN unavailable")
 with psycopg.connect(dsn) as conn:

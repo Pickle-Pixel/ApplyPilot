@@ -100,12 +100,40 @@ def test_scanner_flags_every_forbidden_principal_form():
         "dsn_user_shared_fleet_worker",
         "pguser_admin_or_shared",
         "url_admin_or_shared",
+        "url_encoded_admin_or_shared",  # percent-encoded URL identity (e.g. %70ostgres)
         "role_switch_to_admin_or_shared",
         "set_role_call_admin_or_shared",
+        "generic_dsn_env_fallback",  # DATABASE_URL / APPLYPILOT_FLEET_DSN fallback source
+        "generic_dsn_help_default",  # help text advertising the retired generic fallbacks
     } <= patterns
-    # Every non-comment sentinel line is flagged (9 sentinel lines below the header comment).
+    # EVERY non-comment sentinel line is flagged -- no forbidden form silently slips through.
+    non_comment_lines = [
+        i for i, line in enumerate(text.splitlines(), start=1) if line.strip() and not line.startswith("#")
+    ]
     flagged_lines = {f.line for f in findings}
-    assert len(flagged_lines) >= 8
+    assert set(non_comment_lines) == flagged_lines, sorted(set(non_comment_lines) - flagged_lines)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # mixed case / quoted / spaced keyword principals
+        'user = "POSTGRES"',
+        "user='fleet_worker'",
+        # URL DSN, query-string identity, and percent-encoded identity
+        "postgresql://postgres:pw@h/db",
+        "postgresql://h/db?user=fleet_worker",
+        "postgres://%70ostgres:pw@10.0.0.1/db",
+        "postgresql://%66leet_worker:pw@10.0.0.1/db",
+        # ambient PGUSER, incl. $env: mixed case
+        "$env:PGUSER = 'Postgres'",
+        # generic DSN fallback source + help advertisement
+        'dsn = os.environ.get("FLEET_PG_DSN") or os.environ.get("APPLYPILOT_FLEET_DSN")',
+        'help="default: DATABASE_URL / APPLYPILOT_FLEET_DSN env"',
+    ],
+)
+def test_scanner_flags_extended_forbidden_forms(line):
+    assert scanner.scan_text(line), line
 
 
 @pytest.mark.parametrize(
@@ -116,12 +144,44 @@ def test_scanner_flags_every_forbidden_principal_form():
         'user = os.environ["APPLYPILOT_SETUP_ROLE"]  # compared, never selected',
         "  PGUSER  # forbidden ambient variable name in a reject-list",
         'if params.get("user") != expected_role: raise SystemExit(1)',
+        # PowerShell param named $PgUser (a script parameter, NOT the ambient libpq PGUSER var).
+        '[string]$PgUser = "postgres"',
+        # Redaction/scrub read of the retired alias -- the VALUE is passed to a sanitizer, not
+        # used as a connection source (no `or`/`default=` fallback idiom).
+        '_sanitize(text, os.environ.get("APPLYPILOT_FLEET_DSN", ""))',
+        # A reject-list membership tuple naming the forbidden ambient vars.
+        'FORBIDDEN_DATABASE_ENV_VARS = ("APPLYPILOT_FLEET_DSN", "DATABASE_URL")',
+        # Aliasing the validated FLEET_PG_DSN under the legacy name (a write, not a source).
+        "$env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN",
     ],
 )
 def test_scanner_ignores_legitimate_rejection_guards(line):
-    # These reference the admin/shared role names to REJECT them; none SELECTS the principal
-    # via a `user=`/`PGUSER=`/URL/role-switch form, so none may be flagged.
+    # These reference the admin/shared role names to REJECT them, redact them, or alias the
+    # validated DSN; none SELECTS the principal via a `user=`/`PGUSER=`/URL/role-switch form
+    # or sources a DSN from the generic fallback, so none may be flagged.
     assert scanner.scan_text(line) == []
+
+
+def test_discovery_includes_python_dash_m_targets_and_their_imports():
+    surfaces = set(scanner.discover_launch_surfaces(REPO))
+    # `python -m applypilot.fleet.console_app` (run-fleet-console.ps1) and
+    # `python -m applypilot.fleet.apply_home_main` (run-fleet-crash-liveness.ps1) are reached
+    # via -m, not a console entry, yet are audited -- with no hand-maintained module allowlist.
+    assert "src/applypilot/fleet/console_app.py" in surfaces
+    assert "src/applypilot/fleet/apply_home_main.py" in surfaces
+
+
+def test_python_dash_m_module_extraction_is_deterministic_and_first_party_only():
+    text = (
+        "& $py -m applypilot.fleet.autotriage_main @margs\n"
+        "python -m applypilot.cli supervise-apply\n"
+        "python -m pytest tests/\n"  # third-party -m target must be ignored
+    )
+    modules = scanner._python_dash_m_modules(text)
+    assert modules == [
+        "src/applypilot/fleet/autotriage_main.py",
+        "src/applypilot/cli.py",
+    ]
 
 
 def test_sentinel_fixture_is_rejected_but_not_discovered():
@@ -219,3 +279,41 @@ def test_setup_shell_installers_are_fail_closed_on_missing_dsn():
         assert "FLEET_PG_DSN is not set" in text
         assert "user=fleet_worker" not in text
         assert "user=postgres" not in text
+
+
+# --------------------------------------------------------------------------------------------
+# Adversarial: generated wrappers / task actions / shortcuts NEVER embed the operator DSN.
+# --------------------------------------------------------------------------------------------
+def test_otp_startup_registration_never_embeds_the_dsn_and_fails_closed():
+    text = (REPO / "register-otp-responder-startup.ps1").read_text(encoding="utf-8")
+    # The generated task action + startup shortcut arguments must not carry the secret DSN.
+    assert "-Dsn `\"$Dsn`\"" not in text
+    assert "-Dsn $Dsn" not in text
+    assert "$Dsn" not in text  # the whole -Dsn parameter is gone; nothing to embed
+    # Both generated actions launch the responder with -Supervise only (runtime env channel).
+    assert text.count('-File `"$Launcher`" -Supervise') == 2
+    # Fail closed before registration if the secure channel (FLEET_PG_DSN) is absent.
+    assert "if (-not $env:FLEET_PG_DSN)" in text
+    assert "is never embedded in the task/shortcut" in text
+
+
+@pytest.mark.parametrize(
+    "rel,embed_tokens",
+    [
+        ("register-fleet-tasks.ps1", ["'$effectiveDsn'"]),
+        ("register-apply-cycle.ps1", ["'$effectiveDsn'"]),
+        ("fleet-daily-unguard.ps1", ["'$qDsn'", "-Dsn '$qDsn'"]),
+    ],
+)
+def test_generated_task_wrappers_never_embed_the_dsn_literal(rel, embed_tokens):
+    text = (REPO / rel).read_text(encoding="utf-8")
+    # A generated wrapper here-string that sets FLEET_PG_DSN to an embedded operator DSN literal
+    # (fragile single-quote quoting that an apostrophe/newline/`;` payload could break or inject,
+    # and a persistent secret copy on disk) must not exist. The wrapper references the inherited
+    # FLEET_PG_DSN runtime channel instead.
+    assert "$env:FLEET_PG_DSN = '$effectiveDsn'" not in text
+    assert "$env:APPLYPILOT_FLEET_DSN = '$effectiveDsn'" not in text
+    for token in embed_tokens:
+        assert token not in text, token
+    # The de-embedded wrapper documents the inherited channel.
+    assert "inherited from the persisted User environment" in text

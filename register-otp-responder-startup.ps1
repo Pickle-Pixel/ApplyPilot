@@ -3,7 +3,6 @@
 # script falls back to the current user's Startup folder when registration is
 # denied by local policy/elevation.
 param(
-  [Parameter(Mandatory = $true)][string]$Dsn,
   [switch]$NoStart
 )
 
@@ -11,9 +10,16 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Launcher = Join-Path $ProjectRoot "run-otp-responder.ps1"
 
-# Fail closed on an admin/shared principal before registering any startup task/shortcut.
-if ($Dsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
-  throw "register-otp-responder-startup: -Dsn selects an admin/shared principal. Supply an explicit mapped fleet DSN."
+# The registered task/shortcut must NEVER embed the secret DSN in its arguments (a scheduled
+# task action is world-readable via schtasks/WMI and a .lnk persists on disk). Instead the
+# generated action references the approved runtime secret channel: run-otp-responder.ps1 reads
+# FLEET_PG_DSN from the persisted User environment at logon. Fail closed here if that channel
+# is not integrated, rather than persisting/copying the DSN into the action.
+if (-not $env:FLEET_PG_DSN) {
+  throw "register-otp-responder-startup: FLEET_PG_DSN is not set. Persist an explicit mapped fleet DSN in the User environment (the secure channel the OTP task reads at logon) before registering; the DSN is never embedded in the task/shortcut."
+}
+if ($env:FLEET_PG_DSN -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {
+  throw "register-otp-responder-startup: FLEET_PG_DSN selects an admin/shared principal. Supply an explicit mapped fleet DSN."
 }
 $TaskName = "ApplyPilotFleet-OtpResponder"
 $ShortcutName = "ApplyPilotFleet-OtpResponder.lnk"
@@ -31,7 +37,7 @@ function Install-StartupShortcut {
   $shell = New-Object -ComObject WScript.Shell
   $shortcut = $shell.CreateShortcut($shortcutPath)
   $shortcut.TargetPath = "powershell.exe"
-  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`" -Dsn `"$Dsn`" -Supervise"
+  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`" -Supervise"
   $shortcut.WorkingDirectory = $ProjectRoot
   $shortcut.WindowStyle = 7
   $shortcut.Description = "ApplyPilot home OTP responder"
@@ -40,7 +46,7 @@ function Install-StartupShortcut {
 }
 
 function Register-OtpScheduledTask {
-  $argument = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`" -Dsn `"$Dsn`" -Supervise"
+  $argument = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`" -Supervise"
   $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argument -WorkingDirectory $ProjectRoot
   $trigger = New-ScheduledTaskTrigger -AtLogOn
   $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
@@ -64,6 +70,7 @@ try {
   $shortcutPath = Install-StartupShortcut
   Write-Host "[otp-startup] installed Startup shortcut $shortcutPath"
   if (-not $NoStart) {
-    & $Launcher -Dsn $Dsn
+    # No -Dsn: the launcher reads the mapped DSN from the FLEET_PG_DSN environment channel.
+    & $Launcher
   }
 }

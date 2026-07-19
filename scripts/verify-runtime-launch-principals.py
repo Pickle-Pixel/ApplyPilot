@@ -37,6 +37,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,12 +80,16 @@ LAUNCH_SUFFIXES = frozenset({".ps1", ".py", ".sh", ".bat"})
 # REJECTION guards such as ``$Role -in @("postgres", "fleet_worker")`` or
 # ``params.get("user") in {"postgres", "fleet_worker"}`` are NOT flagged.
 FORBIDDEN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
-    # user=postgres in a libpq keyword/value DSN (the P0: ambiguous local admin).
-    ("dsn_user_postgres", re.compile(r"\buser\s*=\s*postgres\b", re.IGNORECASE)),
+    # user=postgres in a libpq keyword/value DSN (the P0: ambiguous local admin). The optional
+    # quote + free spacing catch user='postgres', user = postgres, and URL ?user=postgres query
+    # identities; re.IGNORECASE catches POSTGRES / Postgres mixed-case spellings.
+    ("dsn_user_postgres", re.compile(r"\buser\s*=\s*['\"]?postgres\b", re.IGNORECASE)),
     # user=fleet_worker: the shared worker role, not a unique mapped per-node login.
-    ("dsn_user_shared_fleet_worker", re.compile(r"\buser\s*=\s*fleet_worker\b", re.IGNORECASE)),
-    # PGUSER=postgres / PGUSER=fleet_worker: libpq session env selecting admin/shared.
-    ("pguser_admin_or_shared", re.compile(r"\bPGUSER\s*=\s*(?:postgres|fleet_worker)\b", re.IGNORECASE)),
+    ("dsn_user_shared_fleet_worker", re.compile(r"\buser\s*=\s*['\"]?fleet_worker\b", re.IGNORECASE)),
+    # PGUSER=postgres / $env:PGUSER='fleet_worker': the libpq session env selecting admin/shared.
+    # The (?<!\$) lookbehind skips PowerShell params spelled like $PgUser (a script parameter,
+    # not the ambient libpq variable) while still catching $env:PGUSER / export PGUSER / PGUSER=.
+    ("pguser_admin_or_shared", re.compile(r"(?<!\$)\bPGUSER\s*=\s*['\"]?(?:postgres|fleet_worker)\b", re.IGNORECASE)),
     # postgres://postgres@ or postgresql://fleet_worker:... URL DSN principals.
     ("url_admin_or_shared", re.compile(r"\bpostgres(?:ql)?://(?:postgres|fleet_worker)[:@]", re.IGNORECASE)),
     # SET ROLE / SET SESSION AUTHORIZATION postgres|fleet_worker: role-switching fallback.
@@ -94,7 +99,30 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ),
     # set_role("postgres") style helper switch.
     ("set_role_call_admin_or_shared", re.compile(r"set_role\s*\(\s*['\"](?:postgres|fleet_worker)\b", re.IGNORECASE)),
+    # Generic DSN fallback SOURCE: sourcing a fleet DSN from DATABASE_URL / APPLYPILOT_FLEET_DSN
+    # (never FLEET_PG_DSN) is a live-worker fallback that bypasses the mapped-role topology.
+    # It matches the fallback IDIOM only -- ``X or environ.get("APPLYPILOT_FLEET_DSN")``,
+    # ``environ.get("DATABASE_URL") or Y``, and ``default=... environ.get(...)`` -- so a
+    # redaction/scrub read (``_sanitize(..., environ.get("APPLYPILOT_FLEET_DSN", ""))``) or a
+    # reject-list membership test (``("APPLYPILOT_FLEET_DSN", ...)``) is NOT flagged.
+    (
+        "generic_dsn_env_fallback",
+        re.compile(
+            r"\bor\s+(?:os\.)?(?:environ\.get|getenv)\(\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"]"
+            r"|(?:environ\.get|getenv)\(\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"][^)\n]*\)\s*or\b"
+            r"|default\s*=\s*[^#\n]*(?:environ\.get|getenv)\(\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"]"
+        ),
+    ),
+    # Help/usage text advertising the retired generic DSN fallbacks as a default source.
+    (
+        "generic_dsn_help_default",
+        re.compile(r"(?i)default[^\n]*\b(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\b"),
+    ),
 )
+
+# postgres URL DSN whose userinfo we percent-decode before checking (URI-encoded identities
+# such as postgresql://%70ostgres:pw@host/db that the literal patterns above cannot see).
+_URL_USERINFO_RE = re.compile(r"\bpostgres(?:ql)?://([^/@\s\"']+)@", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -106,6 +134,20 @@ class Finding:
     pattern: str
 
 
+def _url_encoded_admin_principal(line: str) -> bool:
+    """True if a postgres URL DSN on ``line`` has a percent-decoded admin/shared userinfo."""
+    for match in _URL_USERINFO_RE.finditer(line):
+        userinfo = match.group(1)
+        principal = userinfo.split(":", 1)[0]
+        try:
+            decoded = urllib.parse.unquote(principal)
+        except Exception:  # pragma: no cover - unquote never raises on str, defensive only
+            decoded = principal
+        if decoded.strip().lower() in {"postgres", "fleet_worker"}:
+            return True
+    return False
+
+
 def scan_text(text: str) -> list[Finding]:
     """Return every forbidden-principal match in ``text`` (path filled by caller)."""
     findings: list[Finding] = []
@@ -113,6 +155,8 @@ def scan_text(text: str) -> list[Finding]:
         for name, pattern in FORBIDDEN_PATTERNS:
             if pattern.search(line):
                 findings.append(Finding(file="", line=lineno, pattern=name))
+        if _url_encoded_admin_principal(line):
+            findings.append(Finding(file="", line=lineno, pattern="url_encoded_admin_or_shared"))
     return findings
 
 
@@ -209,6 +253,32 @@ def _first_party_imports(repo: Path, relpath: str) -> list[str]:
     return found
 
 
+# ``python -m applypilot.fleet.<module>`` invoked from a launch surface. Deterministic and
+# allowlist-free: the module target is read straight out of the launcher text (PowerShell,
+# shell, or Python), so a reachable live helper started via -m is audited like a console entry.
+_DASH_M_MODULE_RE = re.compile(r"-m\s+[\"']?(applypilot(?:\.\w+)+)")
+
+
+def _python_dash_m_modules(text: str) -> list[str]:
+    """First-party modules launched via ``python -m <module>`` from a launcher's text."""
+    modules: list[str] = []
+    for match in _DASH_M_MODULE_RE.finditer(text):
+        rel = _module_to_relpath(match.group(1))
+        if rel is not None:
+            modules.append(rel)
+    return modules
+
+
+def _add_module_and_imports(repo: Path, module_rel: str, tracked: set[str], surface: set[str]) -> None:
+    """Add a first-party module file plus its one-hop first-party imports to the surface."""
+    if module_rel not in tracked or module_rel in SELF_EXCLUDED:
+        return
+    surface.add(module_rel)
+    for imported in _first_party_imports(repo, module_rel):
+        if imported in tracked and imported not in SELF_EXCLUDED:
+            surface.add(imported)
+
+
 def discover_launch_surfaces(repo: Path) -> list[str]:
     """Return the sorted, de-duplicated repo-relative launch-surface file list."""
     tracked = set(_git_tracked_files(repo))
@@ -223,11 +293,18 @@ def discover_launch_surfaces(repo: Path) -> list[str]:
     # Installed/direct launch wrappers: console-script modules + the first-party
     # modules they directly import (reporting/console helpers reached via the CLI).
     for module_rel in _console_entry_modules(repo):
-        if module_rel in tracked and module_rel not in SELF_EXCLUDED:
-            surface.add(module_rel)
-            for imported in _first_party_imports(repo, module_rel):
-                if imported in tracked and imported not in SELF_EXCLUDED:
-                    surface.add(imported)
+        _add_module_and_imports(repo, module_rel, tracked, surface)
+
+    # ``python -m <module>`` targets reached from the path-pattern launchers discovered above
+    # (root/scripts launchers, deploy templates). A live helper started via -m -- e.g.
+    # ``python -m applypilot.fleet.autotriage_main`` -- is audited even without a console entry.
+    for relpath in sorted(surface):
+        try:
+            text = (repo / relpath).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for module_rel in _python_dash_m_modules(text):
+            _add_module_and_imports(repo, module_rel, tracked, surface)
 
     return sorted(surface)
 

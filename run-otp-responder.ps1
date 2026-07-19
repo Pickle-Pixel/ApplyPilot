@@ -2,7 +2,10 @@
 # Starts the home-box OTP responder with quoting that survives Windows process
 # launch boundaries. Use -Supervise for logon/startup persistence.
 param(
-  [Parameter(Mandatory = $true)][string]$Dsn,
+  # Default to the approved runtime secret channel (FLEET_PG_DSN in the current session /
+  # persisted User environment). The registered startup task/shortcut passes NO -Dsn, so the
+  # secret is never embedded in a generated action or shortcut file.
+  [string]$Dsn = $env:FLEET_PG_DSN,
   [string]$MachineOwner = "home",
   [switch]$Supervise,
   [int]$RestartDelaySeconds = 10
@@ -12,6 +15,10 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
 
+# Fail closed if the secure channel is absent: never start without an explicit mapped fleet DSN.
+if (-not $Dsn) {
+  throw "run-otp-responder: FLEET_PG_DSN is not set. Provide an explicit mapped fleet DSN via the environment or -Dsn (never the postgres admin or the shared fleet_worker role)."
+}
 # Fail closed on an admin/shared principal: the OTP responder must run under an explicit
 # mapped fleet DSN, never the postgres admin or the shared fleet_worker role.
 if ($Dsn -match '(?i)\buser\s*=\s*(?:postgres|fleet_worker)\b') {

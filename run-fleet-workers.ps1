@@ -32,6 +32,21 @@ if (-not $env:FLEET_PG_DSN) {
 }
 $env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN
 
+# REAL mapped-principal validation BEFORE any side effect (stopping/spawning workers). This
+# reuses the single hardened conninfo parser (applypilot.fleet.launch_guard ->
+# pgqueue.assert_mapped_principal) rather than a weaker inline regex, so a forbidden principal
+# hidden in a URL / percent-encoded / PGUSER / service form is caught. Fail closed if the
+# validator cannot run.
+$launchGuardPy = @((Join-Path $ProjectRoot ".conda-env\python.exe"), (Join-Path $ProjectRoot ".venv\Scripts\python.exe")) |
+  Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $launchGuardPy) {
+  throw "No project Python (.conda-env/.venv) found to validate the mapped fleet principal; refusing to start workers for label '$Label'."
+}
+& $launchGuardPy -m applypilot.fleet.launch_guard
+if ($LASTEXITCODE -ne 0) {
+  throw "FLEET_PG_DSN failed mapped-principal validation for worker label '$Label' (admin/shared/ambiguous principal). Refusing to start workers."
+}
+
 # 1. Clean slate: stop any apply workers already running (they may be stacked on one slot).
 $slotPattern = "--chrome-slot\s+(" + (($StartSlot..($StartSlot + $Count - 1)) -join "|") + ")(\s|$)"
 $existing = Get-CimInstance Win32_Process -Filter "Name='applypilot-fleet-apply.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue |

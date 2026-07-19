@@ -8,7 +8,7 @@ from the Postgres they already talk to -- so no per-machine .env copy is needed.
   put <name> <value>  -> stores it (use the --stdin form to keep it off the cmdline)
   put <name> --stdin  -> reads the value from stdin (never appears in process args)
 
-Reads FLEET_PG_DSN / APPLYPILOT_FLEET_DSN / DATABASE_URL from the env."""
+Reads FLEET_PG_DSN from the env (an explicit mapped fleet DSN; no generic fallback)."""
 import sys
 
 from applypilot.apply import pgqueue

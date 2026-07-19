@@ -4,7 +4,7 @@
 # form is rejected. It lives under tests/fixtures/ with a .txt suffix so the scanner never
 # discovers it as a production launch surface (tests/ is excluded and .txt is not a launch
 # suffix). If any of these strings ever reappears in a real discovered launcher, the scanner
-# fails. Each line below MUST be flagged by scanner.scan_text.
+# fails. Each non-comment line below MUST be flagged by scanner.scan_text.
 $Dsn = "host=localhost port=5432 dbname=applypilot_fleet user=postgres connect_timeout=5"
 PGUSER=postgres
 export PGUSER=fleet_worker
@@ -14,3 +14,10 @@ CONN=postgres://fleet_worker:example@10.0.0.1:5432/applypilot_fleet
 SET ROLE postgres;
 SET SESSION AUTHORIZATION fleet_worker;
 conn.execute(set_role("postgres"))
+QUOTED="host=h dbname=applypilot_fleet user='postgres' password=x"
+MIXED="host=h dbname=applypilot_fleet user = POSTGRES password=x"
+QUERY=postgresql://h:5432/applypilot_fleet?user=fleet_worker&sslmode=require
+ENCODED=postgresql://%70ostgres:example@10.0.0.1:5432/applypilot_fleet
+$env:PGUSER = 'FLEET_WORKER'
+dsn = os.environ.get("FLEET_PG_DSN") or os.environ.get("APPLYPILOT_FLEET_DSN")
+p.add_argument("--dsn", help="Postgres DSN (default: DATABASE_URL / APPLYPILOT_FLEET_DSN env).")

@@ -39,6 +39,21 @@ def test_remote_multi_worker_launcher_requires_explicit_fleet_dsn():
     assert "host=localhost" not in script
 
 
+def test_multi_worker_launcher_runs_real_principal_validation_before_side_effects():
+    script = Path("run-fleet-workers.ps1").read_text(encoding="utf-8")
+
+    # Defect 6: the launcher must invoke REAL mapped-principal validation (the reusable
+    # hardened parser), not merely check presence, and it must do so BEFORE any side effect
+    # (stopping existing workers / Start-Process spawning new ones).
+    assert "applypilot.fleet.launch_guard" in script
+    guard = script.index("applypilot.fleet.launch_guard")
+    assert guard < script.index("Stop-Process")
+    assert guard < script.index("Start-Process")
+    # Fail closed if the validator rejects or cannot run -- no weaker second parser.
+    assert "failed mapped-principal validation" in script
+    assert "Refusing to start workers" in script
+
+
 def test_remote_fleet_agent_requires_explicit_fleet_dsn():
     script = Path("fleet-agent.ps1").read_text(encoding="utf-8")
 

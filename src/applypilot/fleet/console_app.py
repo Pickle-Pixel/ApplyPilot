@@ -362,7 +362,7 @@ def _agent_parts(value: Any) -> list[str]:
 
 
 def _agents_state() -> dict[str, Any]:
-    conn = pgqueue.connect()  # reads APPLYPILOT_FLEET_DSN / DATABASE_URL
+    conn = pgqueue.connect()  # reads FLEET_PG_DSN only (no generic fallback)
     try:
         apply_placeholders = ", ".join(["%s"] * len(_APPLY_LLM_TASKS))
         with conn.cursor() as cur:
@@ -3009,7 +3009,7 @@ def _liveness_summary(conn) -> dict:
 def build_status() -> dict:
     """Assemble the full /api/status object. Opens its OWN short-lived connections
     (each helper rolls back and we always close) so no connection is ever leaked."""
-    conn = pgqueue.connect()  # reads APPLYPILOT_FLEET_DSN / DATABASE_URL
+    conn = pgqueue.connect()  # reads FLEET_PG_DSN only (no generic fallback)
     try:
         gate, queue, apply_state = _gate_and_queue(conn)
         try:
@@ -3328,7 +3328,7 @@ def _challenges_data(conn) -> dict:
 
 def build_challenges() -> dict:
     """Open a short-lived connection, build the /api/challenges payload, always close."""
-    conn = pgqueue.connect()  # reads APPLYPILOT_FLEET_DSN / DATABASE_URL
+    conn = pgqueue.connect()  # reads FLEET_PG_DSN only (no generic fallback)
     try:
         return _challenges_data(conn)
     finally:

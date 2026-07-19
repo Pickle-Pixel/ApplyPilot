@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dsn",
         default=None,
-        help="Fleet owner Postgres DSN (default: FLEET_PG_DSN or APPLYPILOT_FLEET_DSN).",
+        help="explicit mapped fleet owner/migrator Postgres DSN (default: FLEET_PG_DSN; no generic fallback).",
     )
     args = parser.parse_args(argv)
 

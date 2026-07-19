@@ -28,7 +28,7 @@ def _with_conn(fn: Callable[[Any], dict]) -> dict:
     """Open a short-lived dict_row connection from FLEET_PG_DSN, run fn(conn), and
     return its dict result (or a structured {"error": ...}). Rolls back (read-only
     discipline; no-op after an action's own commit) and closes in finally. Reads the
-    DSN directly -- never connect() with no arg (that falls back to DATABASE_URL)."""
+    DSN directly from FLEET_PG_DSN (connect() has no generic fallback)."""
     dsn = os.environ.get("FLEET_PG_DSN")
     if not dsn:
         return {"error": "FLEET_PG_DSN is not set; set it in the Codex MCP env block"}

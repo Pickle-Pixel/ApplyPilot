@@ -136,12 +136,12 @@ if ($RegisterTask) {
   $scriptPath = $MyInvocation.MyCommand.Path
   $wrapperPath = Join-Path $wrapperDir "applypilot-daily-unguard-wrapper.ps1"
   $wrapperLog = Join-Path $logs "fleet-daily-unguard.log"
-  $qDsn = $effectiveDsn.Replace("'", "''")
   $qReason = $Reason.Replace("'", "''")
 @"
+# FLEET_PG_DSN is inherited from the persisted User environment; the secret DSN is never
+# embedded in this generated wrapper. The daily task reads it from the runtime channel.
 Set-Location '$repo'
-`$env:FLEET_PG_DSN = '$qDsn'
-& '$scriptPath' -Dsn '$qDsn' -Reason '$qReason' -HeartbeatMinutes $HeartbeatMinutes *>> '$wrapperLog'
+& '$scriptPath' -Dsn `$env:FLEET_PG_DSN -Reason '$qReason' -HeartbeatMinutes $HeartbeatMinutes *>> '$wrapperLog'
 "@ | Set-Content -Encoding UTF8 -Path $wrapperPath
 
   $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$wrapperPath`""
