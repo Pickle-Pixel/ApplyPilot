@@ -3,14 +3,12 @@
 This module owns three responsibilities for the Runtime half of the Task 9A
 command-authority discovery/receipt:
 
-* Deterministic, repository-owned, structural discovery of the Python *process
-  entrypoints* that make up the Runtime command surface -- console scripts,
-  directly runnable modules, directly runnable stand-alone files, and the MCP
-  tool registry.  Discovery is not a filename allowlist: a surface is found
-  because of what it *is* (a ``[project.scripts]`` entry, an ``if __name__ ==
-  '__main__'`` guard, top-level side-effecting code, or an ``@mcp.tool()``
-  decorator), so any new/renamed/removed entrypoint changes the discovered set
-  and trips the fail-closed gates until the checked-in matrix is refreshed.
+* Deterministic, repository-owned, structural discovery of the complete Runtime
+  command surface: Python entrypoints and subcommands, MCP/HTTP registrations,
+  PowerShell/shell/batch launchers, scheduled tasks and generated wrappers,
+  containers, services, and launchd definitions. Discovery is structural rather
+  than a filename allowlist, so any new/renamed/removed entrypoint changes the
+  discovered set and trips the fail-closed gates until the matrix is refreshed.
 
 * Validation of the checked-in authority matrix against discovery: every
   discovered surface must have exactly one fully classified row and every row
@@ -46,32 +44,31 @@ from typing import Any, Iterable
 
 MATRIX_SCHEMA_VERSION = "applypilot-brain-command-authority-matrix-runtime-v1"
 RECEIPT_SCHEMA_VERSION = "applypilot-brain-command-authority-receipt-runtime-v1"
-RUNTIME_KIND = "python-process-entrypoints"
+RUNTIME_KIND = "complete-runtime-command-surface"
 REPOSITORY = "applypilot"
 
 INCLUDED_SURFACE_KINDS = (
-    "console-script",
-    "mcp-tool",
-    "python-file",
-    "python-module",
-)
-
-# Surface kinds that are real but deliberately out of this bounded shard.  They
-# are declared (never silently dropped) and deferred to sibling Runtime packets
-# and the cross-repo pairing.  The receipt disclaims any global authority so
-# this shard is never mistaken for a complete command-authority receipt.
-DEFERRED_SURFACE_KINDS = (
     "argparse-subcommand",
     "batch-launcher",
     "console-http-action",
+    "console-script",
     "container-entrypoint",
+    "generated-wrapper",
     "launchd-plist",
+    "mcp-tool",
     "powershell-launcher",
+    "powershell-module",
+    "python-file",
+    "python-module",
+    "scheduled-task-action",
     "scheduled-task-identity",
     "service-unit",
     "shell-launcher",
     "typer-subcommand",
 )
+
+# The complete Runtime inventory has no deferred structural kinds.
+DEFERRED_SURFACE_KINDS: tuple[str, ...] = ()
 
 READ_WRITE_CLASSES = (
     "admin-ddl",
@@ -89,11 +86,19 @@ OWNERS = (
     "release-engineer",
 )
 
-# Principals that a *live* writer may never run as.  Shared or admin principals
-# defeat least-privilege attribution, so any live writer bound to one fails
-# closed.
-SHARED_ADMIN_PRINCIPALS = frozenset(
-    {"shared", "admin", "postgres", "root", "superuser", "brain-admin"}
+AUTHORITY_SOURCES = ("none",)
+
+RESOURCE_VOCABULARY = (
+    "brain-postgres",
+    "brain-sqlite",
+    "employer-ats",
+    "fleet-postgres",
+    "fleet-roles",
+    "fleet-schema",
+    "mailbox",
+    "release-evidence",
+    "repository-source",
+    "secret-store",
 )
 
 PAUSE_SCOPE_VOCABULARY = (
@@ -124,6 +129,27 @@ MATRIX_TOP_LEVEL_KEYS = frozenset(
 
 SCOPE_KEYS = frozenset(
     {"includedSurfaceKinds", "deferredSurfaceKinds", "deferralReason"}
+)
+
+RECEIPT_KEYS = frozenset(
+    {
+        "schemaVersion",
+        "runtimeKind",
+        "repository",
+        "noGlobalAuthorityClaim",
+        "head",
+        "tree",
+        "matrixPath",
+        "discoveryDigest",
+        "matrixDigest",
+        "counts",
+        "cleanState",
+        "selfHash",
+    }
+)
+
+RECEIPT_COUNT_KEYS = frozenset(
+    {"discovered", "rows", "byKind", "liveWriters", "unclassified", "deferredKinds"}
 )
 
 # Structural fields are produced verbatim by discovery; the matrix must rebind
@@ -301,20 +327,6 @@ def _is_library_module(tree: ast.Module) -> bool:
     return True
 
 
-def _mcp_tool_decorated(node: ast.AST) -> bool:
-    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return False
-    for decorator in node.decorator_list:
-        target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        if isinstance(target, ast.Attribute) and target.attr == "tool":
-            value = target.value
-            if isinstance(value, ast.Name) and value.id == "mcp":
-                return True
-            if isinstance(value, ast.Attribute) and value.attr == "mcp":
-                return True
-    return False
-
-
 def _iter_python_files(directory: Path) -> Iterable[Path]:
     if not directory.is_dir():
         return
@@ -324,7 +336,7 @@ def _iter_python_files(directory: Path) -> Iterable[Path]:
 def _dotted_module(repo_root: Path, path: Path) -> str:
     relative = path.relative_to(repo_root / "src")
     parts = list(relative.parts)
-    if parts[-1] == "__init__.py":
+    if parts[-1] in {"__init__.py", "__main__.py"}:
         parts = parts[:-1]
     else:
         parts[-1] = parts[-1][: -len(".py")]
@@ -393,7 +405,7 @@ def _discover_python_modules(repo_root: Path) -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
     for path in _iter_python_files(repo_root / "src"):
         tree = ast.parse(_read_text(path))
-        if not _has_main_guard(tree):
+        if path.name != "__main__.py" and not _has_main_guard(tree):
             continue
         dotted = _dotted_module(repo_root, path)
         relative = path.relative_to(repo_root).as_posix()
@@ -414,12 +426,30 @@ def _discover_python_modules(repo_root: Path) -> list[dict[str, Any]]:
 
 def _discover_python_files(repo_root: Path) -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
-    candidates: list[Path] = sorted(
-        (p for p in repo_root.glob("*.py")), key=lambda p: p.as_posix()
-    )
-    candidates += sorted(
-        (p for p in (repo_root / "scripts").glob("*.py")),
-        key=lambda p: p.as_posix(),
+    excluded_parts = {
+        ".agent-run",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "docs",
+        "node_modules",
+        "tests",
+        "venv",
+    }
+    candidates = sorted(
+        (
+            path
+            for path in repo_root.rglob("*.py")
+            if not set(path.relative_to(repo_root).parts) & excluded_parts
+            and not path.is_relative_to(repo_root / "src")
+        ),
+        key=lambda path: path.relative_to(repo_root).as_posix(),
     )
     for path in candidates:
         tree = ast.parse(_read_text(path))
@@ -442,24 +472,391 @@ def _discover_python_files(repo_root: Path) -> list[dict[str, Any]]:
     return surfaces
 
 
+def _expr_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _expr_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return None
+
+
+def _constant_string(node: ast.AST | None) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _call_name(call: ast.Call) -> str | None:
+    return _expr_name(call.func)
+
+
+def _walk_statements(tree: ast.AST) -> Iterable[ast.AST]:
+    return sorted(ast.walk(tree), key=lambda node: (getattr(node, "lineno", -1), getattr(node, "col_offset", -1)))
+
+
 def _discover_mcp_tools(repo_root: Path) -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
     for path in _iter_python_files(repo_root / "src"):
         tree = ast.parse(_read_text(path))
         dotted = _dotted_module(repo_root, path)
         relative = path.relative_to(repo_root).as_posix()
-        for node in tree.body:
-            if not _mcp_tool_decorated(node):
+        server_names: set[str] = set()
+        for node in _walk_statements(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
                 continue
-            func = node.name
+            value = node.value
+            if not isinstance(value, ast.Call) or (_call_name(value) or "").split(".")[-1] != "FastMCP":
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            server_names.update(name for target in targets if (name := _expr_name(target)))
+        if not server_names:
+            continue
+
+        tools: dict[tuple[str, str], tuple[str, int]] = {}
+
+        def record_tool(registered_name: str, symbol: str, line: int) -> None:
+            key = (registered_name, symbol)
+            if key in tools:
+                raise AuthorityError(
+                    f"duplicate MCP tool registration in {relative}:{line}: "
+                    f"{registered_name}/{symbol}"
+                )
+            tools[key] = (symbol, line)
+
+        for node in _walk_statements(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for decorator in node.decorator_list:
+                    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+                    if not isinstance(target, ast.Attribute) or target.attr != "tool":
+                        continue
+                    server = _expr_name(target.value)
+                    if server not in server_names:
+                        continue
+                    registered_name = node.name
+                    if isinstance(decorator, ast.Call):
+                        explicit_name = decorator.args[0] if decorator.args else next(
+                            (keyword.value for keyword in decorator.keywords if keyword.arg == "name"),
+                            None,
+                        )
+                        if explicit_name is not None:
+                            registered_name = _constant_string(explicit_name) or ""
+                            if not registered_name:
+                                raise AuthorityError(
+                                    f"dynamic MCP tool name in {relative}:{node.lineno}"
+                                )
+                    record_tool(registered_name, node.name, node.lineno)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_tool":
+                server = _expr_name(node.func.value)
+                if server not in server_names:
+                    continue
+                callable_node = node.args[0] if node.args else next(
+                    (
+                        keyword.value
+                        for keyword in node.keywords
+                        if keyword.arg in {"fn", "func", "tool"}
+                    ),
+                    None,
+                )
+                symbol = _expr_name(callable_node) if callable_node is not None else None
+                if not symbol:
+                    raise AuthorityError(f"dynamic MCP add_tool callable in {relative}:{node.lineno}")
+                name_node = next(
+                    (keyword.value for keyword in node.keywords if keyword.arg == "name"),
+                    None,
+                )
+                registered_name = symbol.split(".")[-1]
+                if name_node is not None:
+                    registered_name = _constant_string(name_node) or ""
+                    if not registered_name:
+                        raise AuthorityError(f"dynamic MCP tool name in {relative}:{node.lineno}")
+                record_tool(registered_name, symbol, node.lineno)
+
+        for (registered_name, _symbol_key), (func, _line) in sorted(tools.items()):
             surfaces.append(
                 _surface(
-                    surface_id=f"mcp-tool:{dotted}:{func}",
+                    surface_id=f"mcp-tool:{dotted}:{registered_name}:{func}",
                     source_path=relative,
                     symbol=func,
                     surface_kind="mcp-tool",
-                    canonical_target=f"{dotted}:{func}",
-                    aliases=[f"mcp:{func}"],
+                    canonical_target=f"{dotted}:{func}#mcp:{registered_name}",
+                    aliases=[f"mcp:{registered_name}"],
+                    installed=False,
+                    direct_invocation=False,
+                )
+            )
+    return surfaces
+
+
+def _module_or_file_target(repo_root: Path, path: Path) -> str:
+    if path.is_relative_to(repo_root / "src"):
+        return _dotted_module(repo_root, path)
+    return path.relative_to(repo_root).as_posix()
+
+
+def _discover_typer_subcommands(repo_root: Path) -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    for path in _iter_python_files(repo_root / "src"):
+        tree = ast.parse(_read_text(path))
+        relative = path.relative_to(repo_root).as_posix()
+        typer_vars: set[str] = set()
+        for node in _walk_statements(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
+                continue
+            if (_call_name(node.value) or "").split(".")[-1] != "Typer":
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            typer_vars.update(name for target in targets if (name := _expr_name(target)))
+        if not typer_vars:
+            continue
+
+        parents: dict[str, tuple[str, str]] = {}
+        for node in _walk_statements(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "add_typer":
+                continue
+            parent = _expr_name(node.func.value)
+            child = _expr_name(node.args[0]) if node.args else None
+            if parent not in typer_vars or child not in typer_vars:
+                continue
+            name_node = next(
+                (keyword.value for keyword in node.keywords if keyword.arg == "name"),
+                None,
+            )
+            name = child.removesuffix("_app").replace("_", "-")
+            if name_node is not None:
+                name = _constant_string(name_node) or ""
+                if not name:
+                    raise AuthorityError(f"dynamic Typer group name in {relative}:{node.lineno}")
+            parents[child] = (parent, name)
+
+        def prefix(variable: str) -> list[str]:
+            result: list[str] = []
+            seen: set[str] = set()
+            while variable in parents and variable not in seen:
+                seen.add(variable)
+                variable, name = parents[variable]
+                result.append(name)
+            return list(reversed(result))
+
+        target_base = _module_or_file_target(repo_root, path)
+        for node in _walk_statements(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute) or decorator.func.attr != "command":
+                    continue
+                variable = _expr_name(decorator.func.value)
+                if variable not in typer_vars:
+                    continue
+                command = _constant_string(decorator.args[0]) if decorator.args else None
+                name_node = next(
+                    (keyword.value for keyword in decorator.keywords if keyword.arg == "name"),
+                    None,
+                )
+                if decorator.args and command is None:
+                    raise AuthorityError(f"dynamic Typer command name in {relative}:{node.lineno}")
+                if name_node is not None:
+                    command = _constant_string(name_node)
+                    if command is None:
+                        raise AuthorityError(
+                            f"dynamic Typer command name in {relative}:{node.lineno}"
+                        )
+                command = command or node.name.replace("_", "-")
+                full_command = " ".join([*prefix(variable), command])
+                surfaces.append(
+                    _surface(
+                        surface_id=f"typer-subcommand:{target_base}:{full_command}:{node.name}",
+                        source_path=relative,
+                        symbol=node.name,
+                        surface_kind="typer-subcommand",
+                        canonical_target=f"{target_base}:{node.name}#typer:{full_command}",
+                        aliases=[f"typer:{full_command}"],
+                        installed=False,
+                        direct_invocation=True,
+                    )
+                )
+    return surfaces
+
+
+def _discover_argparse_subcommands(repo_root: Path) -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    excluded = {".git", ".venv", "venv", "tests", "docs", "node_modules", "__pycache__"}
+    for path in sorted(repo_root.rglob("*.py"), key=lambda item: item.relative_to(repo_root).as_posix()):
+        if set(path.relative_to(repo_root).parts) & excluded:
+            continue
+        tree = ast.parse(_read_text(path))
+        relative = path.relative_to(repo_root).as_posix()
+        target_base = _module_or_file_target(repo_root, path)
+        commands: dict[str, int] = {}
+        for node in _walk_statements(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "add_parser" or not node.args:
+                continue
+            command = _constant_string(node.args[0])
+            if command is None:
+                raise AuthorityError(f"dynamic argparse subcommand in {relative}:{node.lineno}")
+            commands[command] = commands.get(command, 0) + 1
+            ordinal = commands[command]
+            suffix = f":{ordinal}" if ordinal > 1 else ""
+            surfaces.append(
+                _surface(
+                    surface_id=f"argparse-subcommand:{target_base}:{command}{suffix}",
+                    source_path=relative,
+                    symbol=command,
+                    surface_kind="argparse-subcommand",
+                    canonical_target=f"{target_base}#argparse:{command}{suffix}",
+                    aliases=[f"argparse:{target_base}:{command}{suffix}"],
+                    installed=False,
+                    direct_invocation=True,
+                )
+            )
+    return surfaces
+
+
+def _discover_http_actions(repo_root: Path) -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    methods = {"delete", "get", "patch", "post", "put"}
+    for path in _iter_python_files(repo_root / "src"):
+        tree = ast.parse(_read_text(path))
+        relative = path.relative_to(repo_root).as_posix()
+        dotted = _dotted_module(repo_root, path)
+        for node in _walk_statements(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+                    continue
+                method = decorator.func.attr.lower()
+                if method not in methods or not decorator.args:
+                    continue
+                route = _constant_string(decorator.args[0])
+                if route is None:
+                    raise AuthorityError(f"dynamic HTTP route in {relative}:{node.lineno}")
+                surfaces.append(
+                    _surface(
+                        surface_id=f"console-http-action:{dotted}:{method}:{route}:{node.name}",
+                        source_path=relative,
+                        symbol=node.name,
+                        surface_kind="console-http-action",
+                        canonical_target=f"{dotted}:{node.name}#http:{method}:{route}",
+                        aliases=[f"http:{method.upper()}:{route}"],
+                        installed=False,
+                        direct_invocation=False,
+                    )
+                )
+    return surfaces
+
+
+def _repo_files(repo_root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+    excluded = {".agent-run", ".git", ".venv", "venv", "node_modules", "__pycache__"}
+    return sorted(
+        (
+            path
+            for path in repo_root.rglob("*")
+            if path.is_file()
+            and path.name.lower().endswith(suffixes)
+            and not set(path.relative_to(repo_root).parts) & excluded
+        ),
+        key=lambda path: path.relative_to(repo_root).as_posix(),
+    )
+
+
+def _file_surface(repo_root: Path, path: Path, kind: str, launcher: str) -> dict[str, Any]:
+    relative = path.relative_to(repo_root).as_posix()
+    return _surface(
+        surface_id=f"{kind}:{relative}",
+        source_path=relative,
+        symbol="<file>",
+        surface_kind=kind,
+        canonical_target=relative,
+        aliases=[f"{launcher} {relative}"],
+        installed=False,
+        direct_invocation=kind != "powershell-module",
+    )
+
+
+def _discover_launchers(repo_root: Path) -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    for path in _repo_files(repo_root, (".ps1",)):
+        surfaces.append(_file_surface(repo_root, path, "powershell-launcher", "powershell -File"))
+    for path in _repo_files(repo_root, (".psm1",)):
+        surfaces.append(_file_surface(repo_root, path, "powershell-module", "Import-Module"))
+    for path in _repo_files(repo_root, (".sh",)):
+        surfaces.append(_file_surface(repo_root, path, "shell-launcher", "sh"))
+    for path in _repo_files(repo_root, (".bat", ".cmd")):
+        surfaces.append(_file_surface(repo_root, path, "batch-launcher", "cmd /c"))
+    for path in _repo_files(repo_root, (".service", ".timer")):
+        surfaces.append(_file_surface(repo_root, path, "service-unit", "service-unit"))
+    for path in _repo_files(repo_root, (".plist",)):
+        surfaces.append(_file_surface(repo_root, path, "launchd-plist", "launchctl load"))
+    return surfaces
+
+
+def _discover_scheduled_tasks_and_wrappers(repo_root: Path) -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    for path in _repo_files(repo_root, (".ps1", ".psm1")):
+        relative = path.relative_to(repo_root).as_posix()
+        text = _read_text(path)
+        registrations = list(re.finditer(r"(?im)^\s*(?!#).*\b(?:Register-ScheduledTask|schtasks(?:\.exe)?\s+/Create)\b", text))
+        actions = list(re.finditer(r"(?im)^\s*(?!#).*\bNew-ScheduledTaskAction\b", text))
+        for kind, matches in (("scheduled-task-identity", registrations), ("scheduled-task-action", actions)):
+            for ordinal, match in enumerate(matches, 1):
+                line = text.count("\n", 0, match.start()) + 1
+                surfaces.append(
+                    _surface(
+                        surface_id=f"{kind}:{relative}:{ordinal}",
+                        source_path=relative,
+                        symbol=f"line-{line}",
+                        surface_kind=kind,
+                        canonical_target=f"{relative}#{kind}:{ordinal}",
+                        aliases=[f"{kind}:{relative}:{ordinal}"],
+                        installed=False,
+                        direct_invocation=False,
+                    )
+                )
+        wrapper_markers = (
+            ".ps1" in text
+            and ("Set-Content" in text or "WriteAllText" in text)
+            and ("wrapper" in text.lower() or "_task-wrappers" in text)
+        )
+        if wrapper_markers:
+            surfaces.append(
+                _surface(
+                    surface_id=f"generated-wrapper:{relative}",
+                    source_path=relative,
+                    symbol="<generated-wrapper>",
+                    surface_kind="generated-wrapper",
+                    canonical_target=f"{relative}#generated-wrapper",
+                    aliases=[f"generated-wrapper:{relative}"],
+                    installed=False,
+                    direct_invocation=False,
+                )
+            )
+    return surfaces
+
+
+def _discover_container_entrypoints(repo_root: Path) -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    dockerfiles = sorted(
+        (
+            path
+            for path in repo_root.rglob("Dockerfile*")
+            if path.is_file() and ".git" not in path.relative_to(repo_root).parts
+        ),
+        key=lambda path: path.relative_to(repo_root).as_posix(),
+    )
+    for path in dockerfiles:
+        relative = path.relative_to(repo_root).as_posix()
+        instructions = [
+            (match.group(1).upper(), " ".join(match.group(2).split()))
+            for match in re.finditer(r"(?im)^\s*(ENTRYPOINT|CMD)\s+(.+)$", _read_text(path))
+        ]
+        for ordinal, (instruction, value) in enumerate(instructions, 1):
+            surfaces.append(
+                _surface(
+                    surface_id=f"container-entrypoint:{relative}:{instruction.lower()}:{ordinal}",
+                    source_path=relative,
+                    symbol=instruction,
+                    surface_kind="container-entrypoint",
+                    canonical_target=f"{relative}#{instruction.lower()}:{ordinal}:{value}",
+                    aliases=[f"container:{relative}:{instruction.lower()}:{ordinal}"],
                     installed=False,
                     direct_invocation=False,
                 )
@@ -480,6 +877,12 @@ def discover(repo_root: Path) -> list[dict[str, Any]]:
     surfaces += _discover_python_modules(repo_root)
     surfaces += _discover_python_files(repo_root)
     surfaces += _discover_mcp_tools(repo_root)
+    surfaces += _discover_typer_subcommands(repo_root)
+    surfaces += _discover_argparse_subcommands(repo_root)
+    surfaces += _discover_http_actions(repo_root)
+    surfaces += _discover_launchers(repo_root)
+    surfaces += _discover_scheduled_tasks_and_wrappers(repo_root)
+    surfaces += _discover_container_entrypoints(repo_root)
 
     seen: dict[str, dict[str, Any]] = {}
     for surface in surfaces:
@@ -567,6 +970,10 @@ def _validate_row_shape(row: Any, index: int) -> None:
     _require(row["surfaceKind"] in INCLUDED_SURFACE_KINDS, f"row {index} has an unknown surfaceKind")
     _require(row["readWriteClass"] in READ_WRITE_CLASSES, f"row {index} has an unknown readWriteClass")
     _require(row["owner"] in OWNERS, f"row {index} has an unknown owner")
+    _require(
+        row["authoritySource"] in AUTHORITY_SOURCES,
+        f"row {index} has an unknown authoritySource",
+    )
     for boolean_field in ("installed", "directInvocation", "employerMutation", "liveEligibility"):
         _require(isinstance(row[boolean_field], bool), f"row {index} {boolean_field} must be boolean")
     for string_field in (
@@ -582,8 +989,12 @@ def _validate_row_shape(row: Any, index: int) -> None:
             f"row {index} {string_field} must be a non-empty string",
         )
     _sorted_unique_str_list(row["aliases"], f"row {index} aliases")
-    _sorted_unique_str_list(row["resourcesRead"], f"row {index} resourcesRead")
-    _sorted_unique_str_list(row["resourcesWritten"], f"row {index} resourcesWritten")
+    resources_read = _sorted_unique_str_list(row["resourcesRead"], f"row {index} resourcesRead")
+    resources_written = _sorted_unique_str_list(row["resourcesWritten"], f"row {index} resourcesWritten")
+    _require(
+        all(resource in RESOURCE_VOCABULARY for resource in [*resources_read, *resources_written]),
+        f"row {index} resources must be drawn from the resource vocabulary",
+    )
     _sorted_unique_str_list(row["capabilities"], f"row {index} capabilities")
     pause_scopes = _sorted_unique_str_list(row["pauseScopes"], f"row {index} pauseScopes")
     _require(
@@ -596,50 +1007,68 @@ def _validate_authority_rules(row: dict[str, Any], index: int) -> None:
     live = row["liveEligibility"]
     write_class = row["readWriteClass"]
     is_writer = write_class in {"write", "admin-ddl", "control"}
-    if live:
-        # Live writers require the exact role/source/caps/scopes/resources and a
-        # specific fail-closed rule, and may never run as a shared/admin
-        # principal.
-        _require(
-            row["authoritySource"] != "none",
-            f"row {index} is live but declares no authoritySource",
-        )
-        _require(
-            row["owner"] not in SHARED_ADMIN_PRINCIPALS
-            and row["authoritySource"] not in SHARED_ADMIN_PRINCIPALS,
-            f"row {index} is a live writer bound to a shared/admin principal",
-        )
-        _require(row["capabilities"], f"row {index} is live but declares no capabilities")
-        _require(row["pauseScopes"], f"row {index} is live but declares no pauseScopes")
-        if is_writer:
-            _require(
-                row["resourcesWritten"],
-                f"row {index} is a live writer but writes no declared resource",
-            )
-        _require(
-            row["failClosedBehavior"].startswith("checkpoint")
-            or row["failClosedBehavior"].startswith("gated"),
-            f"row {index} is live but lacks a gated/checkpoint fail-closed rule",
-        )
-    else:
-        # This shard grants no live authority: default-deny is explicit.
-        _require(
-            row["authoritySource"] == "none",
-            f"row {index} is not live yet claims an authoritySource",
-        )
-        _require(
-            not row["capabilities"],
-            f"row {index} is not live yet claims capabilities",
-        )
-        _require(
-            row["failClosedBehavior"].startswith("deny"),
-            f"row {index} must declare an explicit deny fail-closed rule while not live",
-        )
+    _require(not live, f"row {index} attempts to grant live Runtime authority")
+    _require(
+        row["authoritySource"] == "none",
+        f"row {index} is not live yet claims an authoritySource",
+    )
+    _require(
+        not row["capabilities"],
+        f"row {index} is not live yet claims capabilities",
+    )
+    _require(
+        row["failClosedBehavior"].startswith("deny"),
+        f"row {index} must declare an explicit deny fail-closed rule while not live",
+    )
     if is_writer and not live:
         # Denied / checkpoint-only writers must say so explicitly.
         _require(
             "writer" in row["failClosedBehavior"] or "checkpoint" in row["failClosedBehavior"],
             f"row {index} is a non-live writer but its fail-closed rule is not explicit",
+        )
+
+
+_MUTATION_TOKENS = re.compile(
+    r"(?:^|[-_:/# ])(?:ack|activate|apply|approve|arm|backfill|backup|blackout|blocklist|canary|cleanup|"
+    r"clear|contain|create|dedupe|delete|deploy|discover|halt|import|insert|kill|lease|lift|mark|migrate|"
+    r"normalize|park|poll|promote|push|quarantine|reenrich|register|repair|reset|resolve|restart|restore|"
+    r"result|resume|retire|retry|revert|rollback|run|score|set|setup|split|stop|supervise|swap|sync|"
+    r"track|unguard|update|validate|worker|write)(?:$|[-_:/# ])",
+    re.IGNORECASE,
+)
+_READ_ONLY_TOKENS = re.compile(
+    r"(?:^|[-_:/# ])(?:audit|check|challenges|doctor|explain|get|inventory|list|readiness|report|status|"
+    r"verify|version)(?:$|[-_:/# ])",
+    re.IGNORECASE,
+)
+_EMPLOYER_TOKENS = re.compile(
+    r"(?:^|[-_:/# ])(?:apply|approve|employer|lease|linkedin|submit|write[-_]result)(?:$|[-_:/# ])",
+    re.IGNORECASE,
+)
+
+
+def _validate_classification_against_surface(row: dict[str, Any], index: int) -> None:
+    """Conservatively cross-check high-risk structural names against metadata."""
+    if row["surfaceKind"] in {"argparse-subcommand", "typer-subcommand", "mcp-tool", "console-http-action"}:
+        signal = f"{row['symbol']} {row['canonicalTarget']}"
+    else:
+        signal = f"{row['id']} {row['sourcePath']} {row['canonicalTarget']}"
+    read_only = bool(_READ_ONLY_TOKENS.search(signal)) and not bool(_MUTATION_TOKENS.search(row["symbol"]))
+    mutation = bool(_MUTATION_TOKENS.search(signal)) and not read_only
+    if mutation:
+        _require(
+            row["readWriteClass"] in {"admin-ddl", "control", "write"},
+            f"row {index} structurally names a mutation but is classified read-only",
+        )
+        _require(
+            bool(row["resourcesWritten"]),
+            f"row {index} structurally names a mutation but declares no written resources",
+        )
+    employer_mutation = bool(_EMPLOYER_TOKENS.search(signal)) and not read_only
+    if employer_mutation:
+        _require(
+            row["employerMutation"] is True,
+            f"row {index} structurally names employer mutation but is not flagged",
         )
 
 
@@ -669,6 +1098,7 @@ def validate_matrix(matrix: Any) -> list[dict[str, Any]]:
     for index, row in enumerate(rows):
         _validate_row_shape(row, index)
         _validate_authority_rules(row, index)
+        _validate_classification_against_surface(row, index)
         ids.append(row["id"])
         targets.append((row["surfaceKind"], row["canonicalTarget"], row["sourcePath"]))
         for alias in row["aliases"]:
@@ -806,27 +1236,106 @@ def build_receipt(
     return receipt
 
 
-def verify_receipt(receipt: Any) -> None:
-    """Fail closed on a forged / drifted receipt."""
+def _validate_receipt_shape(receipt: Any) -> None:
     _require(isinstance(receipt, dict), "receipt must be a JSON object")
-    _require("selfHash" in receipt, "receipt is missing its self-hash")
+    _require(set(receipt) == RECEIPT_KEYS, "receipt has unexpected or missing keys")
     supplied = receipt["selfHash"]
-    _require(isinstance(supplied, str), "receipt selfHash must be a string")
+    _require(
+        isinstance(supplied, str)
+        and re.fullmatch(r"[0-9a-f]{64}", supplied) is not None
+        and supplied != "0" * 64,
+        "receipt selfHash must be a resolved SHA-256 digest",
+    )
     body = {key: value for key, value in receipt.items() if key != "selfHash"}
     expected = sha256_hex(canonical_json(body))
     if supplied != expected:
         raise AuthorityError("receipt self-hash does not match its content (forged or drifted)")
     _require(receipt["schemaVersion"] == RECEIPT_SCHEMA_VERSION, "receipt schemaVersion is unsupported")
     _require(receipt["runtimeKind"] == RUNTIME_KIND, "receipt runtimeKind is unsupported")
+    _require(receipt["repository"] == REPOSITORY, "receipt repository is unexpected")
     _require(receipt["noGlobalAuthorityClaim"] is True, "receipt must disclaim global authority")
+    _require(
+        isinstance(receipt.get("head"), str)
+        and _COMMIT_RE.fullmatch(receipt["head"])
+        and receipt["head"] != "0" * 40,
+        "receipt head must be a resolved commit",
+    )
+    _require(
+        isinstance(receipt.get("tree"), str)
+        and _COMMIT_RE.fullmatch(receipt["tree"])
+        and receipt["tree"] != "0" * 40,
+        "receipt tree must be a resolved tree",
+    )
+    for field in ("discoveryDigest", "matrixDigest"):
+        value = receipt.get(field)
+        _require(
+            isinstance(value, str)
+            and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+            and value != "0" * 64,
+            f"receipt {field} must be a resolved SHA-256 digest",
+        )
+    _require(receipt.get("cleanState") is True, "receipt must bind a clean tree")
     counts = receipt.get("counts")
     _require(isinstance(counts, dict), "receipt counts must be an object")
+    _require(set(counts) == RECEIPT_COUNT_KEYS, "receipt counts have unexpected or missing keys")
+    _require(
+        all(
+            isinstance(counts[key], int) and not isinstance(counts[key], bool) and counts[key] >= 0
+            for key in RECEIPT_COUNT_KEYS - {"byKind"}
+        ),
+        "receipt scalar counts must be non-negative integers",
+    )
+    _require(
+        isinstance(counts["byKind"], dict)
+        and set(counts["byKind"]) == set(INCLUDED_SURFACE_KINDS)
+        and all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in counts["byKind"].values()
+        ),
+        "receipt byKind counts must exactly cover the included kinds",
+    )
     _require(counts.get("unclassified") == 0, "receipt must assert zero unclassified surfaces")
     _require(
         counts.get("discovered") == counts.get("rows"),
         "receipt discovered/rows counts must agree",
     )
+    _require(
+        counts["discovered"] == sum(counts["byKind"].values()),
+        "receipt discovered count must equal the byKind total",
+    )
+    _require(counts["liveWriters"] == 0, "receipt must bind zero live writers")
+    _require(
+        counts["deferredKinds"] == len(DEFERRED_SURFACE_KINDS),
+        "receipt deferredKinds count is inconsistent",
+    )
     scan_forbidden_content(receipt, "receipt")
+
+
+def verify_receipt(
+    document: bytes | str,
+    *,
+    repo_root: Path,
+    matrix_path: Path,
+) -> dict[str, Any]:
+    """Strictly decode and re-bind a receipt to fresh repository facts.
+
+    A self-hash is only corruption detection. Authority verification recomputes
+    the exact clean HEAD/tree, discovery, matrix, counts, digests, and canonical
+    receipt bytes. Duplicate, reordered, or noncanonical documents are denied.
+    """
+    raw = document.encode("utf-8") if isinstance(document, str) else document
+    _require(isinstance(raw, bytes), "receipt must be supplied as canonical bytes")
+    payload = raw[:-1] if raw.endswith(b"\n") else raw
+    receipt = strict_json_loads(payload, "receipt")
+    _validate_receipt_shape(receipt)
+    canonical = canonical_json(receipt)
+    _require(payload == canonical, "receipt is reordered or not canonical JSON")
+    expected = _evaluate_unverified(Path(repo_root), Path(matrix_path))
+    _require(
+        canonical == canonical_json(expected),
+        "receipt does not re-bind to the exact current repository state",
+    )
+    return receipt
 
 
 def load_matrix_document(path: Path) -> tuple[dict[str, Any], bytes]:
@@ -837,18 +1346,14 @@ def load_matrix_document(path: Path) -> tuple[dict[str, Any], bytes]:
     return matrix, content
 
 
-def evaluate(repo_root: Path, matrix_path: Path) -> dict[str, Any]:
-    """Run the full gate and return the canonical receipt (dict). Raises
-    :class:`AuthorityError` on any gate failure."""
-    repo_root = Path(repo_root)
-    matrix_path = Path(matrix_path)
+def _evaluate_unverified(repo_root: Path, matrix_path: Path) -> dict[str, Any]:
     assert_clean(repo_root)
     head, tree = git_identity(repo_root)
     matrix, _content = load_matrix_document(matrix_path)
     rows = validate_matrix(matrix)
     discovered = discover(repo_root)
     check_coverage(discovered, rows)
-    receipt = build_receipt(
+    return build_receipt(
         head=head,
         tree=tree,
         matrix=matrix,
@@ -857,5 +1362,16 @@ def evaluate(repo_root: Path, matrix_path: Path) -> dict[str, Any]:
         matrix_path=matrix_path.relative_to(repo_root).as_posix(),
         clean_state=True,
     )
-    verify_receipt(receipt)
+
+
+def evaluate(repo_root: Path, matrix_path: Path) -> dict[str, Any]:
+    """Run the complete gate and self-verify against fresh repository facts."""
+    repo_root = Path(repo_root)
+    matrix_path = Path(matrix_path)
+    receipt = _evaluate_unverified(repo_root, matrix_path)
+    verify_receipt(
+        canonical_json(receipt),
+        repo_root=repo_root,
+        matrix_path=matrix_path,
+    )
     return receipt

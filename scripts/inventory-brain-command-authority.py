@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Deterministic inventory of the Runtime brain command-authority surface.
 
-Discovers the Python process entrypoints (console scripts, runnable modules,
-runnable stand-alone files, and MCP tools) that make up the Runtime command
-surface and prints them as strict canonical JSON.  With ``--check`` it also
-loads the checked-in matrix and asserts an exact bijection, exiting non-zero on
-any unclassified / stale / drifted surface.
+Discovers the complete Runtime command surface (Python entrypoints and
+subcommands, MCP/HTTP registrations, launchers, scheduled tasks and generated
+wrappers, containers, services, and launchd definitions) and prints it as
+strict canonical JSON. With ``--check`` it also loads the checked-in matrix and
+asserts an exact bijection, exiting non-zero on any unclassified, stale, or
+drifted surface.
 
 The inventory is byte-identical across runs and free of secrets, DSNs,
 credentials, absolute user paths, and timestamps.

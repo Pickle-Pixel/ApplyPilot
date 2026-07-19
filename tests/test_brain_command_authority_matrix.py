@@ -79,6 +79,113 @@ def _minimal_repo(root: Path) -> None:
     )
 
 
+def _complete_fixture_repo(root: Path) -> None:
+    """Build one small repo containing every supported structural kind."""
+    _minimal_repo(root)
+    _write(root / "src" / "demo" / "__main__.py", "print('package runner')\n")
+    _write(
+        root / "src" / "demo" / "commands.py",
+        """from mcp.server.fastmcp import FastMCP
+import typer
+
+app = typer.Typer()
+admin = typer.Typer()
+app.add_typer(admin, name="admin")
+server = FastMCP("demo")
+
+@app.command()
+def status():
+    return None
+
+@admin.command("repair")
+def repair_command():
+    return None
+
+@server.tool(name="renamed-tool")
+def original_tool():
+    return None
+
+def configure():
+    @server.tool()
+    def nested_tool():
+        return None
+
+def registered_callable():
+    return None
+
+server.add_tool(registered_callable, name="registered-tool")
+""",
+    )
+    _write(
+        root / "src" / "demo" / "parser.py",
+        """import argparse
+parser = argparse.ArgumentParser()
+subcommands = parser.add_subparsers()
+subcommands.add_parser("inspect")
+subcommands.add_parser("repair")
+""",
+    )
+    _write(
+        root / "src" / "demo" / "web.py",
+        """from fastapi import FastAPI
+api = FastAPI()
+
+@api.post("/jobs")
+def create_job():
+    return None
+""",
+    )
+    _write(root / "tools" / "nested" / "generate.report.py", "print('report')\n")
+    _write(
+        root / "ops" / "tasks.ps1",
+        "$action = New-ScheduledTaskAction -Execute 'python'\n"
+        "Register-ScheduledTask -TaskName 'demo' -Action $action\n"
+        "$wrapper = 'wrapper.ps1'\nSet-Content -Path $wrapper -Value 'python -m demo'\n",
+    )
+    _write(root / "ops" / "module.psm1", "function Invoke-Demo { return 0 }\n")
+    _write(root / "ops" / "launch.sh", "#!/bin/sh\npython -m demo\n")
+    _write(root / "ops" / "launch.cmd", "@python -m demo\n")
+    _write(root / "ops" / "demo.service", "[Service]\nExecStart=python -m demo\n")
+    _write(root / "ops" / "demo.plist", "<plist><dict></dict></plist>\n")
+    _write(root / "Dockerfile", 'FROM python:3.13\nENTRYPOINT ["python"]\nCMD ["-m", "demo"]\n')
+
+
+def _write_fixture_matrix(root: Path) -> Path:
+    rows = []
+    for surface in authority.discover(root):
+        rows.append(
+            {
+                **surface,
+                "owner": "operator",
+                "readWriteClass": "control",
+                "resourcesRead": ["repository-source"],
+                "resourcesWritten": ["repository-source"],
+                "employerMutation": True,
+                "authoritySource": "none",
+                "capabilities": [],
+                "pauseScopes": ["none"],
+                "liveEligibility": False,
+                "failClosedBehavior": "deny-not-live-writer",
+            }
+        )
+    matrix = {
+        "schemaVersion": authority.MATRIX_SCHEMA_VERSION,
+        "runtimeKind": authority.RUNTIME_KIND,
+        "repository": authority.REPOSITORY,
+        "noGlobalAuthorityClaim": True,
+        "scope": {
+            "includedSurfaceKinds": list(authority.INCLUDED_SURFACE_KINDS),
+            "deferredSurfaceKinds": [],
+            "deferralReason": "Complete fixture inventory; no kinds deferred.",
+        },
+        "pauseScopeVocabulary": list(authority.PAUSE_SCOPE_VOCABULARY),
+        "rows": sorted(rows, key=lambda row: row["id"]),
+    }
+    path = root / "config" / "brain-command-authority-matrix.runtime.json"
+    _write(path, json.dumps(matrix, indent=2, sort_keys=True) + "\n")
+    return path
+
+
 # --------------------------------------------------------------------------- #
 # Acceptance: the checked-in matrix classifies every real surface, zero unclassified
 # --------------------------------------------------------------------------- #
@@ -100,7 +207,9 @@ def test_matrix_uses_real_production_entrypoints(real_matrix):
     assert "console-script:applypilot" in ids
     assert "console-script:applypilot-fleet-migrate-schema" in ids
     assert "python-module:applypilot.fleet.schema_main" in ids
-    assert "mcp-tool:applypilot.fleet.codex_bridge:fleet_status" in ids
+    assert "mcp-tool:applypilot.fleet.codex_bridge:fleet_status:fleet_status" in ids
+    assert "python-module:applypilot" in ids
+    assert "python-file:applypilot-webdriver-cost-research/generate_report.py" in ids
     assert "python-file:scripts/verify-brain-command-authority.py" in ids
 
 
@@ -204,17 +313,32 @@ def test_runnable_file_without_main_guard_is_discovered(real_discovered):
     assert "python-file:fleet-status.py" in ids
 
 
+def test_complete_structural_fixture_discovers_every_supported_kind(tmp_path):
+    _complete_fixture_repo(tmp_path)
+    discovered = authority.discover(tmp_path)
+    kinds = {surface["surfaceKind"] for surface in discovered}
+    assert kinds == set(authority.INCLUDED_SURFACE_KINDS)
+    by_id = {surface["id"]: surface for surface in discovered}
+    assert by_id["python-module:demo"]["aliases"] == [
+        "python -m demo",
+        "python src/demo/__main__.py",
+    ]
+    assert "python-file:tools/nested/generate.report.py" in by_id
+    assert any("admin repair" in surface["canonicalTarget"] for surface in discovered)
+    assert any("renamed-tool" in surface["canonicalTarget"] for surface in discovered)
+    assert any("nested_tool" in surface["canonicalTarget"] for surface in discovered)
+    assert any("registered-tool" in surface["canonicalTarget"] for surface in discovered)
+
+
 # --------------------------------------------------------------------------- #
-# Deferred surface kinds are declared, never silently dropped
+# Complete scope declaration
 # --------------------------------------------------------------------------- #
 
 
-def test_deferred_kinds_declared_and_no_global_claim(real_matrix):
+def test_no_runtime_surface_kind_is_deferred(real_matrix):
     scope = real_matrix["scope"]
-    # Scheduled-task identities, launchers, and console HTTP actions are real but
-    # deferred -- declared explicitly with a reason and disclaimed globally.
-    for kind in ("scheduled-task-identity", "console-http-action", "powershell-launcher"):
-        assert kind in scope["deferredSurfaceKinds"]
+    assert scope["includedSurfaceKinds"] == list(authority.INCLUDED_SURFACE_KINDS)
+    assert scope["deferredSurfaceKinds"] == []
     assert scope["deferralReason"].strip()
     assert real_matrix["noGlobalAuthorityClaim"] is True
 
@@ -332,7 +456,7 @@ def test_extra_top_level_key_fails_closed(real_matrix):
 
 
 # --------------------------------------------------------------------------- #
-# Live-writer authority rules
+# Zero-live authority and classification rules
 # --------------------------------------------------------------------------- #
 
 
@@ -360,36 +484,9 @@ def _live_writer_row() -> dict:
     }
 
 
-def test_complete_live_writer_is_accepted():
-    authority._validate_authority_rules(_live_writer_row(), 0)  # must not raise
-
-
-def test_incomplete_live_writer_fails_closed():
-    row = _live_writer_row()
-    row["capabilities"] = []
-    with pytest.raises(authority.AuthorityError, match="no capabilities"):
-        authority._validate_authority_rules(row, 0)
-
-
-def test_live_writer_without_written_resource_fails_closed():
-    row = _live_writer_row()
-    row["resourcesWritten"] = []
-    with pytest.raises(authority.AuthorityError, match="writes no declared resource"):
-        authority._validate_authority_rules(row, 0)
-
-
-def test_live_writer_shared_admin_principal_fails_closed():
-    row = _live_writer_row()
-    row["owner"] = "brain-admin"  # a shared/admin principal
-    with pytest.raises(authority.AuthorityError, match="shared/admin principal"):
-        authority._validate_authority_rules(row, 0)
-
-
-def test_live_writer_admin_authority_source_fails_closed():
-    row = _live_writer_row()
-    row["authoritySource"] = "postgres"
-    with pytest.raises(authority.AuthorityError, match="shared/admin principal"):
-        authority._validate_authority_rules(row, 0)
+def test_any_live_runtime_authority_fails_closed():
+    with pytest.raises(authority.AuthorityError, match="attempts to grant live"):
+        authority._validate_authority_rules(_live_writer_row(), 0)
 
 
 def test_non_live_row_claiming_authority_fails_closed():
@@ -409,6 +506,23 @@ def test_non_live_writer_requires_explicit_fail_closed_rule():
     row["failClosedBehavior"] = "deny-not-live"  # missing the explicit writer marker
     with pytest.raises(authority.AuthorityError, match="fail-closed rule is not explicit"):
         authority._validate_authority_rules(row, 0)
+
+
+def test_unknown_authority_source_fails_closed(real_matrix):
+    matrix = _valid_matrix(real_matrix)
+    matrix["rows"][0]["authoritySource"] = "invented-role"
+    with pytest.raises(authority.AuthorityError, match="authoritySource"):
+        authority.validate_matrix(matrix)
+
+
+def test_structurally_mutating_command_cannot_be_marked_read_only(real_matrix):
+    matrix = _valid_matrix(real_matrix)
+    row = next(row for row in matrix["rows"] if "rollback" in row["id"])
+    row["readWriteClass"] = "read"
+    row["resourcesWritten"] = []
+    row["failClosedBehavior"] = "deny-not-live"
+    with pytest.raises(authority.AuthorityError, match="structurally names a mutation"):
+        authority.validate_matrix(matrix)
 
 
 # --------------------------------------------------------------------------- #
@@ -442,35 +556,65 @@ def test_real_matrix_has_no_forbidden_content(real_matrix):
 # --------------------------------------------------------------------------- #
 
 
-def _sample_receipt(real_discovered, real_matrix) -> dict:
-    rows = authority.validate_matrix(real_matrix)
-    return authority.build_receipt(
-        head="0" * 40,
-        tree="1" * 40,
-        matrix=real_matrix,
-        discovered=real_discovered,
-        rows=rows,
-        matrix_path="config/brain-command-authority-matrix.runtime.json",
-        clean_state=True,
-    )
+def _receipt_repo(root: Path) -> tuple[Path, dict, bytes]:
+    _minimal_repo(root)
+    matrix_path = _write_fixture_matrix(root)
+    _init_git_repo(root)
+    receipt = authority.evaluate(root, matrix_path)
+    return matrix_path, receipt, authority.canonical_json(receipt)
 
 
-def test_receipt_self_hash_verifies(real_discovered, real_matrix):
-    authority.verify_receipt(_sample_receipt(real_discovered, real_matrix))
+def _rehash(receipt: dict) -> None:
+    body = {key: value for key, value in receipt.items() if key != "selfHash"}
+    receipt["selfHash"] = authority.sha256_hex(authority.canonical_json(body))
 
 
-def test_forged_receipt_fails_closed(real_discovered, real_matrix):
-    receipt = _sample_receipt(real_discovered, real_matrix)
-    receipt["head"] = "f" * 40  # tamper without recomputing the self-hash
-    with pytest.raises(authority.AuthorityError, match="self-hash"):
-        authority.verify_receipt(receipt)
+def test_receipt_self_hash_and_repository_rebinding_verify(tmp_path):
+    matrix_path, receipt, raw = _receipt_repo(tmp_path)
+    assert authority.verify_receipt(raw, repo_root=tmp_path, matrix_path=matrix_path) == receipt
 
 
-def test_receipt_count_drift_fails_closed(real_discovered, real_matrix):
-    receipt = _sample_receipt(real_discovered, real_matrix)
-    receipt["counts"]["unclassified"] = 3  # keep selfHash stale
-    with pytest.raises(authority.AuthorityError, match="self-hash"):
-        authority.verify_receipt(receipt)
+def test_rehashed_bogus_head_fails_repository_rebinding(tmp_path):
+    matrix_path, receipt, _raw = _receipt_repo(tmp_path)
+    receipt["head"] = "f" * 40
+    _rehash(receipt)
+    with pytest.raises(authority.AuthorityError, match="exact current repository state"):
+        authority.verify_receipt(
+            authority.canonical_json(receipt), repo_root=tmp_path, matrix_path=matrix_path
+        )
+
+
+def test_zero_identity_and_digest_fail_closed_even_when_rehashed(tmp_path):
+    matrix_path, receipt, _raw = _receipt_repo(tmp_path)
+    receipt["tree"] = "0" * 40
+    receipt["matrixDigest"] = "0" * 64
+    _rehash(receipt)
+    with pytest.raises(authority.AuthorityError, match="resolved tree"):
+        authority.verify_receipt(
+            authority.canonical_json(receipt), repo_root=tmp_path, matrix_path=matrix_path
+        )
+
+
+def test_receipt_duplicate_key_fails_closed(tmp_path):
+    matrix_path, receipt, raw = _receipt_repo(tmp_path)
+    duplicate = b'{"head":"' + receipt["head"].encode("ascii") + b'",' + raw[1:]
+    with pytest.raises(authority.AuthorityError, match="duplicate object key"):
+        authority.verify_receipt(duplicate, repo_root=tmp_path, matrix_path=matrix_path)
+
+
+def test_receipt_reordered_or_pretty_json_fails_closed(tmp_path):
+    matrix_path, receipt, raw = _receipt_repo(tmp_path)
+    noncanonical = json.dumps(receipt, indent=2).encode("ascii")
+    assert noncanonical != raw
+    with pytest.raises(authority.AuthorityError, match="reordered or not canonical"):
+        authority.verify_receipt(noncanonical, repo_root=tmp_path, matrix_path=matrix_path)
+
+
+def test_receipt_rejects_dirty_repository_after_issuance(tmp_path):
+    matrix_path, _receipt, raw = _receipt_repo(tmp_path)
+    _write(tmp_path / "src" / "demo" / "cli.py", "print('changed')\n")
+    with pytest.raises(authority.AuthorityError, match="dirty tree"):
+        authority.verify_receipt(raw, repo_root=tmp_path, matrix_path=matrix_path)
 
 
 def test_receipt_binds_sorted_discovery_digest(real_discovered):
@@ -559,7 +703,9 @@ def test_verify_cli_emits_receipt_on_clean_tree():
     result = _run_cli(VERIFY_CLI, "--repo-root", str(REPO_ROOT))
     assert result.returncode == 0, result.stderr
     receipt = json.loads(result.stdout)
-    authority.verify_receipt(receipt)
+    authority.verify_receipt(
+        authority.canonical_json(receipt), repo_root=REPO_ROOT, matrix_path=MATRIX_PATH
+    )
     assert receipt["counts"]["unclassified"] == 0
     assert receipt["runtimeKind"] == authority.RUNTIME_KIND
 
@@ -570,6 +716,8 @@ def test_verify_cli_emits_receipt_on_clean_tree():
 )
 def test_evaluate_end_to_end_on_real_repo():
     receipt = authority.evaluate(REPO_ROOT, MATRIX_PATH)
-    authority.verify_receipt(receipt)
+    authority.verify_receipt(
+        authority.canonical_json(receipt), repo_root=REPO_ROOT, matrix_path=MATRIX_PATH
+    )
     assert receipt["head"]
     assert receipt["counts"]["discovered"] == receipt["counts"]["rows"]
