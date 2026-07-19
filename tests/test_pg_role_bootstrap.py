@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -412,12 +413,18 @@ def test_database_rollback_commits_before_hba_restore(tmp_path: Path, monkeypatc
     )
     monkeypatch.setattr(module.psycopg, "connect", lambda *_args, **_kwargs: FakeConnection())
 
-    def commit_containment(conn, rollback_sql, *, marker):
+    def commit_containment(conn, rollback_sql, *, marker, **_kwargs):
         with conn.transaction():
             conn.execute(rollback_sql)
-        return {**marker, "relation": "public.applypilot_rollback_commit_markers", "visible": True}
+        return {
+            **marker,
+            "affected_role_names": [],
+            "relation": "public.applypilot_rollback_commit_markers",
+            "visible": True,
+        }
 
     monkeypatch.setattr(module, "_commit_database_containment", commit_containment)
+    monkeypatch.setattr(module, "_terminate_affected_sessions", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(
         module,
         "_assert_candidate_artifact_containment",
@@ -559,7 +566,7 @@ def _configure_rollback_main(
 
 @pytest.mark.parametrize(
     "fault_seam",
-    ("sql_execution", "transaction_commit", "marker_assertion", "post_containment_assertion"),
+    ("sql_execution", "marker_assertion", "post_containment_assertion"),
 )
 def test_rollback_fault_before_hba_never_starts_hba(
     tmp_path: Path, monkeypatch, fault_seam: str
@@ -568,6 +575,8 @@ def test_rollback_fault_before_hba_never_starts_hba(
     partial = (tmp_path / "partial.json").resolve()
     _configure_rollback_main(module, tmp_path, monkeypatch, partial_state_path=partial)
     events: list[str] = []
+    monkeypatch.setattr(module, "_affected_authority_roles", lambda *_args, **_kwargs: ([], []))
+    monkeypatch.setattr(module, "_terminate_affected_sessions", lambda *_args, **_kwargs: 0)
 
     monkeypatch.setattr(
         module,
@@ -629,12 +638,14 @@ def test_hba_failure_emits_authenticated_target_bound_partial_state_receipt(
     marker = {
         "relation": "public.applypilot_rollback_commit_markers",
         "marker_id": "marker-1",
+        "affected_role_names": [],
+        "affected_role_oids": [],
         "visible": True,
         "committed_at": "2026-07-19T14:00:00+00:00",
     }
     monkeypatch.setattr(
         module,
-        "_commit_database_containment",
+        "_commit_with_authenticated_reconciliation",
         lambda *_args, **_kwargs: marker,
     )
     monkeypatch.setattr(
@@ -703,7 +714,15 @@ def test_hba_and_partial_receipt_failure_preserves_both_errors_and_machine_state
         "relation": "public.applypilot_rollback_commit_markers",
         "visible": True,
     }
-    monkeypatch.setattr(module, "_commit_database_containment", lambda *_args, **_kwargs: marker)
+    monkeypatch.setattr(
+        module,
+        "_commit_with_authenticated_reconciliation",
+        lambda *_args, **_kwargs: {
+            **marker,
+            "affected_role_names": [],
+            "affected_role_oids": [],
+        },
+    )
     monkeypatch.setattr(
         module,
         "_assert_candidate_artifact_containment",
@@ -760,6 +779,49 @@ def test_forward_v7_target_rejects_same_name_recreated_database_oid() -> None:
         module._validated_target_identity(FakeConnection(), receipt)
 
 
+def test_target_identity_rejects_hostile_public_catalog_oid_shadow(fleet_db: str) -> None:
+    module = _rollback_script_module()
+    with pgqueue.connect(fleet_db) as root:
+        require_disposable_postgres(root)
+        identity = root.execute(
+            "SELECT pg_catalog.current_database() AS database_name,"
+            "(pg_catalog.pg_control_system()).system_identifier::text AS system_identifier,"
+            "(SELECT oid FROM pg_catalog.pg_database "
+            "WHERE datname=pg_catalog.current_database()) AS database_oid,session_user"
+        ).fetchone()
+        try:
+            root.execute("CREATE TABLE public.pg_roles(rolname name,rolsuper boolean)")
+            root.execute("CREATE TABLE public.pg_database(oid oid,datname name)")
+            root.execute(
+                "INSERT INTO public.pg_roles VALUES(%s,TRUE)",
+                (identity["session_user"],),
+            )
+            root.execute(
+                "INSERT INTO public.pg_database VALUES(424242,%s)",
+                (identity["database_name"],),
+            )
+            root.execute("SET search_path=public,pg_catalog")
+            receipt = {
+                "rollback_mode": "forward_v7_containment",
+                "database_name": identity["database_name"],
+                "inventory": {
+                    "system_identifier": identity["system_identifier"],
+                    "database_oid": 424242,
+                },
+                "topology": {
+                    "infrastructure_superuser_roles": [identity["session_user"]]
+                },
+            }
+
+            with pytest.raises(SystemExit, match="database OID"):
+                module._validated_target_identity(root, receipt)
+        finally:
+            root.rollback()
+            root.execute("DROP TABLE IF EXISTS public.pg_database")
+            root.execute("DROP TABLE IF EXISTS public.pg_roles")
+            root.commit()
+
+
 def test_partial_state_write_rejects_parent_identity_drift(tmp_path: Path, monkeypatch) -> None:
     module = _rollback_script_module()
     destination = (tmp_path / "partial.json").resolve()
@@ -776,11 +838,31 @@ def test_partial_state_write_rejects_parent_identity_drift(tmp_path: Path, monke
     assert not destination.exists()
 
 
-def test_partial_state_writer_uses_descriptor_relative_creation() -> None:
+def test_hba_replacement_rejects_same_inode_content_edit(tmp_path: Path, monkeypatch) -> None:
     module = _rollback_script_module()
-    source = inspect.getsource(module._write_exclusive_durable)
-    assert "dir_fd=parent_descriptor" in source
-    assert "os.fstat(parent_descriptor)" in source
+    if not hasattr(module.os, "fchmod"):
+        monkeypatch.setattr(module.os, "fchmod", lambda *_args: None, raising=False)
+    live = tmp_path / "pg_hba.conf"
+    authenticated = b"host all all 127.0.0.1/32 scram-sha-256\n"
+    edited = b"host all all 127.0.0.1/32 trust         \n"
+    backup = b"local all all peer\n"
+    live.write_bytes(authenticated)
+    before = live.stat()
+    live.write_bytes(edited)
+    after = live.stat()
+    assert (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+
+    with pytest.raises(RuntimeError, match="content changed"):
+        module._replace_atomic(
+            live,
+            backup,
+            expected_identity=(before.st_dev, before.st_ino),
+            expected_content=authenticated,
+            expected_sha256=hashlib.sha256(authenticated).hexdigest(),
+            replacement_mode=stat.S_IMODE(after.st_mode),
+            replacement_owner=(after.st_uid, after.st_gid),
+        )
+    assert live.read_bytes() == edited
 
 
 def test_rollback_retry_from_partial_state_reuses_idempotent_database_marker(
@@ -802,7 +884,7 @@ def test_rollback_retry_from_partial_state_reuses_idempotent_database_marker(
         if restore_attempts <= 2:
             raise RuntimeError(f"HBA attempt {restore_attempts} failed")
 
-    monkeypatch.setattr(module, "_commit_database_containment", commit)
+    monkeypatch.setattr(module, "_commit_with_authenticated_reconciliation", commit)
     monkeypatch.setattr(
         module,
         "_assert_candidate_artifact_containment",
@@ -818,8 +900,8 @@ def test_rollback_retry_from_partial_state_reuses_idempotent_database_marker(
                 module.main()
         else:
             assert module.main() == 0
-    assert len(commits) == 3
-    assert commits[0] == commits[1] == commits[2]
+    assert len(commits) == 6
+    assert len(set(commits)) == 1
     assert restore_attempts == 3
     assert partial.exists()
     successor = partial.with_name(f"{partial.name}.2")
@@ -835,6 +917,66 @@ def test_rollback_retry_from_partial_state_reuses_idempotent_database_marker(
     assert predecessor["target_identity"] == successor_receipt["target_identity"]
 
 
+def test_reconciled_commit_checkpoint_is_authenticated_and_executor_independent(
+    tmp_path: Path,
+) -> None:
+    module = _rollback_script_module()
+    receipt, rollback_sql = _authenticated_forward_v7_receipt(tmp_path)
+    receipt_path = (tmp_path / "receipt.json").resolve()
+    rollback_path = (tmp_path / "rollback.sql").resolve()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    rollback_path.write_text(rollback_sql, encoding="utf-8")
+    target = {
+        "database_name": "postgres",
+        "system_identifier": "123456789",
+        "database_oid": 12345,
+        "session_user": "postgres",
+    }
+    marker = {
+        **module._containment_marker(receipt, rollback_sql, target),
+        "affected_role_names": ["provider"],
+        "affected_role_oids": [4242],
+        "visible": True,
+        "relation": "public.applypilot_rollback_commit_markers",
+    }
+    failure = module.ContainmentCommitReconciledConnectionLost(
+        marker,
+        evidence_errors=BaseExceptionGroup(
+            "commit evidence",
+            [ConnectionError("ack lost"), OSError("rollback report failed")],
+        ),
+    )
+    destination = (tmp_path / "reconciled.json").resolve()
+    written = module._emit_commit_reconciled_receipt(
+        destination,
+        source_receipt=receipt,
+        source_receipt_evidence=module._source_receipt_evidence(receipt_path, receipt),
+        rollback_sql_path=rollback_path,
+        rollback_sql=rollback_sql,
+        target_identity=target,
+        failure=failure,
+        authentication_key=_EVIDENCE_KEY,
+        authentication_key_id=_EVIDENCE_KEY_ID,
+        partial_parent_identity=module._validate_partial_state_parent(destination),
+    )
+    checkpoint = json.loads(written.read_text(encoding="utf-8"))
+    pg_roles.verify_evidence_receipt(
+        checkpoint,
+        authentication_key=_EVIDENCE_KEY,
+        expected_key_id=_EVIDENCE_KEY_ID,
+    )
+    assert checkpoint["status"] == "database_containment_committed_executor_connection_lost"
+    predecessor = {
+        "marker_id": marker["marker_id"],
+        "target_identity": checkpoint["target_identity"],
+        "source_receipt_authentication": receipt["receipt_authentication"],
+    }
+    module._require_matching_partial_state_predecessor(
+        predecessor,
+        marker_id=marker["marker_id"],
+        target_identity={**target, "session_user": "alternate_breakglass"},
+        source_receipt_authentication=receipt["receipt_authentication"],
+    )
 def test_hba_restore_observer_sees_real_rollback_commit(
     fleet_db: str, tmp_path: Path, monkeypatch
 ) -> None:
@@ -850,7 +992,7 @@ def test_hba_restore_observer_sees_real_rollback_commit(
         "_verified_inputs",
         lambda *_args, **_kwargs: (
             fake_receipt,
-            sql.SQL("CREATE TABLE public.{} (observed boolean NOT NULL)")
+            sql.SQL("CREATE TABLE IF NOT EXISTS public.{} (observed boolean NOT NULL)")
             .format(sql.Identifier(marker))
             .as_string(None),
         ),
@@ -908,7 +1050,7 @@ def test_real_hba_failure_keeps_database_marker_visible_and_emits_receipt(
 ) -> None:
     module = _rollback_script_module()
     probe = "applypilot_real_hba_failure_probe"
-    rollback_sql = sql.SQL("CREATE TABLE public.{} (observed boolean NOT NULL)").format(
+    rollback_sql = sql.SQL("CREATE TABLE IF NOT EXISTS public.{} (observed boolean NOT NULL)").format(
         sql.Identifier(probe)
     ).as_string(None)
     rollback_path = (tmp_path / "rollback.sql").resolve()
@@ -1006,6 +1148,149 @@ def test_real_hba_failure_keeps_database_marker_visible_and_emits_receipt(
         with psycopg.connect(fleet_db, row_factory=dict_row, autocommit=True) as cleanup:
             cleanup.execute(sql.SQL("DROP TABLE IF EXISTS public.{} CASCADE").format(sql.Identifier(probe)))
             cleanup.execute("DROP TABLE IF EXISTS public.applypilot_rollback_commit_markers")
+
+
+def test_real_pg18_session_fence_and_alternate_breakglass_retry(fleet_db: str) -> None:
+    module = _rollback_script_module()
+    provider = "rollback_session_fence_provider_test"
+    alternate = "rollback_alternate_breakglass_test"
+    provider_password = "rollback-provider-password"
+    alternate_password = "rollback-alternate-password"
+    with psycopg.connect(fleet_db, row_factory=dict_row, autocommit=True) as setup:
+        require_disposable_postgres(setup)
+        if int(setup.execute("SHOW server_version_num").fetchone()["server_version_num"]) // 10000 != 18:
+            pytest.skip("session-fence rollback coverage requires PostgreSQL 18")
+        setup.execute("DROP TABLE IF EXISTS public.applypilot_rollback_commit_markers")
+        for role_name in (provider, alternate):
+            setup.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name)))
+        setup.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                sql.Identifier(provider), sql.Literal(provider_password)
+            )
+        )
+        setup.execute(
+            sql.SQL("CREATE ROLE {} LOGIN SUPERUSER PASSWORD {}").format(
+                sql.Identifier(alternate), sql.Literal(alternate_password)
+            )
+        )
+        identity = setup.execute(
+            "SELECT pg_catalog.current_database() AS database_name,"
+            "(SELECT database.oid FROM pg_catalog.pg_database database "
+            "WHERE database.datname=pg_catalog.current_database()) AS database_oid,"
+            "(pg_catalog.pg_control_system()).system_identifier::text AS system_identifier"
+        ).fetchone()
+
+    rollback_sql = (
+        "DROP TABLE IF EXISTS pg_temp.applypilot_authority_containment_roles;"
+        "CREATE TEMP TABLE applypilot_authority_containment_roles ON COMMIT DROP AS "
+        f"SELECT oid AS role_oid FROM pg_catalog.pg_roles WHERE rolname='{provider}';"
+        f'ALTER ROLE "{provider}" NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB '
+        "NOCREATEROLE NOREPLICATION NOBYPASSRLS;"
+        f'REVOKE CONNECT ON DATABASE "{identity["database_name"]}" FROM "{provider}";'
+    )
+    receipt = {
+        "inventory": {"infrastructure_superuser_roles": ["postgres", alternate]},
+        "receipt_authentication": {"digest": "f" * 64},
+    }
+    postgres_identity = {**identity, "session_user": "postgres"}
+    alternate_identity = {**identity, "session_user": alternate}
+    postgres_marker = module._containment_marker(receipt, rollback_sql, postgres_identity)
+    alternate_marker = module._containment_marker(receipt, rollback_sql, alternate_identity)
+    assert alternate_marker["marker_id"] == postgres_marker["marker_id"]
+
+    active_provider = psycopg.connect(
+        _dsn(fleet_db, user=provider, password=provider_password), row_factory=dict_row
+    )
+    try:
+        with psycopg.connect(fleet_db, row_factory=dict_row) as root:
+            phase_one = module._commit_database_containment(
+                root,
+                rollback_sql,
+                marker=postgres_marker,
+                protected_roles={"postgres", alternate},
+            )
+            assert phase_one["affected_role_names"] == [provider]
+            assert active_provider.execute("SELECT 1 AS alive").fetchone()["alive"] == 1
+            assert module._terminate_affected_sessions(
+                root,
+                affected_role_names=phase_one["affected_role_names"],
+                affected_role_oids=phase_one["affected_role_oids"],
+                protected_roles={"postgres", alternate},
+            ) == 1
+            with pytest.raises(psycopg.Error):
+                active_provider.execute("SELECT 1")
+            with pytest.raises(psycopg.OperationalError):
+                psycopg.connect(
+                    _dsn(fleet_db, user=provider, password=provider_password),
+                    connect_timeout=2,
+                )
+
+        with psycopg.connect(
+            _dsn(fleet_db, user=alternate, password=alternate_password), row_factory=dict_row
+        ) as alternate_conn:
+            class LostCommitAcknowledgement:
+                def __init__(self, connection):
+                    self.connection = connection
+
+                def execute(self, *args, **kwargs):
+                    return self.connection.execute(*args, **kwargs)
+
+                def commit(self):
+                    self.connection.commit()
+                    raise ConnectionError("injected commit acknowledgement loss")
+
+                def rollback(self):
+                    self.connection.rollback()
+                    raise OSError("injected rollback reporting failure")
+
+            with pytest.raises(module.ContainmentCommitReconciledConnectionLost) as lost:
+                module._commit_with_authenticated_reconciliation(
+                    LostCommitAcknowledgement(alternate_conn),
+                    rollback_sql,
+                    marker=alternate_marker,
+                    protected_roles={"postgres", alternate},
+                    admin_dsn=fleet_db,
+                    receipt=receipt,
+                )
+            assert lost.value.marker["marker_id"] == postgres_marker["marker_id"]
+            assert [type(error) for error in lost.value.evidence_errors.exceptions] == [
+                ConnectionError,
+                OSError,
+            ]
+
+            phase_two = module._commit_database_containment(
+                alternate_conn,
+                rollback_sql,
+                marker=alternate_marker,
+                protected_roles={"postgres", alternate},
+                approved_break_glass_roles={"postgres", alternate},
+            )
+            assert phase_two["marker_id"] == postgres_marker["marker_id"]
+            assert phase_two["executed_by"] == "postgres"
+            assert phase_two["affected_role_names"] == [provider]
+            assert len(phase_two["affected_role_oids"]) == 1
+            alternate_conn.execute(
+                sql.SQL("ALTER TABLE public.applypilot_rollback_commit_markers OWNER TO {}").format(
+                    sql.Identifier(provider)
+                )
+            )
+            with pytest.raises(RuntimeError, match="marker relation is unsafe"):
+                module._write_database_containment_marker(
+                    alternate_conn,
+                    marker=alternate_marker,
+                    approved_break_glass_roles={"postgres", alternate},
+                )
+            alternate_conn.rollback()
+            alternate_conn.execute(
+                "ALTER TABLE public.applypilot_rollback_commit_markers OWNER TO postgres"
+            )
+            alternate_conn.commit()
+    finally:
+        active_provider.close()
+        with psycopg.connect(fleet_db, row_factory=dict_row, autocommit=True) as cleanup:
+            cleanup.execute("DROP TABLE IF EXISTS public.applypilot_rollback_commit_markers")
+            for role_name in (provider, alternate):
+                cleanup.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name)))
 
 
 def test_rollback_rejects_hba_restore_on_windows_before_database_access(
@@ -1520,6 +1805,56 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                     "GRANT UPDATE ON TABLES TO {}"
                 ).format(sql.Identifier(provider_default_owner), sql.Identifier(provider_login))
             )
+            if root.execute(
+                "SELECT pg_catalog.to_regnamespace('brain_archive') AS schema_oid"
+            ).fetchone()["schema_oid"] is None:
+                root.execute(
+                    sql.SQL("CREATE SCHEMA brain_archive AUTHORIZATION {}").format(
+                        sql.Identifier(provider_default_owner)
+                    )
+                )
+            else:
+                root.execute(
+                    sql.SQL("ALTER SCHEMA brain_archive OWNER TO {}").format(
+                        sql.Identifier(provider_default_owner)
+                    )
+                )
+            root.execute(
+                "CREATE TABLE brain_archive.brain_archive_escape_probe(id bigint)"
+            )
+            root.execute(
+                sql.SQL(
+                    "ALTER TABLE brain_archive.brain_archive_escape_probe OWNER TO {}"
+                ).format(sql.Identifier(provider_default_owner))
+            )
+            root.execute(
+                "GRANT SELECT ON brain_archive.brain_archive_escape_probe TO PUBLIC"
+            )
+            root.execute(
+                "CREATE PROCEDURE public.brain_escape_procedure() "
+                "LANGUAGE sql AS 'SELECT 1'"
+            )
+            root.execute(
+                sql.SQL("ALTER PROCEDURE public.brain_escape_procedure() OWNER TO {}").format(
+                    sql.Identifier(provider_default_owner)
+                )
+            )
+            root.execute("GRANT EXECUTE ON PROCEDURE public.brain_escape_procedure() TO PUBLIC")
+            root.execute("CREATE DOMAIN brain_archive.brain_archive_escape_domain AS text")
+            root.execute(
+                sql.SQL(
+                    "ALTER DOMAIN brain_archive.brain_archive_escape_domain OWNER TO {}"
+                ).format(sql.Identifier(provider_default_owner))
+            )
+            root.execute(
+                "CREATE AGGREGATE public.brain_escape_aggregate(bigint) "
+                "(SFUNC=pg_catalog.int8pl, STYPE=bigint, INITCOND='0')"
+            )
+            root.execute(
+                sql.SQL("ALTER AGGREGATE public.brain_escape_aggregate(bigint) OWNER TO {}").format(
+                    sql.Identifier(provider_default_owner)
+                )
+            )
             root.commit()
             with psycopg.connect(
                 _dsn(fleet_db, user=provider_login, password="existing-provider-password"),
@@ -1535,6 +1870,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 )
                 active_provider.execute("CREATE TABLE public.brain_acl_escape_probe(id bigint)")
                 active_provider.execute("DROP TABLE public.brain_acl_escape_probe")
+                active_provider.execute("CALL public.brain_escape_procedure()")
                 active_provider.commit()
 
                 for run in range(2):
@@ -1613,6 +1949,58 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                             [provider_login],
                         ),
                     ).fetchone()["count"] == 0
+                    assert root.execute(
+                        "SELECT procedure_owner.rolname AS procedure_owner,"
+                        "schema_owner.rolname AS archive_schema_owner,"
+                        "relation_owner.rolname AS archive_relation_owner,"
+                        "(SELECT count(*) FROM pg_catalog.pg_proc executable "
+                        "JOIN pg_catalog.pg_namespace executable_namespace "
+                        "ON executable_namespace.oid=executable.pronamespace "
+                        "CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE("
+                        "executable.proacl,pg_catalog.acldefault('f',executable.proowner))) acl "
+                        "WHERE executable_namespace.nspname='public' "
+                        "AND executable.proname='brain_escape_procedure' "
+                        "AND acl.grantee<>executable.proowner) AS procedure_nonowner_routes "
+                        "FROM pg_catalog.pg_proc procedure "
+                        "JOIN pg_catalog.pg_namespace procedure_namespace "
+                        "ON procedure_namespace.oid=procedure.pronamespace "
+                        "JOIN pg_catalog.pg_roles procedure_owner "
+                        "ON procedure_owner.oid=procedure.proowner "
+                        "JOIN pg_catalog.pg_namespace archive_schema "
+                        "ON archive_schema.nspname='brain_archive' "
+                        "JOIN pg_catalog.pg_roles schema_owner "
+                        "ON schema_owner.oid=archive_schema.nspowner "
+                        "JOIN pg_catalog.pg_class archive_relation "
+                        "ON archive_relation.relnamespace=archive_schema.oid "
+                        "AND archive_relation.relname='brain_archive_escape_probe' "
+                        "JOIN pg_catalog.pg_roles relation_owner "
+                        "ON relation_owner.oid=archive_relation.relowner "
+                        "WHERE procedure_namespace.nspname='public' "
+                        "AND procedure.proname='brain_escape_procedure'"
+                    ).fetchone() == {
+                        "procedure_owner": "postgres",
+                        "archive_schema_owner": "postgres",
+                        "archive_relation_owner": "postgres",
+                        "procedure_nonowner_routes": 0,
+                    }
+                    assert root.execute(
+                        "SELECT aggregate_owner.rolname AS aggregate_owner,"
+                        "domain_owner.rolname AS domain_owner FROM pg_catalog.pg_proc aggregate "
+                        "JOIN pg_catalog.pg_namespace aggregate_namespace "
+                        "ON aggregate_namespace.oid=aggregate.pronamespace "
+                        "JOIN pg_catalog.pg_roles aggregate_owner "
+                        "ON aggregate_owner.oid=aggregate.proowner "
+                        "JOIN pg_catalog.pg_type domain ON domain.typname='brain_archive_escape_domain' "
+                        "JOIN pg_catalog.pg_namespace domain_namespace "
+                        "ON domain_namespace.oid=domain.typnamespace "
+                        "AND domain_namespace.nspname='brain_archive' "
+                        "JOIN pg_catalog.pg_roles domain_owner ON domain_owner.oid=domain.typowner "
+                        "WHERE aggregate_namespace.nspname='public' "
+                        "AND aggregate.proname='brain_escape_aggregate'"
+                    ).fetchone() == {
+                        "aggregate_owner": "postgres",
+                        "domain_owner": "postgres",
+                    }
                     if run == 0:
                         for role_name in (
                             "brain_candidate_writer",
@@ -1674,6 +2062,32 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                             "provider_future_insert": False,
                             "public_future_execute": False,
                         }
+            rollback_module = _rollback_script_module()
+            provider_rows = root.execute(
+                "SELECT oid FROM pg_catalog.pg_roles WHERE rolname=ANY(%s) ORDER BY oid",
+                ([provider_login, provider_middle, provider_default_owner],),
+            ).fetchall()
+            affected_oids = [int(row["oid"]) for row in provider_rows]
+            clean = rollback_module._assert_candidate_artifact_containment(
+                root,
+                break_glass_roles={"postgres", controller},
+                affected_role_names=[provider_login, provider_middle, provider_default_owner],
+                affected_role_oids=affected_oids,
+            )
+            assert not any(clean.values())
+            root.execute(
+                "GRANT SELECT ON brain_archive.brain_archive_escape_probe TO PUBLIC"
+            )
+            root.commit()
+            with pytest.raises(RuntimeError, match="postcondition failed"):
+                rollback_module._assert_candidate_artifact_containment(
+                    root,
+                    break_glass_roles={"postgres", controller},
+                    affected_role_names=[provider_login, provider_middle, provider_default_owner],
+                    affected_role_oids=affected_oids,
+                )
+            root.execute(receipt.rollback_sql)
+            root.commit()
         finally:
             root.rollback()
             require_disposable_postgres(root)
@@ -2167,7 +2581,7 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
             assert root.execute(
                 "SELECT rolcanlogin FROM pg_roles WHERE rolname=%s",
                 (ATOMIC_CONTROLLER,),
-            ).fetchone()["rolcanlogin"] is False
+            ).fetchone()["rolcanlogin"] is True
             assert root.execute(
                 "SELECT has_database_privilege('public',current_database(),'CONNECT,CREATE,TEMPORARY') AS allowed"
             ).fetchone()["allowed"] is False

@@ -108,6 +108,16 @@ def _break_glass_roles(receipt: dict) -> set[str]:
     )
 
 
+def _protected_containment_roles(receipt: dict) -> set[str]:
+    inventory = receipt.get("inventory", {})
+    topology = receipt.get("topology", {}) or inventory.get("topology", {})
+    protected = _break_glass_roles(receipt)
+    controller = topology.get("controller_role")
+    if controller:
+        protected.add(controller)
+    return protected
+
+
 def _expected_target_identity(receipt: dict) -> tuple[str | None, str | None, int | None]:
     inventory = receipt.get("inventory", {})
     expected_database = receipt.get("database_name") or inventory.get("database_name")
@@ -127,10 +137,12 @@ def _expected_target_identity(receipt: dict) -> tuple[str | None, str | None, in
 
 def _validated_target_identity(conn, receipt: dict) -> dict[str, str]:
     identity = conn.execute(
-        "SELECT session_user,current_user,rolsuper,current_database() AS database_name,"
-        "(pg_control_system()).system_identifier::text AS system_identifier,"
-        "(SELECT oid FROM pg_database WHERE datname=current_database()) AS database_oid "
-        "FROM pg_roles WHERE rolname=session_user"
+        "SELECT session_user,current_user,role.rolsuper,"
+        "pg_catalog.current_database() AS database_name,"
+        "(pg_catalog.pg_control_system()).system_identifier::text AS system_identifier,"
+        "(SELECT database.oid FROM pg_catalog.pg_database database "
+        "WHERE database.datname=pg_catalog.current_database()) AS database_oid "
+        "FROM pg_catalog.pg_roles role WHERE role.rolname=session_user"
     ).fetchone()
     expected_database, expected_system_identifier, expected_database_oid = (
         _expected_target_identity(receipt)
@@ -158,63 +170,81 @@ def _validated_target_identity(conn, receipt: dict) -> dict[str, str]:
     }
 
 
-def _containment_marker(receipt: dict, rollback_sql: str, target_identity: dict[str, str]) -> dict[str, str]:
+def _containment_marker(receipt: dict, rollback_sql: str, target_identity: dict[str, str]) -> dict:
     rollback_sql_sha256 = hashlib.sha256(rollback_sql.encode("utf-8")).hexdigest()
     source_receipt_digest = receipt.get("receipt_authentication", {}).get("digest", "")
     marker_binding = {
         "database_name": target_identity["database_name"],
         "system_identifier": target_identity["system_identifier"],
         "database_oid": target_identity["database_oid"],
-        "executed_by": target_identity["session_user"],
         "rollback_sql_sha256": rollback_sql_sha256,
         "source_receipt_digest": source_receipt_digest,
     }
     marker_id = hashlib.sha256(
         json.dumps(marker_binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    return {"marker_id": marker_id, **marker_binding}
+    return {
+        "marker_id": marker_id,
+        **marker_binding,
+        "executed_by": target_identity["session_user"],
+        "affected_role_names": [],
+        "affected_role_oids": [],
+    }
 
 
 def _execute_database_containment_sql(conn, rollback_sql: str) -> None:
     conn.execute(rollback_sql)
 
 
-def _write_database_containment_marker(conn, *, marker: dict) -> None:
+def _write_database_containment_marker(
+    conn,
+    *,
+    marker: dict,
+    approved_break_glass_roles: set[str] | None = None,
+) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS public.applypilot_rollback_commit_markers("
         "marker_id text PRIMARY KEY,database_name text NOT NULL,system_identifier text NOT NULL,"
         "database_oid oid NOT NULL,"
-        "executed_by text NOT NULL,rollback_sql_sha256 text NOT NULL,source_receipt_digest text NOT NULL,"
+        "executed_by text NOT NULL,affected_role_names text[] NOT NULL,affected_role_oids oid[] NOT NULL,"
+        "rollback_sql_sha256 text NOT NULL,source_receipt_digest text NOT NULL,"
         "committed_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp())"
     )
     relation = conn.execute(
         "SELECT relation.relkind,relation.relpersistence,relation.relrowsecurity,"
         "relation.relforcerowsecurity,owner.rolname AS owner_name,"
-        "(SELECT count(*) FROM pg_trigger trigger WHERE trigger.tgrelid=relation.oid "
+        "(SELECT count(*) FROM pg_catalog.pg_trigger trigger WHERE trigger.tgrelid=relation.oid "
         "AND NOT trigger.tgisinternal) AS trigger_count,"
-        "(SELECT count(*) FROM pg_policy policy WHERE policy.polrelid=relation.oid) AS policy_count,"
-        "(SELECT count(*) FROM aclexplode(COALESCE(relation.relacl,acldefault('r',relation.relowner))) acl "
+        "(SELECT count(*) FROM pg_catalog.pg_policy policy "
+        "WHERE policy.polrelid=relation.oid) AS policy_count,"
+        "(SELECT count(*) FROM pg_catalog.aclexplode(COALESCE(relation.relacl,"
+        "pg_catalog.acldefault('r',relation.relowner))) acl "
         "WHERE acl.grantee<>relation.relowner) AS nonowner_acl_count "
-        "FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace "
-        "JOIN pg_roles owner ON owner.oid=relation.relowner "
+        "FROM pg_catalog.pg_class relation JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=relation.relnamespace "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=relation.relowner "
         "WHERE namespace.nspname='public' AND relation.relname='applypilot_rollback_commit_markers'"
     ).fetchone()
+    approved_owners = approved_break_glass_roles or {marker["executed_by"]}
     expected_relation = {
         "relkind": "r",
         "relpersistence": "p",
         "relrowsecurity": False,
         "relforcerowsecurity": False,
-        "owner_name": marker["executed_by"],
         "trigger_count": 0,
         "policy_count": 0,
         "nonowner_acl_count": 0,
     }
-    if relation != expected_relation:
+    if (
+        relation is None
+        or relation.get("owner_name") not in approved_owners
+        or any(relation.get(key) != value for key, value in expected_relation.items())
+    ):
         raise RuntimeError(f"database containment marker relation is unsafe: {relation!r}")
     columns = conn.execute(
-        "SELECT attribute.attname,format_type(attribute.atttypid,attribute.atttypmod) AS data_type,"
-        "attribute.attnotnull FROM pg_attribute attribute "
-        "WHERE attribute.attrelid='public.applypilot_rollback_commit_markers'::regclass "
+        "SELECT attribute.attname,pg_catalog.format_type(attribute.atttypid,attribute.atttypmod) "
+        "AS data_type,attribute.attnotnull FROM pg_catalog.pg_attribute attribute "
+        "WHERE attribute.attrelid='public.applypilot_rollback_commit_markers'::pg_catalog.regclass "
         "AND attribute.attnum>0 AND NOT attribute.attisdropped ORDER BY attribute.attnum"
     ).fetchall()
     expected_columns = [
@@ -223,6 +253,8 @@ def _write_database_containment_marker(conn, *, marker: dict) -> None:
         {"attname": "system_identifier", "data_type": "text", "attnotnull": True},
         {"attname": "database_oid", "data_type": "oid", "attnotnull": True},
         {"attname": "executed_by", "data_type": "text", "attnotnull": True},
+        {"attname": "affected_role_names", "data_type": "text[]", "attnotnull": True},
+        {"attname": "affected_role_oids", "data_type": "oid[]", "attnotnull": True},
         {"attname": "rollback_sql_sha256", "data_type": "text", "attnotnull": True},
         {"attname": "source_receipt_digest", "data_type": "text", "attnotnull": True},
         {"attname": "committed_at", "data_type": "timestamp with time zone", "attnotnull": True},
@@ -231,15 +263,23 @@ def _write_database_containment_marker(conn, *, marker: dict) -> None:
         raise RuntimeError(f"database containment marker column contract mismatch: {columns!r}")
     conn.execute(
         "INSERT INTO public.applypilot_rollback_commit_markers("
-        "marker_id,database_name,system_identifier,database_oid,executed_by,"
+        "marker_id,database_name,system_identifier,database_oid,executed_by,affected_role_names,affected_role_oids,"
         "rollback_sql_sha256,source_receipt_digest) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(marker_id) DO NOTHING",
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(marker_id) DO UPDATE SET "
+        "affected_role_names=COALESCE((SELECT pg_catalog.array_agg(DISTINCT role_name ORDER BY role_name) "
+        "FROM pg_catalog.unnest(public.applypilot_rollback_commit_markers.affected_role_names "
+        "|| EXCLUDED.affected_role_names) role_name),ARRAY[]::text[]),"
+        "affected_role_oids=COALESCE((SELECT pg_catalog.array_agg(DISTINCT role_oid ORDER BY role_oid) "
+        "FROM pg_catalog.unnest(public.applypilot_rollback_commit_markers.affected_role_oids "
+        "|| EXCLUDED.affected_role_oids) role_oid),ARRAY[]::oid[])",
         (
             marker["marker_id"],
             marker["database_name"],
             marker["system_identifier"],
             marker["database_oid"],
             marker["executed_by"],
+            marker["affected_role_names"],
+            marker["affected_role_oids"],
             marker["rollback_sql_sha256"],
             marker["source_receipt_digest"],
         ),
@@ -250,66 +290,345 @@ def _commit_database_containment_transaction(conn) -> None:
     conn.commit()
 
 
+class ContainmentCommitOutcomeUnknown(RuntimeError):
+    """The server may have committed containment although COMMIT acknowledgement failed."""
+
+    def __init__(self, commit_error: BaseException, rollback_error: BaseException | None):
+        super().__init__("database containment COMMIT outcome is unknown")
+        self.commit_error = commit_error
+        self.rollback_error = rollback_error
+
+
+class ContainmentCommitUnreconciled(RuntimeError):
+    """Commit acknowledgement was lost and independent marker observation failed."""
+
+    def __init__(self, message: str, *, evidence_errors: BaseExceptionGroup):
+        super().__init__(message)
+        self.evidence_errors = evidence_errors
+
+
+class ContainmentCommitReconciledConnectionLost(RuntimeError):
+    """Containment committed, but the executor connection cannot safely continue."""
+
+    def __init__(self, marker: dict, *, evidence_errors: BaseExceptionGroup):
+        super().__init__("database containment committed but its executor connection was lost")
+        self.marker = marker
+        self.evidence_errors = evidence_errors
+
+
+def _affected_authority_roles(conn, *, protected_roles: set[str]) -> tuple[list[str], list[int]]:
+    if conn.execute(
+        "SELECT pg_catalog.to_regclass('pg_temp.applypilot_authority_containment_roles') "
+        "AS relation"
+    ).fetchone()["relation"] is None:
+        return [], []
+    rows = conn.execute(
+        "SELECT role.oid,role.rolname FROM pg_temp.applypilot_authority_containment_roles contained "
+        "JOIN pg_catalog.pg_roles role ON role.oid=contained.role_oid "
+        "WHERE NOT role.rolname=ANY(%s) ORDER BY role.rolname",
+        (sorted(protected_roles),),
+    ).fetchall()
+    return [row["rolname"] for row in rows], [int(row["oid"]) for row in rows]
+
+
 def _assert_database_containment_marker(conn, *, marker: dict) -> dict:
     observed = conn.execute(
-        "SELECT marker_id,database_name,system_identifier,database_oid,executed_by,rollback_sql_sha256,"
+        "SELECT marker_id,database_name,system_identifier,database_oid,executed_by,affected_role_names,affected_role_oids,rollback_sql_sha256,"
         "source_receipt_digest,committed_at FROM public.applypilot_rollback_commit_markers "
         "WHERE marker_id=%s",
         (marker["marker_id"],),
     ).fetchone()
     conn.commit()
-    if observed is None or any(observed[key] != value for key, value in marker.items()):
+    stable_keys = (
+        "marker_id",
+        "database_name",
+        "system_identifier",
+        "database_oid",
+        "rollback_sql_sha256",
+        "source_receipt_digest",
+    )
+    if observed is None or any(observed[key] != marker[key] for key in stable_keys):
         raise RuntimeError("database containment committed but its durable marker binding is invalid")
     committed_at = observed["committed_at"]
     return {
         **marker,
+        "executed_by": observed["executed_by"],
+        "affected_role_names": list(observed["affected_role_names"]),
+        "affected_role_oids": [int(oid) for oid in observed["affected_role_oids"]],
         "relation": _CONTAINMENT_MARKER_RELATION,
         "visible": True,
         "committed_at": committed_at.isoformat() if hasattr(committed_at, "isoformat") else str(committed_at),
     }
 
 
-def _commit_database_containment(conn, rollback_sql: str, *, marker: dict) -> dict:
+def _commit_database_containment(
+    conn,
+    rollback_sql: str,
+    *,
+    marker: dict,
+    protected_roles: set[str] | None = None,
+    approved_break_glass_roles: set[str] | None = None,
+) -> dict:
     """Commit rollback SQL and its idempotent database marker atomically."""
 
     try:
         _execute_database_containment_sql(conn, rollback_sql)
-        _write_database_containment_marker(conn, marker=marker)
-        _commit_database_containment_transaction(conn)
+        affected_names, affected_oids = _affected_authority_roles(
+            conn, protected_roles=protected_roles or set()
+        )
+        marker = {
+            **marker,
+            "affected_role_names": affected_names,
+            "affected_role_oids": affected_oids,
+        }
+        _write_database_containment_marker(
+            conn,
+            marker=marker,
+            approved_break_glass_roles=approved_break_glass_roles,
+        )
     except BaseException:
         conn.rollback()
         raise
+    try:
+        _commit_database_containment_transaction(conn)
+    except BaseException as commit_error:
+        rollback_error = None
+        try:
+            conn.rollback()
+        except BaseException as error:
+            rollback_error = error
+        raise ContainmentCommitOutcomeUnknown(commit_error, rollback_error) from commit_error
     return _assert_database_containment_marker(conn, marker=marker)
 
 
-def _assert_candidate_artifact_containment(conn, *, break_glass_roles: set[str]) -> dict[str, int]:
-    del break_glass_roles  # Explicit break-glass superusers are inherently outside role ACL containment.
+def _terminate_affected_sessions(
+    conn,
+    *,
+    affected_role_names: list[str],
+    affected_role_oids: list[int] | None = None,
+    protected_roles: set[str],
+) -> int:
+    targets = sorted(set(affected_role_names) - protected_roles)
+    target_oids = sorted(set(affected_role_oids or []))
+    if not targets and not target_oids:
+        return 0
+    terminated = conn.execute(
+        "WITH targets(pid) AS MATERIALIZED ("
+        "SELECT activity.pid FROM pg_catalog.pg_stat_activity activity "
+        "WHERE activity.pid<>pg_catalog.pg_backend_pid() "
+        "AND (activity.usename=ANY(%s) OR activity.usesysid=ANY(%s))) "
+        "SELECT count(*) AS terminated FROM targets "
+        "WHERE pg_catalog.pg_terminate_backend(targets.pid,5000)",
+        (targets, target_oids),
+    ).fetchone()
+    conn.commit()
+    remaining = conn.execute(
+        "SELECT activity.pid,activity.usename FROM pg_catalog.pg_stat_activity activity "
+        "WHERE activity.pid<>pg_catalog.pg_backend_pid() "
+        "AND (activity.usename=ANY(%s) OR activity.usesysid=ANY(%s)) "
+        "ORDER BY activity.pid",
+        (targets, target_oids),
+    ).fetchall()
+    conn.commit()
+    if remaining:
+        raise RuntimeError(f"affected authority sessions survived termination: {remaining!r}")
+    return int(terminated["terminated"])
+
+
+def _commit_with_authenticated_reconciliation(
+    conn,
+    rollback_sql: str,
+    *,
+    marker: dict,
+    protected_roles: set[str],
+    admin_dsn: str,
+    receipt: dict,
+) -> dict:
+    try:
+        return _commit_database_containment(
+            conn,
+            rollback_sql,
+            marker=marker,
+            protected_roles=protected_roles,
+            approved_break_glass_roles=_break_glass_roles(receipt),
+        )
+    except ContainmentCommitOutcomeUnknown as unknown:
+        try:
+            with psycopg.connect(admin_dsn, row_factory=dict_row) as observer:
+                _validated_target_identity(observer, receipt)
+                observer.commit()
+                observed_marker = _assert_database_containment_marker(observer, marker=marker)
+                errors: list[BaseException] = [unknown.commit_error]
+                if unknown.rollback_error is not None:
+                    errors.append(unknown.rollback_error)
+                evidence_errors = BaseExceptionGroup(
+                    "reconciled containment commit acknowledgement loss", errors
+                )
+                raise ContainmentCommitReconciledConnectionLost(
+                    observed_marker,
+                    evidence_errors=evidence_errors,
+                ) from evidence_errors
+        except ContainmentCommitReconciledConnectionLost:
+            raise
+        except BaseException as observation_error:
+            errors: list[BaseException] = [unknown.commit_error]
+            if unknown.rollback_error is not None:
+                errors.append(unknown.rollback_error)
+            errors.append(observation_error)
+            evidence_errors = BaseExceptionGroup("containment commit outcome evidence", errors)
+            raise ContainmentCommitUnreconciled(
+                "database containment COMMIT acknowledgement was lost and the authenticated "
+                "durable marker could not be observed",
+                evidence_errors=evidence_errors,
+            ) from evidence_errors
+
+
+def _assert_candidate_artifact_containment(
+    conn,
+    *,
+    break_glass_roles: set[str],
+    affected_role_names: list[str] | None = None,
+    affected_role_oids: list[int] | None = None,
+) -> dict[str, int]:
     function_routes = conn.execute(
         "SELECT count(*) FILTER (WHERE function.proname LIKE 'brain_publish_v%_candidate') "
         "AS candidate_execute_routes,"
         "count(*) FILTER (WHERE function.proname LIKE "
         "'brain_register_authoritative_artifact_manifest%') AS artifact_execute_routes "
-        "FROM pg_proc function JOIN pg_namespace namespace ON namespace.oid=function.pronamespace "
-        "CROSS JOIN LATERAL aclexplode(COALESCE(function.proacl,acldefault('f',function.proowner))) acl "
+        "FROM pg_catalog.pg_proc function JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=function.pronamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(function.proacl,"
+        "pg_catalog.acldefault('f',function.proowner))) acl "
         "WHERE namespace.nspname='public' AND acl.privilege_type='EXECUTE' "
         "AND acl.grantee<>function.proowner"
     ).fetchone()
     membership_routes = conn.execute(
         "WITH RECURSIVE roots(role_oid) AS ("
-        "SELECT oid FROM pg_roles WHERE rolname LIKE 'brain_candidate_%' "
-        "OR rolname LIKE 'brain_artifact_authority_%'), closure(role_oid,path) AS ("
-        "SELECT role_oid,ARRAY[role_oid] FROM roots UNION ALL "
-        "SELECT membership.member,closure.path||membership.member FROM closure "
-        "JOIN pg_auth_members membership ON membership.roleid=closure.role_oid "
-        "WHERE NOT membership.member=ANY(closure.path)) "
-        "SELECT count(*) AS set_role_routes FROM pg_auth_members membership "
+        "SELECT oid FROM pg_catalog.pg_roles WHERE rolname LIKE 'brain_candidate_%' "
+        "OR rolname LIKE 'brain_artifact_authority_%'), closure(role_oid) AS ("
+        "SELECT role_oid FROM roots UNION "
+        "SELECT membership.member FROM closure "
+        "JOIN pg_catalog.pg_auth_members membership ON membership.roleid=closure.role_oid "
+        ") "
+        "SELECT count(*) AS set_role_routes FROM pg_catalog.pg_auth_members membership "
         "WHERE membership.roleid IN (SELECT role_oid FROM closure)"
     ).fetchone()
+    protected_roles = sorted(break_glass_roles)
+    affected_roles = sorted(set(affected_role_names or []) - break_glass_roles)
+    affected_oids = sorted(set(affected_role_oids or []))
+    authority = conn.execute(
+        "SELECT "
+        "count(*) FILTER (WHERE role.rolcanlogin) AS affected_logins,"
+        "count(*) FILTER (WHERE activity.pid IS NOT NULL) AS affected_sessions "
+        "FROM pg_catalog.pg_roles role LEFT JOIN pg_catalog.pg_stat_activity activity "
+        "ON (activity.usename=role.rolname OR activity.usesysid=ANY(%s)) "
+        "AND activity.pid<>pg_catalog.pg_backend_pid() "
+        "WHERE (role.rolname=ANY(%s) OR role.oid=ANY(%s)) AND NOT role.rolname=ANY(%s)",
+        (affected_oids, affected_roles, affected_oids, protected_roles),
+    ).fetchone()
+    residual = conn.execute(
+        "SELECT "
+        "count(*) FILTER (WHERE pg_catalog.has_database_privilege(role.rolname,"
+        "pg_catalog.current_database(),'CONNECT')) AS affected_connect_routes,"
+        "count(*) FILTER (WHERE database.datdba=role.oid) AS affected_database_owners "
+        "FROM pg_catalog.pg_roles role "
+        "LEFT JOIN pg_catalog.pg_database database "
+        "ON database.datname=pg_catalog.current_database() "
+        "WHERE role.rolname=ANY(%s) AND NOT role.rolname=ANY(%s)",
+        (affected_roles, protected_roles),
+    ).fetchone()
+    object_owners = conn.execute(
+        "SELECT "
+        "(SELECT count(*) FROM pg_catalog.pg_namespace namespace JOIN pg_catalog.pg_roles role "
+        "ON role.oid=namespace.nspowner WHERE (role.rolname=ANY(%s) OR role.oid=ANY(%s)) AND "
+        "(namespace.nspname IN ('public','brain_archive') OR left(namespace.nspname,6)='brain_')) "
+        "AS affected_schema_owners,"
+        "(SELECT count(*) FROM pg_catalog.pg_proc executable JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=executable.pronamespace JOIN pg_catalog.pg_roles role "
+        "ON role.oid=executable.proowner WHERE (role.rolname=ANY(%s) OR role.oid=ANY(%s)) AND "
+        "((namespace.nspname='public' AND left(executable.proname,6)='brain_') "
+        "OR namespace.nspname='brain_archive')) AS affected_executable_owners,"
+        "(SELECT count(*) FROM pg_catalog.pg_class relation JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=relation.relnamespace JOIN pg_catalog.pg_roles role "
+        "ON role.oid=relation.relowner WHERE (role.rolname=ANY(%s) OR role.oid=ANY(%s)) AND "
+        "((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive')) AS affected_relation_owners,"
+        "(SELECT count(*) FROM pg_catalog.pg_type type JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=type.typnamespace JOIN pg_catalog.pg_roles role ON role.oid=type.typowner "
+        "WHERE (role.rolname=ANY(%s) OR role.oid=ANY(%s)) AND type.typrelid=0 "
+        "AND type.typelem=0 AND "
+        "((namespace.nspname='public' AND left(type.typname,6)='brain_') "
+        "OR namespace.nspname='brain_archive')) AS affected_type_owners",
+        (
+            affected_roles,
+            affected_oids,
+            affected_roles,
+            affected_oids,
+            affected_roles,
+            affected_oids,
+            affected_roles,
+            affected_oids,
+        ),
+    ).fetchone()
+    if affected_roles or affected_oids:
+        broad_routes = conn.execute(
+        "SELECT "
+        "(SELECT count(*) FROM pg_catalog.pg_proc executable "
+        "JOIN pg_catalog.pg_namespace namespace ON namespace.oid=executable.pronamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(executable.proacl,"
+        "pg_catalog.acldefault('f',executable.proowner))) acl WHERE "
+        "((namespace.nspname='public' AND left(executable.proname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND acl.grantee<>executable.proowner) "
+        "AS executable_acl_routes,"
+        "(SELECT count(*) FROM pg_catalog.pg_class relation "
+        "JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) acl WHERE "
+        "((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND acl.grantee<>relation.relowner) "
+        "AS relation_acl_routes,"
+        "(SELECT count(*) FROM pg_catalog.pg_attribute attribute "
+        "JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid "
+        "JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) acl WHERE "
+        "((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND acl.grantee<>relation.relowner) "
+        "AS column_acl_routes,"
+        "(SELECT count(*) FROM pg_catalog.pg_namespace namespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(namespace.nspacl,"
+        "pg_catalog.acldefault('n',namespace.nspowner))) acl WHERE "
+        "(namespace.nspname IN ('public','brain_archive') OR left(namespace.nspname,6)='brain_') "
+        "AND acl.grantee<>namespace.nspowner) AS schema_acl_routes,"
+        "(SELECT count(*) FROM pg_catalog.pg_default_acl defaults "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl WHERE "
+        "(defaults.defaclrole=ANY(%s) OR acl.grantee=ANY(%s)) "
+        "AND acl.grantee<>defaults.defaclrole) AS default_acl_routes,"
+        "(SELECT count(*) FROM pg_catalog.pg_auth_members membership WHERE "
+        "membership.roleid=ANY(%s) OR membership.member=ANY(%s)) AS affected_membership_routes",
+            (affected_oids, affected_oids, affected_oids, affected_oids),
+        ).fetchone()
+    else:
+        broad_routes = {
+            "executable_acl_routes": 0,
+            "relation_acl_routes": 0,
+            "column_acl_routes": 0,
+            "schema_acl_routes": 0,
+            "default_acl_routes": 0,
+            "affected_membership_routes": 0,
+        }
     conn.commit()
     result = {
         "candidate_execute_routes": int(function_routes["candidate_execute_routes"]),
         "artifact_execute_routes": int(function_routes["artifact_execute_routes"]),
         "set_role_routes": int(membership_routes["set_role_routes"]),
+        "affected_logins": int(authority["affected_logins"]),
+        "affected_sessions": int(authority["affected_sessions"]),
+        "affected_connect_routes": int(residual["affected_connect_routes"]),
+        "affected_database_owners": int(residual["affected_database_owners"]),
+        "affected_schema_owners": int(object_owners["affected_schema_owners"]),
+        "affected_executable_owners": int(object_owners["affected_executable_owners"]),
+        "affected_relation_owners": int(object_owners["affected_relation_owners"]),
+        "affected_type_owners": int(object_owners["affected_type_owners"]),
+        **{key: int(value) for key, value in broad_routes.items()},
     }
     if any(result.values()):
         raise RuntimeError(f"database containment postcondition failed: {result!r}")
@@ -531,6 +850,126 @@ def _emit_partial_state_receipt(
     return destination
 
 
+def _emit_commit_unknown_receipt(
+    requested_path: Path,
+    *,
+    source_receipt: dict,
+    source_receipt_evidence: dict,
+    rollback_sql_path: Path,
+    rollback_sql: str,
+    target_identity: dict,
+    marker: dict,
+    failure: ContainmentCommitUnreconciled,
+    authentication_key: bytes,
+    authentication_key_id: str,
+    partial_parent_identity: tuple[str, int, int],
+) -> Path:
+    destination, predecessor = _partial_state_destination(
+        requested_path,
+        authentication_key=authentication_key,
+        expected_key_id=authentication_key_id,
+    )
+    _require_matching_partial_state_predecessor(
+        predecessor,
+        marker_id=marker["marker_id"],
+        target_identity=target_identity,
+        source_receipt_authentication=source_receipt.get("receipt_authentication"),
+    )
+    errors = [
+        {"type": type(error).__name__, "message": str(error)}
+        for error in failure.evidence_errors.exceptions
+    ]
+    partial = {
+        "format": "applypilot-database-containment-commit-unknown-v1",
+        "status": "database_containment_commit_outcome_unknown",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "target_identity": target_identity,
+        "database_containment": {**marker, "visible": False, "commit_outcome": "unknown"},
+        "rollback_sql": {
+            "path": str(rollback_sql_path),
+            "sha256": hashlib.sha256(rollback_sql.encode("utf-8")).hexdigest(),
+        },
+        "failure": {"type": type(failure).__name__, "message": str(failure), "errors": errors},
+        "evidence": {
+            **source_receipt_evidence,
+            "predecessor_partial_state_receipt": predecessor,
+        },
+    }
+    authenticated = authenticate_evidence_receipt(
+        partial,
+        authentication_key=authentication_key,
+        authentication_key_id=authentication_key_id,
+    )
+    _write_exclusive_durable(
+        destination,
+        (json.dumps(authenticated, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        expected_parent_identity=partial_parent_identity,
+    )
+    return destination
+
+
+def _emit_commit_reconciled_receipt(
+    requested_path: Path,
+    *,
+    source_receipt: dict,
+    source_receipt_evidence: dict,
+    rollback_sql_path: Path,
+    rollback_sql: str,
+    target_identity: dict,
+    failure: ContainmentCommitReconciledConnectionLost,
+    authentication_key: bytes,
+    authentication_key_id: str,
+    partial_parent_identity: tuple[str, int, int],
+) -> Path:
+    destination, predecessor = _partial_state_destination(
+        requested_path,
+        authentication_key=authentication_key,
+        expected_key_id=authentication_key_id,
+    )
+    _require_matching_partial_state_predecessor(
+        predecessor,
+        marker_id=failure.marker["marker_id"],
+        target_identity=target_identity,
+        source_receipt_authentication=source_receipt.get("receipt_authentication"),
+    )
+    errors = [
+        {"type": type(error).__name__, "message": str(error)}
+        for error in failure.evidence_errors.exceptions
+    ]
+    partial = {
+        "format": "applypilot-database-containment-commit-reconciled-v1",
+        "status": "database_containment_committed_executor_connection_lost",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "target_identity": target_identity,
+        "database_containment": {
+            **failure.marker,
+            "visible": True,
+            "session_fence_complete": False,
+            "retry_required": True,
+        },
+        "rollback_sql": {
+            "path": str(rollback_sql_path),
+            "sha256": hashlib.sha256(rollback_sql.encode("utf-8")).hexdigest(),
+        },
+        "failure": {"type": type(failure).__name__, "message": str(failure), "errors": errors},
+        "evidence": {
+            **source_receipt_evidence,
+            "predecessor_partial_state_receipt": predecessor,
+        },
+    }
+    authenticated = authenticate_evidence_receipt(
+        partial,
+        authentication_key=authentication_key,
+        authentication_key_id=authentication_key_id,
+    )
+    _write_exclusive_durable(
+        destination,
+        (json.dumps(authenticated, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        expected_parent_identity=partial_parent_identity,
+    )
+    return destination
+
+
 def _require_matching_partial_state_predecessor(
     predecessor: dict | None,
     *,
@@ -538,9 +977,14 @@ def _require_matching_partial_state_predecessor(
     target_identity: dict[str, str],
     source_receipt_authentication: dict | None,
 ) -> None:
+    stable_target_keys = ("database_name", "system_identifier", "database_oid")
+    predecessor_target = (predecessor or {}).get("target_identity") or {}
+    same_target = all(
+        predecessor_target.get(key) == target_identity.get(key) for key in stable_target_keys
+    )
     if predecessor is not None and (
         predecessor["marker_id"] != marker_id
-        or predecessor["target_identity"] != target_identity
+        or not same_target
         or predecessor["source_receipt_authentication"] != source_receipt_authentication
     ):
         raise RuntimeError("partial-state predecessor does not bind the same target and rollback evidence")
@@ -551,6 +995,8 @@ def _replace_atomic(
     payload: bytes,
     *,
     expected_identity: tuple[int, int],
+    expected_content: bytes,
+    expected_sha256: str,
     replacement_mode: int,
     replacement_owner: tuple[int, int],
 ) -> None:
@@ -594,11 +1040,31 @@ def _replace_atomic(
                 os.fchown(stream.fileno(), *replacement_owner)
             os.fsync(stream.fileno())
         parent_after = os.lstat(path.parent)
-        target_after = os.lstat(path)
         if (parent_after.st_dev, parent_after.st_ino) != (parent_before.st_dev, parent_before.st_ino):
             raise RuntimeError("HBA parent changed before replacement")
-        if (target_after.st_dev, target_after.st_ino) != expected_identity:
-            raise RuntimeError("HBA target changed before replacement")
+        if parent_descriptor is not None:
+            target_descriptor = os.open(
+                path.name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_descriptor,
+            )
+        else:
+            target_descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened_target = os.fstat(target_descriptor)
+            if (opened_target.st_dev, opened_target.st_ino) != expected_identity:
+                raise RuntimeError("HBA target changed before replacement")
+            with os.fdopen(target_descriptor, "rb", closefd=False) as target_stream:
+                observed_content = target_stream.read()
+            if (
+                observed_content != expected_content
+                or not hmac.compare_digest(
+                    hashlib.sha256(observed_content).hexdigest(), expected_sha256
+                )
+            ):
+                raise RuntimeError("HBA target content changed after authenticated validation")
+        finally:
+            os.close(target_descriptor)
         if parent_descriptor is not None:
             os.replace(
                 temporary.name,
@@ -678,12 +1144,16 @@ def _restore_hba_and_reload(conn, receipt: dict, *, validated=None) -> None:
         hba_path,
         backup,
         expected_identity=identity,
+        expected_content=current,
+        expected_sha256=hashlib.sha256(current).hexdigest(),
         replacement_mode=backup_mode,
         replacement_owner=owner,
     )
     try:
         with conn.transaction():
-            if not conn.execute("SELECT pg_reload_conf() AS reloaded").fetchone()["reloaded"]:
+            if not conn.execute(
+                "SELECT pg_catalog.pg_reload_conf() AS reloaded"
+            ).fetchone()["reloaded"]:
                 raise RuntimeError("pg_reload_conf returned false after HBA restoration")
     except BaseException:
         replacement = os.lstat(hba_path)
@@ -691,6 +1161,8 @@ def _restore_hba_and_reload(conn, receipt: dict, *, validated=None) -> None:
             hba_path,
             current,
             expected_identity=(replacement.st_dev, replacement.st_ino),
+            expected_content=backup,
+            expected_sha256=hashlib.sha256(backup).hexdigest(),
             replacement_mode=live_mode,
             replacement_owner=owner,
         )
@@ -698,7 +1170,9 @@ def _restore_hba_and_reload(conn, receipt: dict, *, validated=None) -> None:
         try:
             with conn.transaction():
                 restore_reloaded = bool(
-                    conn.execute("SELECT pg_reload_conf() AS reloaded").fetchone()["reloaded"]
+                    conn.execute(
+                        "SELECT pg_catalog.pg_reload_conf() AS reloaded"
+                    ).fetchone()["reloaded"]
                 )
         except BaseException:
             restore_reloaded = False
@@ -740,15 +1214,12 @@ def main() -> int:
         expected_key_id=expected_key_id,
     )
     source_receipt_evidence = _source_receipt_evidence(receipt_path, receipt)
-    partial_state_predecessor = None
-    partial_parent_identity = None
-    if args.restore_hba:
-        partial_parent_identity = _validate_partial_state_parent(partial_state_path)
-        _partial_destination, partial_state_predecessor = _partial_state_destination(
-            partial_state_path,
-            authentication_key=authentication_key,
-            expected_key_id=expected_key_id,
-        )
+    partial_parent_identity = _validate_partial_state_parent(partial_state_path)
+    _partial_destination, partial_state_predecessor = _partial_state_destination(
+        partial_state_path,
+        authentication_key=authentication_key,
+        expected_key_id=expected_key_id,
+    )
     admin_dsn = os.environ.pop("APPLYPILOT_ADMIN_PG_DSN", "")
     if not admin_dsn:
         raise SystemExit("APPLYPILOT_ADMIN_PG_DSN is required only for break-glass rollback")
@@ -766,21 +1237,91 @@ def main() -> int:
             if conn.info.transaction_status.name != "IDLE":
                 raise RuntimeError("HBA preflight transaction did not return to idle state")
         marker = _containment_marker(receipt, rollback_sql, target_identity)
+        protected_roles = _protected_containment_roles(receipt)
         _require_matching_partial_state_predecessor(
             partial_state_predecessor,
             marker_id=marker["marker_id"],
             target_identity=target_identity,
             source_receipt_authentication=receipt.get("receipt_authentication"),
         )
-        database_containment = _commit_database_containment(
+        def commit_phase() -> dict:
+            try:
+                return _commit_with_authenticated_reconciliation(
+                    conn,
+                    rollback_sql,
+                    marker=marker,
+                    protected_roles=protected_roles,
+                    admin_dsn=admin_dsn,
+                    receipt=receipt,
+                )
+            except ContainmentCommitReconciledConnectionLost as error:
+                try:
+                    partial_receipt = _emit_commit_reconciled_receipt(
+                        partial_state_path,
+                        source_receipt=receipt,
+                        source_receipt_evidence=source_receipt_evidence,
+                        rollback_sql_path=rollback_path,
+                        rollback_sql=rollback_sql,
+                        target_identity=target_identity,
+                        failure=error,
+                        authentication_key=authentication_key,
+                        authentication_key_id=expected_key_id,
+                        partial_parent_identity=partial_parent_identity,
+                    )
+                except BaseException as receipt_error:
+                    raise RuntimeError(
+                        "database containment commit was reconciled, the executor connection was "
+                        "lost, and authenticated checkpoint creation failed"
+                    ) from BaseExceptionGroup(
+                        "reconciled commit and checkpoint failures", [error, receipt_error]
+                    )
+                raise RuntimeError(
+                    "database containment commit was reconciled but the executor connection was "
+                    f"lost; retry required from authenticated checkpoint={partial_receipt}"
+                ) from error
+            except ContainmentCommitUnreconciled as error:
+                try:
+                    partial_receipt = _emit_commit_unknown_receipt(
+                        partial_state_path,
+                        source_receipt=receipt,
+                        source_receipt_evidence=source_receipt_evidence,
+                        rollback_sql_path=rollback_path,
+                        rollback_sql=rollback_sql,
+                        target_identity=target_identity,
+                        marker=marker,
+                        failure=error,
+                        authentication_key=authentication_key,
+                        authentication_key_id=expected_key_id,
+                        partial_parent_identity=partial_parent_identity,
+                    )
+                except BaseException as receipt_error:
+                    raise RuntimeError(
+                        "database containment COMMIT outcome is unknown and authenticated "
+                        "checkpoint creation also failed"
+                    ) from BaseExceptionGroup(
+                        "commit ambiguity and checkpoint failures", [error, receipt_error]
+                    )
+                raise RuntimeError(
+                    "database containment COMMIT outcome is unknown; authenticated checkpoint="
+                    f"{partial_receipt}"
+                ) from error
+
+        database_containment = commit_phase()
+        print("database_containment_phase1_committed")
+        terminated_sessions = _terminate_affected_sessions(
             conn,
-            rollback_sql,
-            marker=marker,
+            affected_role_names=database_containment["affected_role_names"],
+            affected_role_oids=database_containment["affected_role_oids"],
+            protected_roles=protected_roles,
         )
+        database_containment = commit_phase()
+        database_containment["terminated_sessions"] = terminated_sessions
         print("database_rollback_committed")
         containment_postcondition = _assert_candidate_artifact_containment(
             conn,
-            break_glass_roles=_break_glass_roles(receipt),
+            break_glass_roles=protected_roles,
+            affected_role_names=database_containment["affected_role_names"],
+            affected_role_oids=database_containment["affected_role_oids"],
         )
         if args.restore_hba:
             print("hba_restore_started")

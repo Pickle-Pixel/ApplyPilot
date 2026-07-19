@@ -3120,6 +3120,8 @@ def _catalog_derived_authority_containment_sql(
     *,
     database_name: str,
     infrastructure_superuser_roles: tuple[str, ...],
+    controller_role: str,
+    containment_owner_role: str,
     managed_role_names: tuple[str, ...],
     future_owner_role_names: tuple[str, ...],
 ) -> tuple[str, str]:
@@ -3134,12 +3136,13 @@ def _catalog_derived_authority_containment_sql(
     function-name or two-edge allowlist that can fall behind an additive schema.
     """
 
-    if infrastructure_superuser_roles:
-        break_glass = sql.SQL("ARRAY[{}]::text[]").format(
-            sql.SQL(",").join(sql.Literal(role) for role in infrastructure_superuser_roles)
+    protected_role_names = (*infrastructure_superuser_roles, controller_role)
+    if protected_role_names:
+        protected_roles = sql.SQL("ARRAY[{}]::text[]").format(
+            sql.SQL(",").join(sql.Literal(role) for role in protected_role_names)
         )
     else:
-        break_glass = sql.SQL("ARRAY[]::text[]")
+        protected_roles = sql.SQL("ARRAY[]::text[]")
     if managed_role_names:
         managed_roles = sql.SQL("ARRAY[{}]::text[]").format(
             sql.SQL(",").join(sql.Literal(role) for role in managed_role_names)
@@ -3153,6 +3156,7 @@ def _catalog_derived_authority_containment_sql(
     else:
         future_owner_roles = sql.SQL("ARRAY[]::text[]")
     database = sql.Literal(database_name)
+    containment_owner = sql.Literal(containment_owner_role)
     inventory_and_containment = sql.SQL(
         "DROP TABLE IF EXISTS pg_temp.applypilot_authority_containment_roles;\n"
         "CREATE TEMPORARY TABLE applypilot_authority_containment_roles ON COMMIT DROP AS\n"
@@ -3161,18 +3165,21 @@ def _catalog_derived_authority_containment_sql(
         "  UNION\n"
         "  SELECT function.proowner FROM pg_catalog.pg_proc function\n"
         "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
-        "  WHERE namespace.nspname='public' AND left(function.proname,6)='brain_'\n"
+        "  WHERE (namespace.nspname='public' AND left(function.proname,6)='brain_') "
+        "OR namespace.nspname='brain_archive'\n"
         "  UNION\n"
         "  SELECT acl.grantee FROM pg_catalog.pg_proc function\n"
         "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
         "  CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(function.proacl,"
         "pg_catalog.acldefault('f',function.proowner))) acl\n"
-        "  WHERE namespace.nspname='public' AND left(function.proname,6)='brain_' "
+        "  WHERE ((namespace.nspname='public' AND left(function.proname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') "
         "AND acl.grantee<>0\n"
         "  UNION\n"
         "  SELECT relation.relowner FROM pg_catalog.pg_class relation\n"
         "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
-        "  WHERE namespace.nspname='public' AND left(relation.relname,6)='brain_'\n"
+        "  WHERE (namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive'\n"
         "  UNION\n"
         "  SELECT acl.grantee FROM pg_catalog.pg_class relation\n"
         "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
@@ -3193,14 +3200,19 @@ def _catalog_derived_authority_containment_sql(
         "  WHERE (namespace.nspname IN ('public','brain_archive') "
         "OR left(namespace.nspname,6)='brain_') AND left(owner.rolname,3)<>'pg_'\n"
         "  UNION\n"
+        "  SELECT type.typowner FROM pg_catalog.pg_type type\n"
+        "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=type.typnamespace\n"
+        "  WHERE ((namespace.nspname='public' AND left(type.typname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND type.typrelid=0 AND type.typelem=0\n"
+        "  UNION\n"
         "  SELECT acl.grantee FROM pg_catalog.pg_namespace namespace\n"
         "  CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) acl\n"
         "  WHERE (namespace.nspname IN ('public','brain_archive') "
         "OR left(namespace.nspname,6)='brain_') AND acl.grantee<>0\n"
-        "), authority_closure(role_oid,path) AS (\n"
-        "  SELECT role_oid,ARRAY[role_oid] FROM authority_roots\n"
-        "  UNION ALL\n"
-        "  SELECT linked.role_oid,closure.path||linked.role_oid\n"
+        "), authority_closure(role_oid) AS (\n"
+        "  SELECT role_oid FROM authority_roots\n"
+        "  UNION\n"
+        "  SELECT linked.role_oid\n"
         "  FROM authority_closure closure\n"
         "  CROSS JOIN LATERAL (\n"
         "    SELECT membership.member AS role_oid FROM pg_catalog.pg_auth_members membership\n"
@@ -3214,12 +3226,12 @@ def _catalog_derived_authority_containment_sql(
         "    CROSS JOIN LATERAL pg_catalog.aclexplode(default_acl.defaclacl) acl\n"
         "    WHERE default_acl.defaclrole=closure.role_oid AND acl.grantee<>0\n"
         "  ) linked\n"
-        "  WHERE NOT linked.role_oid=ANY(closure.path)\n"
-        ") SELECT DISTINCT role_oid FROM authority_closure;\n"
+        ") SELECT role_oid FROM authority_closure;\n"
         "DO $applypilot_containment$\n"
         "DECLARE affected record; edge record; function_acl record; relation_acl record; "
         "column_acl record; schema_acl record; default_acl record;\n"
         "BEGIN\n"
+        "  EXECUTE pg_catalog.format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC',{});\n"
         "  FOR affected IN\n"
         "    SELECT role.rolname,role.rolcanlogin FROM "
         "pg_temp.applypilot_authority_containment_roles contained\n"
@@ -3241,7 +3253,8 @@ def _catalog_derived_authority_containment_sql(
         "    END IF;\n"
         "  END LOOP;\n"
         "  FOR function_acl IN\n"
-        "    SELECT pg_catalog.format('%I.%I(%s)',namespace.nspname,function.proname,"
+        "    SELECT CASE WHEN function.prokind='p' THEN 'PROCEDURE' ELSE 'FUNCTION' END "
+        "AS object_kind,pg_catalog.format('%I.%I(%s)',namespace.nspname,function.proname,"
         "pg_catalog.pg_get_function_identity_arguments(function.oid)) AS signature,\n"
         "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
         "    FROM pg_catalog.pg_proc function\n"
@@ -3249,18 +3262,20 @@ def _catalog_derived_authority_containment_sql(
         "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(function.proacl,"
         "pg_catalog.acldefault('f',function.proowner))) acl\n"
         "    LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee\n"
-        "    WHERE namespace.nspname='public' AND left(function.proname,6)='brain_'\n"
-        "      AND function.prokind='f' AND acl.privilege_type='EXECUTE' "
+        "    WHERE ((namespace.nspname='public' AND left(function.proname,6)='brain_') "
+        "OR namespace.nspname='brain_archive')\n"
+        "      AND function.prokind IN ('f','p','a','w') AND acl.privilege_type='EXECUTE' "
         "AND acl.grantee<>function.proowner\n"
         "    ORDER BY function.oid,acl.grantee\n"
         "  LOOP\n"
         "    IF function_acl.grantee='PUBLIC' THEN\n"
         "      EXECUTE pg_catalog.format("
-        "'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC',function_acl.signature);\n"
+        "'REVOKE ALL PRIVILEGES ON %s %s FROM PUBLIC',"
+        "function_acl.object_kind,function_acl.signature);\n"
         "    ELSE\n"
         "      EXECUTE pg_catalog.format("
-        "'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I',"
-        "function_acl.signature,function_acl.grantee);\n"
+        "'REVOKE ALL PRIVILEGES ON %s %s FROM %I',"
+        "function_acl.object_kind,function_acl.signature,function_acl.grantee);\n"
         "    END IF;\n"
         "  END LOOP;\n"
         "  FOR relation_acl IN\n"
@@ -3373,17 +3388,70 @@ def _catalog_derived_authority_containment_sql(
         "    EXECUTE pg_catalog.format('REVOKE %I FROM %I CASCADE',edge.parent_role,edge.member_role);\n"
         "  END LOOP;\n"
         "END $applypilot_containment$;"
-    ).format(managed_roles, break_glass, database, future_owner_roles).as_string(cur.connection)
+    ).format(managed_roles, database, protected_roles, database, future_owner_roles).as_string(
+        cur.connection
+    )
     assertion = sql.SQL(
         "DO $applypilot_containment_assert$\n"
+        "DECLARE owned record;\n"
         "BEGIN\n"
+        "  EXECUTE pg_catalog.format('ALTER DATABASE %I OWNER TO %I',"
+        "pg_catalog.current_database(),{});\n"
+        "  FOR owned IN\n"
+        "    SELECT CASE executable.prokind WHEN 'p' THEN 'PROCEDURE' "
+        "WHEN 'a' THEN 'AGGREGATE' ELSE 'FUNCTION' END "
+        "AS object_kind,pg_catalog.format('%I.%I(%s)',namespace.nspname,executable.proname,"
+        "pg_catalog.pg_get_function_identity_arguments(executable.oid)) AS identity\n"
+        "    FROM pg_catalog.pg_proc executable JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=executable.pronamespace\n"
+        "    WHERE ((namespace.nspname='public' AND left(executable.proname,6)='brain_') "
+        "OR namespace.nspname='brain_archive')\n"
+        "      AND executable.proowner IN (SELECT role_oid FROM "
+        "pg_temp.applypilot_authority_containment_roles)\n"
+        "  LOOP EXECUTE pg_catalog.format('ALTER %s %s OWNER TO %I',"
+        "owned.object_kind,owned.identity,{}); END LOOP;\n"
+        "  FOR owned IN\n"
+        "    SELECT CASE WHEN type.typtype='d' THEN 'DOMAIN' ELSE 'TYPE' END AS object_kind,"
+        "pg_catalog.format('%I.%I',namespace.nspname,type.typname) AS identity\n"
+        "    FROM pg_catalog.pg_type type JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=type.typnamespace\n"
+        "    WHERE ((namespace.nspname='public' AND left(type.typname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND type.typrelid=0 AND type.typelem=0\n"
+        "      AND type.typowner IN (SELECT role_oid FROM "
+        "pg_temp.applypilot_authority_containment_roles)\n"
+        "  LOOP EXECUTE pg_catalog.format('ALTER %s %s OWNER TO %I',"
+        "owned.object_kind,owned.identity,{}); END LOOP;\n"
+        "  FOR owned IN\n"
+        "    SELECT CASE WHEN relation.relkind='S' THEN 'SEQUENCE' ELSE 'TABLE' END AS object_kind,"
+        "pg_catalog.format('%I.%I',namespace.nspname,relation.relname) AS identity\n"
+        "    FROM pg_catalog.pg_class relation JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=relation.relnamespace\n"
+        "    WHERE ((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND relation.relkind IN ('r','p','v','m','f','S')\n"
+        "      AND (relation.relkind<>'S' OR NOT EXISTS ("
+        "SELECT 1 FROM pg_catalog.pg_depend dependency "
+        "WHERE dependency.classid='pg_catalog.pg_class'::pg_catalog.regclass "
+        "AND dependency.objid=relation.oid AND dependency.deptype IN ('a','i')))\n"
+        "      AND relation.relowner IN (SELECT role_oid FROM "
+        "pg_temp.applypilot_authority_containment_roles)\n"
+        "  LOOP EXECUTE pg_catalog.format('ALTER %s %s OWNER TO %I',"
+        "owned.object_kind,owned.identity,{}); END LOOP;\n"
+        "  FOR owned IN\n"
+        "    SELECT namespace.nspname AS schema_name FROM pg_catalog.pg_namespace namespace\n"
+        "    WHERE (namespace.nspname IN ('public','brain_archive') "
+        "OR left(namespace.nspname,6)='brain_')\n"
+        "      AND namespace.nspowner IN (SELECT role_oid FROM "
+        "pg_temp.applypilot_authority_containment_roles)\n"
+        "  LOOP EXECUTE pg_catalog.format('ALTER SCHEMA %I OWNER TO %I',"
+        "owned.schema_name,{}); END LOOP;\n"
         "  IF EXISTS (\n"
         "    SELECT 1 FROM pg_catalog.pg_proc function\n"
         "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
         "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(function.proacl,"
         "pg_catalog.acldefault('f',function.proowner))) acl\n"
-        "    WHERE namespace.nspname='public' AND left(function.proname,6)='brain_'\n"
-        "      AND function.prokind='f' AND acl.privilege_type='EXECUTE' "
+        "    WHERE ((namespace.nspname='public' AND left(function.proname,6)='brain_') "
+        "OR namespace.nspname='brain_archive')\n"
+        "      AND function.prokind IN ('f','p','a','w') AND acl.privilege_type='EXECUTE' "
         "AND acl.grantee<>function.proowner\n"
         "  ) THEN RAISE EXCEPTION 'authority containment left a non-owner brain function EXECUTE route';\n"
         "  END IF;\n"
@@ -3422,6 +3490,53 @@ def _catalog_derived_authority_containment_sql(
         "  ) THEN RAISE EXCEPTION 'authority containment left a connected default-privilege route';\n"
         "  END IF;\n"
         "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_database database JOIN pg_catalog.pg_roles owner "
+        "ON owner.oid=database.datdba\n"
+        "    WHERE database.datname=pg_catalog.current_database() AND database.datdba IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "      AND NOT owner.rolname=ANY({})\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left affected database ownership';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_namespace namespace JOIN pg_catalog.pg_roles owner "
+        "ON owner.oid=namespace.nspowner\n"
+        "    WHERE (namespace.nspname IN ('public','brain_archive') "
+        "OR left(namespace.nspname,6)='brain_') AND namespace.nspowner IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "      AND NOT owner.rolname=ANY({})\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left affected schema ownership';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_proc executable JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=executable.pronamespace JOIN pg_catalog.pg_roles owner "
+        "ON owner.oid=executable.proowner\n"
+        "    WHERE ((namespace.nspname='public' AND left(executable.proname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND executable.proowner IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "      AND NOT owner.rolname=ANY({})\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left affected executable ownership';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_class relation JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=relation.relnamespace JOIN pg_catalog.pg_roles owner "
+        "ON owner.oid=relation.relowner\n"
+        "    WHERE ((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND relation.relowner IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "      AND NOT owner.rolname=ANY({})\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left affected relation ownership';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_type type JOIN pg_catalog.pg_namespace namespace "
+        "ON namespace.oid=type.typnamespace JOIN pg_catalog.pg_roles owner ON owner.oid=type.typowner\n"
+        "    WHERE ((namespace.nspname='public' AND left(type.typname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND type.typrelid=0 AND type.typelem=0 "
+        "AND type.typowner IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "      AND NOT owner.rolname=ANY({})\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left affected type ownership';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
         "    SELECT 1 FROM pg_catalog.pg_auth_members membership\n"
         "    WHERE membership.roleid IN ("
         "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
@@ -3434,7 +3549,19 @@ def _catalog_derived_authority_containment_sql(
         "  ) THEN RAISE EXCEPTION 'authority containment left an affected LOGIN provider';\n"
         "  END IF;\n"
         "END $applypilot_containment_assert$;"
-    ).format(break_glass).as_string(cur.connection)
+    ).format(
+        containment_owner,
+        containment_owner,
+        containment_owner,
+        containment_owner,
+        containment_owner,
+        protected_roles,
+        protected_roles,
+        protected_roles,
+        protected_roles,
+        protected_roles,
+        protected_roles,
+    ).as_string(cur.connection)
     return inventory_and_containment, assertion
 
 
@@ -3454,6 +3581,8 @@ def _forward_v7_containment_sql(
         cur,
         database_name=database_name,
         infrastructure_superuser_roles=topology.infrastructure_superuser_roles,
+        controller_role=topology.controller_role,
+        containment_owner_role=topology.infrastructure_superuser_roles[0],
         managed_role_names=(
             topology.database_owner_role,
             topology.controller_role,
