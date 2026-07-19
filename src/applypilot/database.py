@@ -872,6 +872,7 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
             evidence_node_ids_json TEXT,
             title_signals_json      TEXT,
             explanation            TEXT,
+            decision_snapshot_json  TEXT,
             input_hash             TEXT NOT NULL,
             created_at             TEXT NOT NULL,
             expires_at             TEXT,
@@ -881,6 +882,11 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
                 REFERENCES decision_policy_versions(policy_version, lane)
         )
     """)
+    job_decision_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+    }
+    if "decision_snapshot_json" not in job_decision_columns:
+        conn.execute("ALTER TABLE job_decisions ADD COLUMN decision_snapshot_json TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reviewed_outcomes (
             event_id          TEXT NOT NULL,

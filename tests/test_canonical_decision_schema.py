@@ -119,6 +119,11 @@ def test_init_db_creates_canonical_decision_schema(tmp_path) -> None:
     }
     assert {"decision_policy_versions", "job_decisions", "reviewed_outcomes"} <= tables
 
+    decision_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+    }
+    assert "decision_snapshot_json" in decision_columns
+
     job_columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     assert {
         "canonical_decision_id",
@@ -194,6 +199,44 @@ def test_init_db_migrates_existing_jobs_database_additively(tmp_path) -> None:
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
+
+
+def test_init_db_adds_decision_snapshot_without_rewriting_existing_decisions(tmp_path) -> None:
+    db_path = tmp_path / "previous-canonical.db"
+    previous = _create_previous_canonical_schema(db_path)
+    _insert_decision(previous, "preserved-decision")
+    previous.commit()
+    previous.close()
+
+    conn = database.init_db(db_path)
+
+    columns = {
+        row[1]: row for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+    }
+    assert columns["decision_snapshot_json"][2].upper() == "TEXT"
+    assert columns["decision_snapshot_json"][3] == 0
+    assert columns["decision_snapshot_json"][4] is None
+    assert conn.execute(
+        "SELECT decision_snapshot_json FROM job_decisions WHERE decision_id = ?",
+        ("preserved-decision",),
+    ).fetchone()[0] is None
+
+    snapshot = (
+        '{"recommendationLane":"core_fit","requiredCoverage":10,'
+        '"schemaVersion":"applypilot_canonical_decision_snapshot_v1"}'
+    )
+    conn.execute(
+        "UPDATE job_decisions SET decision_snapshot_json = ? WHERE decision_id = ?",
+        (snapshot, "preserved-decision"),
+    )
+    conn.commit()
+    database.close_connection(db_path)
+
+    reopened = database.init_db(db_path)
+    assert reopened.execute(
+        "SELECT decision_snapshot_json FROM job_decisions WHERE decision_id = ?",
+        ("preserved-decision",),
+    ).fetchone()[0] == snapshot
 
 
 def test_upgrade_installs_lane_consistency_triggers(tmp_path) -> None:
