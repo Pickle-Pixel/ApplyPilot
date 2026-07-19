@@ -56,6 +56,12 @@ _CANDIDATE_V4_PUBLISH_SIGNATURE = (
 _CANDIDATE_V5_PUBLISH_SIGNATURE = (
     "public.brain_publish_v5_candidate(text,text,text,text,text,bigint,uuid,text,text,text,text,text,bigint)"
 )
+_ARTIFACT_REGISTER_SIGNATURE = (
+    "public.brain_register_authoritative_artifact_manifest(uuid,text,text,text,timestamptz,timestamptz,text,text,jsonb)"
+)
+_ARTIFACT_REGISTER_V6_SIGNATURE = (
+    "public.brain_register_authoritative_artifact_manifest_v6(uuid,text,text,text,timestamptz,timestamptz,text,text,jsonb)"
+)
 
 
 @dataclass(frozen=True)
@@ -3140,7 +3146,7 @@ def _conditional_function_revoke(
     )
 
 
-def _forward_v5_deactivation_sql(
+def _forward_v7_containment_sql(
     cur,
     *,
     topology: BootstrapTopology,
@@ -3150,7 +3156,7 @@ def _forward_v5_deactivation_sql(
     other_databases: tuple[dict[str, Any], ...],
     retired_memberships: tuple[dict[str, Any], ...],
 ) -> str:
-    """Deactivate the combined release while preserving additive authority data."""
+    """Contain V4-V7 authority capabilities while preserving additive evidence data."""
     database = sql.Identifier(database_name).as_string(cur.connection)
     controller_revoke = (
         sql.SQL("REVOKE {} FROM {}")
@@ -3179,8 +3185,11 @@ def _forward_v5_deactivation_sql(
     for role_name in (
         topology.controller_role,
         topology.verifier_role,
+        topology.migrator_role,
         BRAIN_CANDIDATE_READER_ROLE,
         BRAIN_CANDIDATE_WRITER_ROLE,
+        BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE,
+        BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE,
     ):
         revoke = (
             sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM {}")
@@ -3198,6 +3207,31 @@ def _forward_v5_deactivation_sql(
                 role_name=BRAIN_CANDIDATE_WRITER_ROLE,
             )
         )
+    for signature in (_ARTIFACT_REGISTER_SIGNATURE, _ARTIFACT_REGISTER_V6_SIGNATURE):
+        statements.append(
+            _conditional_function_revoke(
+                cur,
+                signature=signature,
+                role_name=BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE,
+            )
+        )
+    for parent_role, member_role in (
+        (BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE, topology.migrator_role),
+        (topology.migrator_role, topology.database_owner_role),
+    ):
+        revoke = (
+            sql.SQL("REVOKE {} FROM {}")
+            .format(sql.Identifier(parent_role), sql.Identifier(member_role))
+            .as_string(cur.connection)
+        )
+        statements.append(
+            _conditional_role_pair_statement(
+                cur,
+                first_role=parent_role,
+                second_role=member_role,
+                statement=revoke,
+            )
+        )
     statements.append(
         sql.SQL("ALTER DATABASE {} OWNER TO {};")
         .format(sql.Identifier(database_name), sql.Identifier(database_owner_before))
@@ -3213,6 +3247,11 @@ def _forward_v5_deactivation_sql(
     statements.append(_bootstrap_object_rollback_sql(cur, ownership).rstrip())
     statements.append(_retired_membership_rollback_sql(cur, memberships=retired_memberships).rstrip())
     return "\n".join(statement for statement in statements if statement) + "\n"
+
+
+# Kept as a private compatibility alias for callers preparing older topology-only
+# packets; all newly authenticated authority receipts use V7 containment mode.
+_forward_v5_deactivation_sql = _forward_v7_containment_sql
 
 
 def _other_database_inventory(
@@ -3995,9 +4034,9 @@ def bootstrap_database_roles(
                 topology.verifier_role,
                 *topology.infrastructure_superuser_roles,
             )
-            rollback_mode = "forward_v5_deactivation" if install_brain_authority else "topology_exact"
+            rollback_mode = "forward_v7_containment" if install_brain_authority else "topology_exact"
             if install_brain_authority:
-                rollback_sql = _forward_v5_deactivation_sql(
+                rollback_sql = _forward_v7_containment_sql(
                     cur,
                     topology=topology,
                     database_name=inventory["database_name"],
@@ -4245,7 +4284,7 @@ def upgrade_brain_authority_existing_topology(
                 expected_database_name=expected_database_name,
                 expected_system_identifier=expected_system_identifier,
             )
-            rollback_sql = _forward_v5_deactivation_sql(
+            rollback_sql = _forward_v7_containment_sql(
                 cur,
                 topology=topology,
                 database_name=inventory["database_name"],
@@ -4260,7 +4299,7 @@ def upgrade_brain_authority_existing_topology(
                 "atomic_bootstrap": False,
                 "atomic_existing_topology_upgrade": True,
                 "automatic_rollback_supported": True,
-                "rollback_mode": "forward_v5_deactivation",
+                "rollback_mode": "forward_v7_containment",
                 "commit_outcome_on_interruption": "unknown",
                 "legacy_rollback_sql_recovers_v1_v4": False,
                 "legacy_rollback_sql_recovers_v1_v5": False,

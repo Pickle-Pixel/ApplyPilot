@@ -176,7 +176,7 @@ def main() -> int:
         commit_outcome_on_interruption="known_committed",
         escalation_required=False,
         in_doubt=False,
-        rollback_mode="forward_v5_deactivation",
+        rollback_mode="forward_v7_containment",
         status="atomic_existing_topology_upgrade_committed",
         rollback_sql_path=str(args.rollback_sql),
         rollback_sql_sha256=hashlib.sha256(rollback_sql.encode("utf-8")).hexdigest(),

@@ -59,6 +59,12 @@ def _test_evidence_paths() -> pg_roles.DurableEvidencePaths:
     )
 
 
+def _require_pg18_test_server(conn) -> None:
+    version = int(conn.execute("SHOW server_version_num").fetchone()["server_version_num"])
+    if version // 10000 != 18:
+        pytest.skip("authority role catalog tests require PostgreSQL 18")
+
+
 def _bootstrap_script_module():
     path = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap-fleet-pg-roles.py"
     spec = importlib.util.spec_from_file_location("applypilot_bootstrap_script", path)
@@ -199,7 +205,7 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(tmp_path
             "commit_outcome_on_interruption": "unknown",
             "legacy_rollback_sql_recovers_v1_v4": False,
             "legacy_rollback_sql_recovers_v1_v5": False,
-            "rollback_mode": "forward_v5_deactivation",
+            "rollback_mode": "forward_v7_containment",
             "infrastructure_superuser_roles": topology.infrastructure_superuser_roles,
         }
         rollback_sql = "SELECT 1;\n"
@@ -359,7 +365,7 @@ def test_hba_restore_is_bound_to_show_path_digest_owner_and_mode(tmp_path: Path)
         module._validated_hba_restore(FakeConnection(), receipt)
 
 
-def test_rollback_restores_hba_before_database_transaction(tmp_path: Path, monkeypatch) -> None:
+def test_database_rollback_commits_before_hba_restore(tmp_path: Path, monkeypatch) -> None:
     module = _rollback_script_module()
     events: list[str] = []
 
@@ -434,11 +440,11 @@ def test_rollback_restores_hba_before_database_transaction(tmp_path: Path, monke
 
     assert module.main() == 0
     assert events.index("hba_preflight") < events.index("database_transaction_enter")
-    assert events.index("hba_restore") < events.index("database_transaction_enter")
     assert events.index("database_rollback_sql") < events.index("database_transaction_commit")
+    assert events.index("database_transaction_commit") < events.index("hba_restore")
 
 
-def test_hba_replacement_precedes_real_rollback_commit(
+def test_hba_restore_observer_sees_real_rollback_commit(
     fleet_db: str, tmp_path: Path, monkeypatch
 ) -> None:
     module = _rollback_script_module()
@@ -493,7 +499,7 @@ def test_hba_replacement_precedes_real_rollback_commit(
     )
     try:
         assert module.main() == 0
-        assert rollback_visible_during_hba_restore is False
+        assert rollback_visible_during_hba_restore is True
         with psycopg.connect(fleet_db, row_factory=dict_row, autocommit=True) as observer:
             assert observer.execute(
                 "SELECT to_regclass(%s) IS NOT NULL AS committed",
@@ -925,6 +931,26 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 "SELECT status FROM public.compute_queue "
                 "WHERE url='https://historical.example/job' AND task='score'"
             ).fetchone()["status"] == "done"
+            assert root.execute(
+                "SELECT pg_has_role(%s,'brain_schema_migrator','SET') "
+                "AND pg_has_role(%s,'brain_artifact_authority_owner','SET') AS allowed",
+                (owner, owner),
+            ).fetchone()["allowed"] is True
+            root.execute(receipt.rollback_sql)
+            root.commit()
+            assert root.execute(
+                "SELECT has_function_privilege('brain_artifact_authority_writer',"
+                "'public.brain_register_authoritative_artifact_manifest(uuid,text,text,text,timestamptz,timestamptz,text,text,jsonb)',"
+                "'EXECUTE') AS allowed"
+            ).fetchone()["allowed"] is False
+            assert root.execute(
+                "SELECT pg_has_role(%s,'brain_schema_migrator','SET') AS allowed",
+                (owner,),
+            ).fetchone()["allowed"] is False
+            assert root.execute(
+                "SELECT pg_has_role(%s,'brain_artifact_authority_owner','SET') AS allowed",
+                (owner,),
+            ).fetchone()["allowed"] is False
         finally:
             root.rollback()
             require_disposable_postgres(root)
@@ -1288,6 +1314,7 @@ def _read_v5_rollback_preservation_rows(conn, expected: dict[str, object]) -> di
 def test_fixed_atomic_authority_install_failure_rolls_back_everything(fleet_db: str, monkeypatch) -> None:
     topology = _atomic_topology()
     with pgqueue.connect(fleet_db) as root:
+        _require_pg18_test_server(root)
         root.execute(
             sql.SQL("CREATE ROLE {} LOGIN SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS").format(
                 sql.Identifier(ATOMIC_RETIRED_ADMIN)
@@ -1346,6 +1373,7 @@ def test_fixed_atomic_authority_install_failure_rolls_back_everything(fleet_db: 
 def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fleet_db: str) -> None:
     topology = _atomic_topology()
     with pgqueue.connect(fleet_db) as root:
+        _require_pg18_test_server(root)
         root.execute(
             sql.SQL("CREATE ROLE {} LOGIN SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS").format(
                 sql.Identifier(ATOMIC_RETIRED_ADMIN)
@@ -1645,6 +1673,7 @@ def test_bootstrap_isolates_other_database_and_rollback_restores_public_connect(
     race_password = "applypilot-fence-race-password"
     with psycopg.connect(fleet_db, row_factory=dict_row, autocommit=True) as cluster_admin:
         require_disposable_postgres(cluster_admin)
+        _require_pg18_test_server(cluster_admin)
         cluster_admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(CROSS_DATABASE)))
         cluster_admin.execute(
             sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
@@ -1786,6 +1815,7 @@ def test_bootstrap_terminates_active_nonbreakglass_session_on_other_database(fle
     active_connection = psycopg.connect(make_conninfo(**active_parameters), row_factory=dict_row)
     try:
         with pgqueue.connect(fleet_db) as root:
+            _require_pg18_test_server(root)
             root.execute(
                 sql.SQL("CREATE ROLE {} LOGIN SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS").format(
                     sql.Identifier(ATOMIC_RETIRED_ADMIN)
@@ -1866,6 +1896,7 @@ def test_bootstrap_closes_and_rollback_restores_retired_admin_membership_edges(f
     member_role = "applypilot_retired_member_test"
     topology = _atomic_topology()
     with pgqueue.connect(fleet_db) as root:
+        _require_pg18_test_server(root)
         require_disposable_postgres(root)
         root.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(parent_role)))
         root.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(member_role)))
@@ -1933,6 +1964,7 @@ def test_retired_membership_rollback_preserves_grantor_and_supported_options(fle
     grantor_role = "applypilot_retired_option_grantor_test"
     topology = _atomic_topology()
     with pgqueue.connect(fleet_db) as root:
+        _require_pg18_test_server(root)
         require_disposable_postgres(root)
         root.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(parent_role)))
         root.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(grantor_role)))
@@ -2022,6 +2054,7 @@ def test_retired_membership_closure_fails_without_cascading_dependent_grants(fle
     downstream_role = "applypilot_retired_dependency_downstream_test"
     topology = _atomic_topology()
     with pgqueue.connect(fleet_db) as root:
+        _require_pg18_test_server(root)
         require_disposable_postgres(root)
         root.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(parent_role)))
         root.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(downstream_role)))
@@ -2098,6 +2131,7 @@ def test_live_bootstrap_hands_off_to_non_superuser_controller_and_reconciles(fle
     rollback_path = tmp_path / "bootstrap-rollback.sql"
     receipt_path = tmp_path / "bootstrap-receipt.json"
     with pgqueue.connect(fleet_db) as root:
+        _require_pg18_test_server(root)
         root.execute(
             sql.SQL("CREATE ROLE {} LOGIN SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS").format(
                 sql.Identifier(RETIRED_ADMIN)

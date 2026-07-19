@@ -82,7 +82,7 @@ def _verified_inputs(
     except ValueError as error:
         raise SystemExit(str(error)) from None
     rollback_mode = receipt.get("rollback_mode") or receipt.get("inventory", {}).get("rollback_mode")
-    if rollback_mode not in {"topology_exact", "forward_v5_deactivation"}:
+    if rollback_mode not in {"topology_exact", "forward_v7_containment"}:
         raise SystemExit("receipt does not identify a supported rollback mode")
     signed_path = Path(receipt.get("rollback_sql_path", ""))
     if not signed_path.is_absolute() or signed_path.resolve(strict=True) != rollback_path:
@@ -321,12 +321,20 @@ def main() -> int:
             conn.commit()
             if conn.info.transaction_status.name != "IDLE":
                 raise RuntimeError("HBA preflight transaction did not return to idle state")
-        if args.restore_hba:
-            _restore_hba_and_reload(conn, receipt, validated=hba_preflight)
         # psycopg's transaction context is the executable equivalent of
         # psql --single-transaction --set=ON_ERROR_STOP=on.
         with conn.transaction():
             conn.execute(rollback_sql)
+        print("database_rollback_committed")
+        if args.restore_hba:
+            print("hba_restore_started")
+            try:
+                _restore_hba_and_reload(conn, receipt, validated=hba_preflight)
+            except BaseException as error:
+                raise RuntimeError(
+                    "database rollback committed, but HBA restoration failed; "
+                    "partial state: database containment is durable and HBA admission state is uncertain"
+                ) from error
     print("authenticated database rollback committed")
     return 0
 
