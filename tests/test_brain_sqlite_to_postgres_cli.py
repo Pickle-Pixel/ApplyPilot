@@ -23,6 +23,7 @@ from applypilot.brain.sqlite_to_postgres import ImportSummary
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "brain-sqlite-to-postgres.py"
+RUNBOOK = REPO / "docs" / "canonical-decision-policy-runbook.md"
 NONCE = "n" * 32
 DSN = "host=database.invalid port=5432 dbname=brain user=migrator password=top-secret-password"
 FREEZE_KEY = b"f" * 32
@@ -55,6 +56,14 @@ _LOGIN_ROLE = "canonical_import_login"
 # grants that SELECT to -- the read-only ``brain_schema_verifier`` -- never the table owner.
 _IDENTITY_ROLE = "brain_schema_verifier"
 _DEFAULT_SEARCH_PATH = "\"$user\", public"
+
+
+def test_runbook_provisions_canonical_import_login_for_read_only_identity_role() -> None:
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    assert "GRANT brain_schema_verifier TO canonical_import_login" in runbook
+    assert "WITH ADMIN FALSE, INHERIT FALSE, SET TRUE" in runbook
+    assert "SET ROLE brain_schema_verifier;" in runbook
+    assert "SET ROLE brain_schema_migrator;" not in runbook
 
 
 class _Connection:

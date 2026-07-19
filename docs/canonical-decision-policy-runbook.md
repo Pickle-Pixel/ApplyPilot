@@ -115,21 +115,33 @@ python scripts/brain-sqlite-to-postgres.py --mode bulk-import --source C:\absolu
 
 `--expected-database-incarnation-id` is required for every mode (bulk, final, and
 recovery); the command refuses to run without an exact canonical UUID and there is
-no ambient/GUC/environment fallback. Discover the value with least privilege —
-never as `postgres` and without widening any table grant — by assuming the
-singleton's owning role from the canonical NOINHERIT import login (which is a
-`SET`-only member of `brain_schema_migrator`):
+no ambient/GUC/environment fallback. The topology bootstrap creates the fixed
+`NOLOGIN` role `brain_schema_verifier`, but it cannot infer which operator-managed
+login will perform an import. Before the first import, an approved role
+administrator must make the canonical `NOINHERIT` import login a `SET`-only member
+of that read-only verifier role. Replace `canonical_import_login` below with the
+exact login named by `BRAIN_IMPORT_DSN`; do not grant it the migrator role, direct
+table access, or standing inherited authority:
+
+```sql
+ALTER ROLE canonical_import_login NOINHERIT;
+GRANT brain_schema_verifier TO canonical_import_login
+  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+```
+
+Discover the value with least privilege — never as `postgres` and without widening
+any table grant — through that explicitly provisioned membership:
 
 ```sql
 -- Connected as the canonical import login (NOT a superuser):
-SET ROLE brain_schema_migrator;
+SET ROLE brain_schema_verifier;
 SELECT database_incarnation_id FROM public.applypilot_database_identity WHERE singleton_id = 1;
 RESET ROLE;
 ```
 
 The CLI itself reads this same singleton the same way: each pre- and
 post-operation durable-identity read runs under a tightly scoped
-`SET ROLE brain_schema_migrator` with `search_path = pg_catalog, public`, and the
+`SET ROLE brain_schema_verifier` with `search_path = pg_catalog, public`, and the
 role/search_path are always reset and the read-only transaction rolled back, so
 nothing leaks onto a reused connection.
 

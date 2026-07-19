@@ -64,6 +64,7 @@ def test_committed_receipt_uses_forward_v7_containment(tmp_path: Path, monkeypat
     monkeypatch.setattr(module, "upgrade_brain_authority_existing_topology", fake_upgrade)
     monkeypatch.setattr(module, "_replace_durable", lambda path, payload: path.write_bytes(payload))
     monkeypatch.setenv("APPLYPILOT_ADMIN_PG_DSN", "postgresql://unused")
+    monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "disposable-test-only")
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", (b"x" * 32).hex())
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "test-key")
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--database-owner-role", "owner",
