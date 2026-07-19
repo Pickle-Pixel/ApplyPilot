@@ -371,6 +371,7 @@ def test_database_rollback_commits_before_hba_restore(tmp_path: Path, monkeypatc
                 "rolsuper": True,
                 "database_name": "postgres",
                 "system_identifier": "123456789",
+                "database_oid": 12345,
             }
 
     class FakeTransaction:
@@ -464,7 +465,7 @@ def _authenticated_forward_v7_receipt(tmp_path: Path) -> tuple[dict, str]:
                 "status": "atomic_existing_topology_upgrade_committed",
                 "rollback_mode": "forward_v7_containment",
                 "database_name": "postgres",
-                "inventory": {"system_identifier": "123456789"},
+                "inventory": {"system_identifier": "123456789", "database_oid": 12345},
                 "topology": {"infrastructure_superuser_roles": ["postgres"]},
                 "rollback_sql_path": str(rollback_path),
                 "rollback_sql_sha256": hashlib.sha256(rollback_sql.encode()).hexdigest(),
@@ -507,11 +508,15 @@ class _RollbackMainFakeConnection:
                     "rolsuper": True,
                     "database_name": "postgres",
                     "system_identifier": "123456789",
+                    "database_oid": 12345,
                 }
             },
         )()
 
     def commit(self):
+        return None
+
+    def rollback(self):
         return None
 
 
@@ -552,28 +557,64 @@ def _configure_rollback_main(
     return receipt, rollback_sql
 
 
-def test_rollback_sql_or_commit_failure_never_starts_hba(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize(
+    "fault_seam",
+    ("sql_execution", "transaction_commit", "marker_assertion", "post_containment_assertion"),
+)
+def test_rollback_fault_before_hba_never_starts_hba(
+    tmp_path: Path, monkeypatch, fault_seam: str
 ) -> None:
     module = _rollback_script_module()
     partial = (tmp_path / "partial.json").resolve()
     _configure_rollback_main(module, tmp_path, monkeypatch, partial_state_path=partial)
     events: list[str] = []
 
-    def fail_database_containment(*_args, **_kwargs):
-        events.append("database_containment_started")
-        raise RuntimeError("injected SQL commit failure")
-
-    monkeypatch.setattr(module, "_commit_database_containment", fail_database_containment)
+    monkeypatch.setattr(
+        module,
+        "_execute_database_containment_sql",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(RuntimeError("injected SQL execution failure"))
+            if fault_seam == "sql_execution"
+            else events.append("sql_executed")
+        ),
+    )
+    monkeypatch.setattr(module, "_write_database_containment_marker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "_commit_database_containment_transaction",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(RuntimeError("injected transaction commit failure"))
+            if fault_seam == "transaction_commit"
+            else events.append("transaction_committed")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_assert_database_containment_marker",
+        lambda _conn, *, marker: (
+            (_ for _ in ()).throw(RuntimeError("injected marker assertion failure"))
+            if fault_seam == "marker_assertion"
+            else {**marker, "relation": "public.applypilot_rollback_commit_markers", "visible": True}
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_assert_candidate_artifact_containment",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(RuntimeError("injected post-containment assertion failure"))
+            if fault_seam == "post_containment_assertion"
+            else {"candidate_execute_routes": 0, "artifact_execute_routes": 0, "set_role_routes": 0}
+        ),
+    )
     monkeypatch.setattr(
         module,
         "_restore_hba_and_reload",
         lambda *_args, **_kwargs: events.append("hba_restore_started"),
     )
 
-    with pytest.raises(RuntimeError, match="injected SQL commit failure"):
+    with pytest.raises(RuntimeError, match="injected"):
         module.main()
-    assert events == ["database_containment_started"]
+    assert "hba_restore_started" not in events
     assert not partial.exists()
 
 
@@ -631,6 +672,7 @@ def test_hba_failure_emits_authenticated_target_bound_partial_state_receipt(
     assert partial_receipt["target_identity"] == {
         "database_name": "postgres",
         "system_identifier": "123456789",
+        "database_oid": 12345,
         "session_user": "postgres",
     }
     assert partial_receipt["database_containment"] == marker
@@ -648,6 +690,97 @@ def test_hba_failure_emits_authenticated_target_bound_partial_state_receipt(
         "receipt_authentication"
     ]
     assert partial_receipt["evidence"]["predecessor_partial_state_receipt"] is None
+
+
+def test_hba_and_partial_receipt_failure_preserves_both_errors_and_machine_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _rollback_script_module()
+    partial = (tmp_path / "partial.json").resolve()
+    _configure_rollback_main(module, tmp_path, monkeypatch, partial_state_path=partial)
+    marker = {
+        "marker_id": "marker-receipt-failure",
+        "relation": "public.applypilot_rollback_commit_markers",
+        "visible": True,
+    }
+    monkeypatch.setattr(module, "_commit_database_containment", lambda *_args, **_kwargs: marker)
+    monkeypatch.setattr(
+        module,
+        "_assert_candidate_artifact_containment",
+        lambda *_args, **_kwargs: {"candidate_execute_routes": 0, "artifact_execute_routes": 0, "set_role_routes": 0},
+    )
+    monkeypatch.setattr(module, "_observe_hba_state", lambda *_args, **_kwargs: {"sha256": "e" * 64})
+    monkeypatch.setattr(
+        module,
+        "_restore_hba_and_reload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("original HBA failure")),
+    )
+    monkeypatch.setattr(
+        module,
+        "_emit_partial_state_receipt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("durable receipt write failure")),
+    )
+
+    with pytest.raises(RuntimeError) as failure:
+        module.main()
+    message = str(failure.value)
+    assert "database_containment_committed=true" in message
+    assert "hba_state=uncertain_not_restored" in message
+    assert "partial_receipt_created=false" in message
+    assert "recovery=manual_containment_required" in message
+    assert isinstance(failure.value.__cause__, ExceptionGroup)
+    assert [str(error) for error in failure.value.__cause__.exceptions] == [
+        "original HBA failure",
+        "durable receipt write failure",
+    ]
+
+
+def test_forward_v7_target_rejects_same_name_recreated_database_oid() -> None:
+    module = _rollback_script_module()
+    receipt, _rollback_sql = _authenticated_forward_v7_receipt(Path.cwd())
+
+    class FakeConnection:
+        def execute(self, _statement):
+            return type(
+                "Result",
+                (),
+                {
+                    "fetchone": lambda _self: {
+                        "session_user": "postgres",
+                        "current_user": "postgres",
+                        "rolsuper": True,
+                        "database_name": "postgres",
+                        "system_identifier": "123456789",
+                        "database_oid": 54321,
+                    }
+                },
+            )()
+
+    with pytest.raises(SystemExit, match="database OID"):
+        module._validated_target_identity(FakeConnection(), receipt)
+
+
+def test_partial_state_write_rejects_parent_identity_drift(tmp_path: Path, monkeypatch) -> None:
+    module = _rollback_script_module()
+    destination = (tmp_path / "partial.json").resolve()
+    expected = module._validate_partial_state_parent(destination)
+    observed = (expected[0], expected[1], expected[2] + 1)
+    monkeypatch.setattr(module, "_partial_state_parent_identity", lambda _parent: observed)
+
+    with pytest.raises(RuntimeError, match="parent directory changed"):
+        module._write_exclusive_durable(
+            destination,
+            b"{}\n",
+            expected_parent_identity=expected,
+        )
+    assert not destination.exists()
+
+
+def test_partial_state_writer_uses_descriptor_relative_creation() -> None:
+    module = _rollback_script_module()
+    source = inspect.getsource(module._write_exclusive_durable)
+    assert "dir_fd=parent_descriptor" in source
+    assert "os.fstat(parent_descriptor)" in source
 
 
 def test_rollback_retry_from_partial_state_reuses_idempotent_database_marker(
@@ -785,6 +918,7 @@ def test_real_hba_failure_keeps_database_marker_visible_and_emits_receipt(
     with psycopg.connect(fleet_db, row_factory=dict_row, autocommit=True) as identity_conn:
         identity = identity_conn.execute(
             "SELECT current_database() AS database_name,"
+            "(SELECT oid FROM pg_database WHERE datname=current_database()) AS database_oid,"
             "(pg_control_system()).system_identifier::text AS system_identifier"
         ).fetchone()
     receipt = pg_roles.authenticate_evidence_receipt(
@@ -792,7 +926,10 @@ def test_real_hba_failure_keeps_database_marker_visible_and_emits_receipt(
             "status": "atomic_existing_topology_upgrade_committed",
             "rollback_mode": "forward_v7_containment",
             "database_name": identity["database_name"],
-            "inventory": {"system_identifier": identity["system_identifier"]},
+            "inventory": {
+                "system_identifier": identity["system_identifier"],
+                "database_oid": identity["database_oid"],
+            },
             "topology": {"infrastructure_superuser_roles": ["postgres"]},
             "rollback_sql_path": str(rollback_path),
             "rollback_sql_sha256": hashlib.sha256(rollback_sql.encode()).hexdigest(),
@@ -844,13 +981,14 @@ def test_real_hba_failure_keeps_database_marker_visible_and_emits_receipt(
                 "SELECT to_regclass(%s) IS NOT NULL AS visible", (f"public.{probe}",)
             ).fetchone()["visible"] is True
             marker = observer.execute(
-                "SELECT database_name,system_identifier,executed_by,rollback_sql_sha256 "
+                "SELECT database_name,system_identifier,database_oid,executed_by,rollback_sql_sha256 "
                 "FROM public.applypilot_rollback_commit_markers WHERE rollback_sql_sha256=%s",
                 (hashlib.sha256(rollback_sql.encode()).hexdigest(),),
             ).fetchone()
             assert marker == {
                 "database_name": identity["database_name"],
                 "system_identifier": identity["system_identifier"],
+                "database_oid": identity["database_oid"],
                 "executed_by": "postgres",
                 "rollback_sql_sha256": hashlib.sha256(rollback_sql.encode()).hexdigest(),
             }
@@ -1051,6 +1189,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
     worker = "existing_authority_worker_test"
     provider_middle = "existing_authority_provider_middle_test"
     provider_login = "existing_authority_provider_login_test"
+    provider_default_owner = "existing_authority_provider_default_owner_test"
     topology = pg_roles.BootstrapTopology(
         database_owner_role=owner,
         controller_role=controller,
@@ -1072,6 +1211,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
         worker,
         provider_login,
         provider_middle,
+        provider_default_owner,
         legacy_controller,
         retired,
         controller,
@@ -1189,7 +1329,8 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
             monkeypatch.setattr(brain_schema, "_schema_checksum", current_v1_checksum)
             root.commit()
             identity = root.execute(
-                "SELECT (pg_control_system()).system_identifier::text AS system_identifier"
+                "SELECT (pg_control_system()).system_identifier::text AS system_identifier,"
+                "(SELECT oid FROM pg_database WHERE datname=current_database()) AS database_oid"
             ).fetchone()
             root.commit()
 
@@ -1243,6 +1384,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 expected_system_identifier=identity["system_identifier"],
             )
             default_acl_dependencies = receipt.inventory["retired_admin_default_acl_dependencies"]
+            assert receipt.inventory["database_oid"] == identity["database_oid"]
             assert len(default_acl_dependencies) == 1
             assert default_acl_dependencies[0]["role_name"] == legacy_controller
             assert default_acl_dependencies[0]["database_name"] == database_name
@@ -1282,7 +1424,9 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 "FROM pg_authid WHERE rolname=%s",
                 (owner,),
             ).fetchone() == {"rolcanlogin": True, "rolinherit": False, "has_password": False}
-            assert legacy_controller not in receipt.rollback_sql
+            assert (
+                f'GRANT "{owner}" TO "{legacy_controller}"' not in receipt.rollback_sql
+            )
             assert len(blocked_statements) == 4
             assert root.execute(
                 "SELECT paused,ats_paused,ats_apply_mode,linkedin_apply_mode FROM public.fleet_config WHERE id=1"
@@ -1305,6 +1449,12 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
             root.execute(
                 sql.SQL("CREATE ROLE {} LOGIN NOINHERIT PASSWORD {}").format(
                     sql.Identifier(provider_login), sql.Literal("existing-provider-password")
+                )
+            )
+            root.execute(
+                sql.SQL("CREATE ROLE {} LOGIN NOINHERIT PASSWORD {}").format(
+                    sql.Identifier(provider_default_owner),
+                    sql.Literal("existing-default-owner-password"),
                 )
             )
             for parent_role in (owner, "brain_candidate_writer", "brain_artifact_authority_owner"):
@@ -1333,6 +1483,43 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 "uuid,text,text,text,timestamptz,timestamptz,text,text,jsonb) "
                 "TO brain_artifact_authority_writer"
             )
+            root.execute(
+                "GRANT INSERT ON TABLE public.brain_v4_decision_envelopes TO PUBLIC"
+            )
+            root.execute(
+                "GRANT UPDATE(candidate_decision_id) "
+                "ON TABLE public.brain_v4_candidate_decisions TO PUBLIC"
+            )
+            root.execute("GRANT CREATE ON SCHEMA public TO PUBLIC")
+            root.execute(
+                sql.SQL(
+                    "GRANT SELECT,UPDATE ON TABLE public.brain_v4_candidate_decisions TO {}"
+                ).format(sql.Identifier(provider_middle))
+            )
+            root.execute(
+                sql.SQL(
+                    "GRANT USAGE,SELECT ON SEQUENCE "
+                    "public.brain_authority_scope_state_authority_scope_id_seq TO {}"
+                ).format(sql.Identifier(provider_middle))
+            )
+            root.execute(
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE brain_schema_migrator IN SCHEMA public "
+                    "GRANT INSERT,UPDATE ON TABLES TO {}"
+                ).format(sql.Identifier(provider_login))
+            )
+            root.execute(
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+                    "GRANT INSERT ON TABLES TO {}"
+                ).format(sql.Identifier(legacy_controller), sql.Identifier(provider_login))
+            )
+            root.execute(
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+                    "GRANT UPDATE ON TABLES TO {}"
+                ).format(sql.Identifier(provider_default_owner), sql.Identifier(provider_login))
+            )
             root.commit()
             with psycopg.connect(
                 _dsn(fleet_db, user=provider_login, password="existing-provider-password"),
@@ -1342,6 +1529,12 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 active_provider.execute("RESET ROLE")
                 active_provider.execute("SET ROLE brain_artifact_authority_owner")
                 active_provider.execute("RESET ROLE")
+                active_provider.execute(
+                    "UPDATE public.brain_v4_candidate_decisions "
+                    "SET candidate_decision_id='decision-acl-probe' WHERE FALSE"
+                )
+                active_provider.execute("CREATE TABLE public.brain_acl_escape_probe(id bigint)")
+                active_provider.execute("DROP TABLE public.brain_acl_escape_probe")
                 active_provider.commit()
 
                 for run in range(2):
@@ -1374,14 +1567,52 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                         "SELECT pg_has_role(%s,'brain_schema_migrator','SET') AS migrator_allowed,"
                         "pg_has_role(%s,'brain_artifact_authority_owner','SET') AS artifact_allowed,"
                         "pg_has_role(%s,'brain_candidate_writer','SET') AS candidate_allowed,"
-                        "(SELECT rolcanlogin FROM pg_roles WHERE rolname=%s) AS login_allowed",
-                        (owner, owner, provider_login, provider_login),
+                        "(SELECT rolcanlogin FROM pg_roles WHERE rolname=%s) AS login_allowed,"
+                        "(SELECT rolcanlogin FROM pg_roles WHERE rolname=%s) "
+                        "AS default_owner_login_allowed",
+                        (owner, owner, provider_login, provider_login, provider_default_owner),
                     ).fetchone() == {
                         "migrator_allowed": False,
                         "artifact_allowed": False,
                         "candidate_allowed": False,
                         "login_allowed": False,
+                        "default_owner_login_allowed": False,
                     }
+                    assert root.execute(
+                        "SELECT has_table_privilege('public','public.brain_v4_decision_envelopes','INSERT') "
+                        "AS public_table_insert,"
+                        "has_column_privilege('public','public.brain_v4_candidate_decisions',"
+                        "'candidate_decision_id','UPDATE') AS public_column_update,"
+                        "has_schema_privilege('public','public','CREATE') AS public_schema_create,"
+                        "has_table_privilege(%s,'public.brain_v4_candidate_decisions','UPDATE') "
+                        "AS provider_table_update,"
+                        "has_sequence_privilege(%s,"
+                        "'public.brain_authority_scope_state_authority_scope_id_seq','USAGE') "
+                        "AS provider_sequence_usage",
+                        (provider_middle, provider_middle),
+                    ).fetchone() == {
+                        "public_table_insert": False,
+                        "public_column_update": False,
+                        "public_schema_create": False,
+                        "provider_table_update": False,
+                        "provider_sequence_usage": False,
+                    }
+                    assert root.execute(
+                        "SELECT count(*) AS count FROM pg_default_acl default_acl "
+                        "CROSS JOIN LATERAL aclexplode(default_acl.defaclacl) acl "
+                        "LEFT JOIN pg_roles owner ON owner.oid=default_acl.defaclrole "
+                        "LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+                        "WHERE (owner.rolname=ANY(%s) OR grantee.rolname=ANY(%s)) "
+                        "AND acl.grantee<>default_acl.defaclrole",
+                        (
+                            [
+                                "brain_schema_migrator",
+                                legacy_controller,
+                                provider_default_owner,
+                            ],
+                            [provider_login],
+                        ),
+                    ).fetchone()["count"] == 0
                     if run == 0:
                         for role_name in (
                             "brain_candidate_writer",
@@ -1406,6 +1637,43 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                                 active_provider.execute(statement)
                             active_provider.rollback()
+                        for statement in (
+                            "INSERT INTO public.brain_v4_decision_envelopes("
+                            "envelope_id,candidate_decision_id,envelope_artifact_hash) "
+                            "SELECT 'x','y','z' WHERE FALSE",
+                            "UPDATE public.brain_v4_candidate_decisions "
+                            "SET candidate_decision_id='decision-acl-probe' WHERE FALSE",
+                            "CREATE TABLE public.brain_acl_escape_probe(id bigint)",
+                        ):
+                            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                                active_provider.execute(statement)
+                            active_provider.rollback()
+
+                        root.execute(
+                            "GRANT USAGE,CREATE ON SCHEMA public TO brain_schema_migrator"
+                        )
+                        root.execute("SET ROLE brain_schema_migrator")
+                        root.execute("CREATE TABLE public.brain_future_acl_probe(id bigint)")
+                        root.execute(
+                            "CREATE FUNCTION public.brain_future_acl_probe_function() "
+                            "RETURNS bigint LANGUAGE sql AS 'SELECT 1::bigint'"
+                        )
+                        root.execute("RESET ROLE")
+                        root.execute(
+                            "REVOKE USAGE,CREATE ON SCHEMA public FROM brain_schema_migrator"
+                        )
+                        root.commit()
+                        assert root.execute(
+                            "SELECT has_table_privilege(%s,'public.brain_future_acl_probe','INSERT') "
+                            "AS provider_future_insert,"
+                            "has_function_privilege('public',"
+                            "'public.brain_future_acl_probe_function()','EXECUTE') "
+                            "AS public_future_execute",
+                            (provider_login,),
+                        ).fetchone() == {
+                            "provider_future_insert": False,
+                            "public_future_execute": False,
+                        }
         finally:
             root.rollback()
             require_disposable_postgres(root)
@@ -1843,6 +2111,8 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
                 install_brain_authority=True,
             )
             assert receipt.escalation_required is True
+            assert receipt.inventory["database_oid"] > 0
+            assert receipt.inventory["system_identifier"].isdigit()
 
             assert root.execute(
                 "SELECT array_agg(version ORDER BY version) AS versions FROM public.brain_schema_versions"

@@ -3120,15 +3120,18 @@ def _catalog_derived_authority_containment_sql(
     *,
     database_name: str,
     infrastructure_superuser_roles: tuple[str, ...],
+    managed_role_names: tuple[str, ...],
+    future_owner_role_names: tuple[str, ...],
 ) -> tuple[str, str]:
     """Return catalog-derived containment plus a postcondition assertion.
 
     The V4-V7 verifier authenticates the complete ``brain_*`` catalog before a
     forward rollback receipt can be issued.  At rollback execution time this
-    SQL snapshots every catalog owner and explicit ACL grantee, recursively
-    follows all membership descendants, and contains that snapshot.  This
-    deliberately avoids a function-name or two-edge allowlist that can fall
-    behind an additive authority schema.
+    SQL snapshots catalog owners and ACL grantees across functions, relations,
+    columns, schemas, default privileges, and the declared managed topology.
+    It recursively follows membership and default-ACL edges, then contains the
+    resulting authority-connected component.  This deliberately avoids a
+    function-name or two-edge allowlist that can fall behind an additive schema.
     """
 
     if infrastructure_superuser_roles:
@@ -3137,11 +3140,25 @@ def _catalog_derived_authority_containment_sql(
         )
     else:
         break_glass = sql.SQL("ARRAY[]::text[]")
+    if managed_role_names:
+        managed_roles = sql.SQL("ARRAY[{}]::text[]").format(
+            sql.SQL(",").join(sql.Literal(role) for role in managed_role_names)
+        )
+    else:
+        managed_roles = sql.SQL("ARRAY[]::text[]")
+    if future_owner_role_names:
+        future_owner_roles = sql.SQL("ARRAY[{}]::text[]").format(
+            sql.SQL(",").join(sql.Literal(role) for role in future_owner_role_names)
+        )
+    else:
+        future_owner_roles = sql.SQL("ARRAY[]::text[]")
     database = sql.Literal(database_name)
     inventory_and_containment = sql.SQL(
         "DROP TABLE IF EXISTS pg_temp.applypilot_authority_containment_roles;\n"
         "CREATE TEMPORARY TABLE applypilot_authority_containment_roles ON COMMIT DROP AS\n"
         "WITH RECURSIVE authority_roots(role_oid) AS (\n"
+        "  SELECT role.oid FROM pg_catalog.pg_roles role WHERE role.rolname=ANY({})\n"
+        "  UNION\n"
         "  SELECT function.proowner FROM pg_catalog.pg_proc function\n"
         "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=function.pronamespace\n"
         "  WHERE namespace.nspname='public' AND left(function.proname,6)='brain_'\n"
@@ -3160,45 +3177,68 @@ def _catalog_derived_authority_containment_sql(
         "  SELECT acl.grantee FROM pg_catalog.pg_class relation\n"
         "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
         "  CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) acl\n"
-        "  WHERE namespace.nspname='public' AND left(relation.relname,6)='brain_' "
+        "  WHERE ((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') "
         "AND acl.grantee<>0\n"
+        "  UNION\n"
+        "  SELECT acl.grantee FROM pg_catalog.pg_attribute attribute\n"
+        "  JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid\n"
+        "  JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
+        "  CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) acl\n"
+        "  WHERE ((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND acl.grantee<>0\n"
+        "  UNION\n"
+        "  SELECT namespace.nspowner FROM pg_catalog.pg_namespace namespace\n"
+        "  JOIN pg_catalog.pg_roles owner ON owner.oid=namespace.nspowner\n"
+        "  WHERE (namespace.nspname IN ('public','brain_archive') "
+        "OR left(namespace.nspname,6)='brain_') AND left(owner.rolname,3)<>'pg_'\n"
         "  UNION\n"
         "  SELECT acl.grantee FROM pg_catalog.pg_namespace namespace\n"
         "  CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) acl\n"
-        "  WHERE namespace.nspname IN ('public','brain_archive') AND acl.grantee<>0\n"
+        "  WHERE (namespace.nspname IN ('public','brain_archive') "
+        "OR left(namespace.nspname,6)='brain_') AND acl.grantee<>0\n"
         "), authority_closure(role_oid,path) AS (\n"
         "  SELECT role_oid,ARRAY[role_oid] FROM authority_roots\n"
         "  UNION ALL\n"
-        "  SELECT membership.member,closure.path||membership.member\n"
+        "  SELECT linked.role_oid,closure.path||linked.role_oid\n"
         "  FROM authority_closure closure\n"
-        "  JOIN pg_catalog.pg_auth_members membership ON membership.roleid=closure.role_oid\n"
-        "  WHERE NOT membership.member=ANY(closure.path)\n"
+        "  CROSS JOIN LATERAL (\n"
+        "    SELECT membership.member AS role_oid FROM pg_catalog.pg_auth_members membership\n"
+        "    WHERE membership.roleid=closure.role_oid\n"
+        "    UNION\n"
+        "    SELECT default_acl.defaclrole FROM pg_catalog.pg_default_acl default_acl\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(default_acl.defaclacl) acl\n"
+        "    WHERE acl.grantee=closure.role_oid\n"
+        "    UNION\n"
+        "    SELECT acl.grantee FROM pg_catalog.pg_default_acl default_acl\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(default_acl.defaclacl) acl\n"
+        "    WHERE default_acl.defaclrole=closure.role_oid AND acl.grantee<>0\n"
+        "  ) linked\n"
+        "  WHERE NOT linked.role_oid=ANY(closure.path)\n"
         ") SELECT DISTINCT role_oid FROM authority_closure;\n"
         "DO $applypilot_containment$\n"
-        "DECLARE affected record; edge record; function_acl record;\n"
+        "DECLARE affected record; edge record; function_acl record; relation_acl record; "
+        "column_acl record; schema_acl record; default_acl record;\n"
         "BEGIN\n"
         "  FOR affected IN\n"
-        "    SELECT role.rolname FROM pg_temp.applypilot_authority_containment_roles contained\n"
+        "    SELECT role.rolname,role.rolcanlogin FROM "
+        "pg_temp.applypilot_authority_containment_roles contained\n"
         "    JOIN pg_catalog.pg_roles role ON role.oid=contained.role_oid\n"
-        "    WHERE role.rolcanlogin AND NOT role.rolname=ANY({})\n"
+        "    WHERE NOT role.rolname=ANY({})\n"
         "    ORDER BY role.rolname\n"
         "  LOOP\n"
-        "    EXECUTE pg_catalog.format("
+        "    IF affected.rolcanlogin THEN\n"
+        "      EXECUTE pg_catalog.format("
         "'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',"
         "affected.rolname);\n"
+        "    END IF;\n"
         "    EXECUTE pg_catalog.format("
         "'REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE %I FROM %I',{},affected.rolname);\n"
-        "  END LOOP;\n"
-        "  FOR edge IN\n"
-        "    SELECT parent.rolname AS parent_role,member.rolname AS member_role\n"
-        "    FROM pg_catalog.pg_auth_members membership\n"
-        "    JOIN pg_catalog.pg_roles parent ON parent.oid=membership.roleid\n"
-        "    JOIN pg_catalog.pg_roles member ON member.oid=membership.member\n"
-        "    WHERE membership.roleid IN ("
-        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
-        "    ORDER BY parent.rolname,member.rolname\n"
-        "  LOOP\n"
-        "    EXECUTE pg_catalog.format('REVOKE %I FROM %I CASCADE',edge.parent_role,edge.member_role);\n"
+        "    IF affected.rolname=ANY({}) THEN\n"
+        "      EXECUTE pg_catalog.format("
+        "'ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC',"
+        "affected.rolname);\n"
+        "    END IF;\n"
         "  END LOOP;\n"
         "  FOR function_acl IN\n"
         "    SELECT pg_catalog.format('%I.%I(%s)',namespace.nspname,function.proname,"
@@ -3223,8 +3263,117 @@ def _catalog_derived_authority_containment_sql(
         "function_acl.signature,function_acl.grantee);\n"
         "    END IF;\n"
         "  END LOOP;\n"
+        "  FOR relation_acl IN\n"
+        "    SELECT CASE WHEN relation.relkind='S' THEN 'SEQUENCE' ELSE 'TABLE' END AS object_kind,\n"
+        "           pg_catalog.format('%I.%I',namespace.nspname,relation.relname) AS identity,\n"
+        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "    FROM pg_catalog.pg_class relation\n"
+        "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) acl\n"
+        "    LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee\n"
+        "    WHERE (((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND relation.relkind IN ('r','p','v','m','f','S'))\n"
+        "      AND acl.grantee<>relation.relowner\n"
+        "    ORDER BY relation.oid,acl.grantee\n"
+        "  LOOP\n"
+        "    IF relation_acl.object_kind='SEQUENCE' THEN\n"
+        "      IF relation_acl.grantee='PUBLIC' THEN\n"
+        "        EXECUTE pg_catalog.format('REVOKE ALL ON SEQUENCE %s FROM PUBLIC',relation_acl.identity);\n"
+        "      ELSE\n"
+        "        EXECUTE pg_catalog.format('REVOKE ALL ON SEQUENCE %s FROM %I',"
+        "relation_acl.identity,relation_acl.grantee);\n"
+        "      END IF;\n"
+        "    ELSIF relation_acl.grantee='PUBLIC' THEN\n"
+        "      EXECUTE pg_catalog.format('REVOKE ALL ON TABLE %s FROM PUBLIC',relation_acl.identity);\n"
+        "    ELSE\n"
+        "      EXECUTE pg_catalog.format('REVOKE ALL ON TABLE %s FROM %I',"
+        "relation_acl.identity,relation_acl.grantee);\n"
+        "    END IF;\n"
+        "  END LOOP;\n"
+        "  FOR column_acl IN\n"
+        "    SELECT pg_catalog.format('%I.%I',namespace.nspname,relation.relname) AS identity,\n"
+        "           attribute.attname AS column_name,\n"
+        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "    FROM pg_catalog.pg_attribute attribute\n"
+        "    JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid\n"
+        "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) acl\n"
+        "    LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee\n"
+        "    WHERE ((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND acl.grantee<>relation.relowner\n"
+        "    ORDER BY relation.oid,attribute.attnum,acl.grantee\n"
+        "  LOOP\n"
+        "    IF column_acl.grantee='PUBLIC' THEN\n"
+        "      EXECUTE pg_catalog.format('REVOKE ALL PRIVILEGES (%I) ON TABLE %s FROM PUBLIC',"
+        "column_acl.column_name,column_acl.identity);\n"
+        "    ELSE\n"
+        "      EXECUTE pg_catalog.format('REVOKE ALL PRIVILEGES (%I) ON TABLE %s FROM %I',"
+        "column_acl.column_name,column_acl.identity,column_acl.grantee);\n"
+        "    END IF;\n"
+        "  END LOOP;\n"
+        "  FOR schema_acl IN\n"
+        "    SELECT namespace.nspname AS schema_name,\n"
+        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "    FROM pg_catalog.pg_namespace namespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(namespace.nspacl,"
+        "pg_catalog.acldefault('n',namespace.nspowner))) acl\n"
+        "    LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee\n"
+        "    WHERE (namespace.nspname IN ('public','brain_archive') "
+        "OR left(namespace.nspname,6)='brain_') AND acl.grantee<>namespace.nspowner\n"
+        "    ORDER BY namespace.oid,acl.grantee\n"
+        "  LOOP\n"
+        "    IF schema_acl.grantee='PUBLIC' THEN\n"
+        "      EXECUTE pg_catalog.format('REVOKE ALL ON SCHEMA %I FROM PUBLIC',"
+        "schema_acl.schema_name);\n"
+        "    ELSE\n"
+        "      EXECUTE pg_catalog.format('REVOKE ALL ON SCHEMA %I FROM %I',"
+        "schema_acl.schema_name,schema_acl.grantee);\n"
+        "    END IF;\n"
+        "  END LOOP;\n"
+        "  FOR default_acl IN\n"
+        "    SELECT owner.rolname AS owner_name,namespace.nspname AS schema_name,\n"
+        "           CASE default_privileges.defaclobjtype WHEN 'r' THEN 'TABLES' "
+        "WHEN 'S' THEN 'SEQUENCES' WHEN 'f' THEN 'FUNCTIONS' WHEN 'T' THEN 'TYPES' "
+        "WHEN 'n' THEN 'SCHEMAS' END AS object_kind,\n"
+        "           CASE WHEN acl.grantee=0 THEN 'PUBLIC' ELSE grantee.rolname END AS grantee\n"
+        "    FROM pg_catalog.pg_default_acl default_privileges\n"
+        "    JOIN pg_catalog.pg_roles owner ON owner.oid=default_privileges.defaclrole\n"
+        "    LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=default_privileges.defaclnamespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(default_privileges.defaclacl) acl\n"
+        "    LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee\n"
+        "    WHERE (default_privileges.defaclrole IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "       OR acl.grantee IN (SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles))\n"
+        "      AND acl.grantee<>default_privileges.defaclrole\n"
+        "    ORDER BY owner.rolname,namespace.nspname,object_kind,acl.grantee\n"
+        "  LOOP\n"
+        "    IF default_acl.grantee='PUBLIC' THEN\n"
+        "      EXECUTE pg_catalog.format('ALTER DEFAULT PRIVILEGES FOR ROLE %I%s "
+        "REVOKE ALL PRIVILEGES ON %s FROM PUBLIC',default_acl.owner_name,\n"
+        "        CASE WHEN default_acl.schema_name IS NULL OR default_acl.object_kind='SCHEMAS' "
+        "THEN '' ELSE pg_catalog.format(' IN SCHEMA %I',default_acl.schema_name) END,\n"
+        "        default_acl.object_kind);\n"
+        "    ELSE\n"
+        "      EXECUTE pg_catalog.format('ALTER DEFAULT PRIVILEGES FOR ROLE %I%s "
+        "REVOKE ALL PRIVILEGES ON %s FROM %I',default_acl.owner_name,\n"
+        "        CASE WHEN default_acl.schema_name IS NULL OR default_acl.object_kind='SCHEMAS' "
+        "THEN '' ELSE pg_catalog.format(' IN SCHEMA %I',default_acl.schema_name) END,\n"
+        "        default_acl.object_kind,default_acl.grantee);\n"
+        "    END IF;\n"
+        "  END LOOP;\n"
+        "  FOR edge IN\n"
+        "    SELECT parent.rolname AS parent_role,member.rolname AS member_role\n"
+        "    FROM pg_catalog.pg_auth_members membership\n"
+        "    JOIN pg_catalog.pg_roles parent ON parent.oid=membership.roleid\n"
+        "    JOIN pg_catalog.pg_roles member ON member.oid=membership.member\n"
+        "    WHERE membership.roleid IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "    ORDER BY parent.rolname,member.rolname\n"
+        "  LOOP\n"
+        "    EXECUTE pg_catalog.format('REVOKE %I FROM %I CASCADE',edge.parent_role,edge.member_role);\n"
+        "  END LOOP;\n"
         "END $applypilot_containment$;"
-    ).format(break_glass, database).as_string(cur.connection)
+    ).format(managed_roles, break_glass, database, future_owner_roles).as_string(cur.connection)
     assertion = sql.SQL(
         "DO $applypilot_containment_assert$\n"
         "BEGIN\n"
@@ -3237,6 +3386,40 @@ def _catalog_derived_authority_containment_sql(
         "      AND function.prokind='f' AND acl.privilege_type='EXECUTE' "
         "AND acl.grantee<>function.proowner\n"
         "  ) THEN RAISE EXCEPTION 'authority containment left a non-owner brain function EXECUTE route';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_class relation\n"
+        "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) acl\n"
+        "    WHERE ((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND acl.grantee<>relation.relowner\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left a non-owner brain relation route';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_attribute attribute\n"
+        "    JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid\n"
+        "    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) acl\n"
+        "    WHERE ((namespace.nspname='public' AND left(relation.relname,6)='brain_') "
+        "OR namespace.nspname='brain_archive') AND acl.grantee<>relation.relowner\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left a non-owner brain column route';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_namespace namespace\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(namespace.nspacl,"
+        "pg_catalog.acldefault('n',namespace.nspowner))) acl\n"
+        "    WHERE (namespace.nspname IN ('public','brain_archive') "
+        "OR left(namespace.nspname,6)='brain_') AND acl.grantee<>namespace.nspowner\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left a non-owner brain schema route';\n"
+        "  END IF;\n"
+        "  IF EXISTS (\n"
+        "    SELECT 1 FROM pg_catalog.pg_default_acl default_privileges\n"
+        "    CROSS JOIN LATERAL pg_catalog.aclexplode(default_privileges.defaclacl) acl\n"
+        "    WHERE (default_privileges.defaclrole IN ("
+        "SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles)\n"
+        "       OR acl.grantee IN (SELECT role_oid FROM pg_temp.applypilot_authority_containment_roles))\n"
+        "      AND acl.grantee<>default_privileges.defaclrole\n"
+        "  ) THEN RAISE EXCEPTION 'authority containment left a connected default-privilege route';\n"
         "  END IF;\n"
         "  IF EXISTS (\n"
         "    SELECT 1 FROM pg_catalog.pg_auth_members membership\n"
@@ -3271,6 +3454,19 @@ def _forward_v7_containment_sql(
         cur,
         database_name=database_name,
         infrastructure_superuser_roles=topology.infrastructure_superuser_roles,
+        managed_role_names=(
+            topology.database_owner_role,
+            topology.controller_role,
+            topology.verifier_role,
+            topology.migrator_role,
+            *topology.retired_admin_roles,
+        ),
+        future_owner_role_names=(
+            topology.database_owner_role,
+            topology.controller_role,
+            topology.verifier_role,
+            topology.migrator_role,
+        ),
     )
     statements = [
         containment_sql,
@@ -3806,6 +4002,7 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
 
     cur.execute(
         "SELECT session_user AS session_name,current_user AS current_name,current_database() AS database_name,"
+        "d.oid AS database_oid,(pg_control_system()).system_identifier::text AS system_identifier,"
         "owner.rolname AS database_owner FROM pg_database d JOIN pg_roles owner ON owner.oid=d.datdba "
         "WHERE d.datname=current_database()"
     )
@@ -3906,7 +4103,9 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
     return {
         "session_user": session_user,
         "database_name": _row_value(database, "database_name", 2),
-        "database_owner_before": _row_value(database, "database_owner", 3),
+        "database_oid": int(_row_value(database, "database_oid", 3)),
+        "system_identifier": _row_value(database, "system_identifier", 4),
+        "database_owner_before": _row_value(database, "database_owner", 5),
         "roles": roles,
         "active_services": active_services,
         "direct_connect_before": direct_connect,
@@ -4445,7 +4644,7 @@ def _existing_authority_topology_inventory(
         raise ValueError("authority upgrade requires exact database and numeric system-identifier pins")
     cur.execute(
         "SELECT session_user AS session_name,current_user AS current_name,current_database() AS database_name,"
-        "(pg_control_system()).system_identifier::text AS system_identifier,"
+        "database.oid AS database_oid,(pg_control_system()).system_identifier::text AS system_identifier,"
         "owner.rolname AS database_owner FROM pg_database database "
         "JOIN pg_roles owner ON owner.oid=database.datdba WHERE database.datname=current_database()"
     )
@@ -4456,14 +4655,15 @@ def _existing_authority_topology_inventory(
     if session_user not in topology.infrastructure_superuser_roles:
         raise RuntimeError("authority upgrade session_user must be an explicit infrastructure break-glass role")
     database_name = _row_value(identity, "database_name", 2)
-    system_identifier = _row_value(identity, "system_identifier", 3)
+    database_oid = int(_row_value(identity, "database_oid", 3))
+    system_identifier = _row_value(identity, "system_identifier", 4)
     if database_name != expected_database_name or system_identifier != expected_system_identifier:
         raise RuntimeError(
             "authority upgrade target identity mismatch: "
             f"expected={expected_system_identifier}/{expected_database_name}, "
             f"actual={system_identifier}/{database_name}"
         )
-    if _row_value(identity, "database_owner", 4) != topology.database_owner_role:
+    if _row_value(identity, "database_owner", 5) != topology.database_owner_role:
         raise RuntimeError("authority upgrade database owner does not match the declared existing topology")
 
     cur.execute(
@@ -4597,8 +4797,9 @@ def _existing_authority_topology_inventory(
     return {
         "session_user": session_user,
         "database_name": database_name,
+        "database_oid": database_oid,
         "system_identifier": system_identifier,
-        "database_owner_before": _row_value(identity, "database_owner", 4),
+        "database_owner_before": _row_value(identity, "database_owner", 5),
         "retired_admin_memberships_before": memberships,
         "retired_admin_default_acl_dependencies": default_acl_dependencies,
         "legacy_capability_memberships_before": legacy_capability_memberships,

@@ -108,24 +108,33 @@ def _break_glass_roles(receipt: dict) -> set[str]:
     )
 
 
-def _expected_target_identity(receipt: dict) -> tuple[str | None, str | None]:
+def _expected_target_identity(receipt: dict) -> tuple[str | None, str | None, int | None]:
     inventory = receipt.get("inventory", {})
     expected_database = receipt.get("database_name") or inventory.get("database_name")
     expected_system_identifier = receipt.get("system_identifier") or inventory.get("system_identifier")
+    expected_database_oid = receipt.get("database_oid") or inventory.get("database_oid")
     if receipt.get("rollback_mode") == "forward_v7_containment" and (
         not expected_database or not str(expected_system_identifier or "").isdigit()
+        or type(expected_database_oid) is not int or expected_database_oid <= 0
     ):
         raise SystemExit("forward V7 rollback receipt is missing exact target identity pins")
-    return expected_database, str(expected_system_identifier) if expected_system_identifier is not None else None
+    return (
+        expected_database,
+        str(expected_system_identifier) if expected_system_identifier is not None else None,
+        expected_database_oid if type(expected_database_oid) is int else None,
+    )
 
 
 def _validated_target_identity(conn, receipt: dict) -> dict[str, str]:
     identity = conn.execute(
         "SELECT session_user,current_user,rolsuper,current_database() AS database_name,"
-        "(pg_control_system()).system_identifier::text AS system_identifier "
+        "(pg_control_system()).system_identifier::text AS system_identifier,"
+        "(SELECT oid FROM pg_database WHERE datname=current_database()) AS database_oid "
         "FROM pg_roles WHERE rolname=session_user"
     ).fetchone()
-    expected_database, expected_system_identifier = _expected_target_identity(receipt)
+    expected_database, expected_system_identifier, expected_database_oid = (
+        _expected_target_identity(receipt)
+    )
     if (
         identity["session_user"] != identity["current_user"]
         or not identity["rolsuper"]
@@ -139,9 +148,12 @@ def _validated_target_identity(conn, receipt: dict) -> dict[str, str]:
         and identity["system_identifier"] != expected_system_identifier
     ):
         raise SystemExit("rollback cluster does not match the authenticated target identity")
+    if expected_database_oid is not None and identity["database_oid"] != expected_database_oid:
+        raise SystemExit("rollback database OID does not match the authenticated target identity")
     return {
         "database_name": identity["database_name"],
         "system_identifier": identity["system_identifier"],
+        "database_oid": int(identity["database_oid"]),
         "session_user": identity["session_user"],
     }
 
@@ -152,6 +164,7 @@ def _containment_marker(receipt: dict, rollback_sql: str, target_identity: dict[
     marker_binding = {
         "database_name": target_identity["database_name"],
         "system_identifier": target_identity["system_identifier"],
+        "database_oid": target_identity["database_oid"],
         "executed_by": target_identity["session_user"],
         "rollback_sql_sha256": rollback_sql_sha256,
         "source_receipt_digest": source_receipt_digest,
@@ -162,73 +175,84 @@ def _containment_marker(receipt: dict, rollback_sql: str, target_identity: dict[
     return {"marker_id": marker_id, **marker_binding}
 
 
-def _commit_database_containment(conn, rollback_sql: str, *, marker: dict[str, str]) -> dict:
-    """Commit rollback SQL and its idempotent database marker atomically."""
+def _execute_database_containment_sql(conn, rollback_sql: str) -> None:
+    conn.execute(rollback_sql)
 
-    with conn.transaction():
-        conn.execute(rollback_sql)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS public.applypilot_rollback_commit_markers("
-            "marker_id text PRIMARY KEY,database_name text NOT NULL,system_identifier text NOT NULL,"
-            "executed_by text NOT NULL,rollback_sql_sha256 text NOT NULL,source_receipt_digest text NOT NULL,"
-            "committed_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp())"
-        )
-        relation = conn.execute(
-            "SELECT relation.relkind,relation.relpersistence,relation.relrowsecurity,"
-            "relation.relforcerowsecurity,owner.rolname AS owner_name,"
-            "(SELECT count(*) FROM pg_trigger trigger WHERE trigger.tgrelid=relation.oid "
-            "AND NOT trigger.tgisinternal) AS trigger_count,"
-            "(SELECT count(*) FROM pg_policy policy WHERE policy.polrelid=relation.oid) AS policy_count,"
-            "(SELECT count(*) FROM aclexplode(COALESCE(relation.relacl,acldefault('r',relation.relowner))) acl "
-            "WHERE acl.grantee<>relation.relowner) AS nonowner_acl_count "
-            "FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace "
-            "JOIN pg_roles owner ON owner.oid=relation.relowner "
-            "WHERE namespace.nspname='public' AND relation.relname='applypilot_rollback_commit_markers'"
-        ).fetchone()
-        expected_relation = {
-            "relkind": "r",
-            "relpersistence": "p",
-            "relrowsecurity": False,
-            "relforcerowsecurity": False,
-            "owner_name": marker["executed_by"],
-            "trigger_count": 0,
-            "policy_count": 0,
-            "nonowner_acl_count": 0,
-        }
-        if relation != expected_relation:
-            raise RuntimeError(f"database containment marker relation is unsafe: {relation!r}")
-        columns = conn.execute(
-            "SELECT attribute.attname,format_type(attribute.atttypid,attribute.atttypmod) AS data_type,"
-            "attribute.attnotnull FROM pg_attribute attribute "
-            "WHERE attribute.attrelid='public.applypilot_rollback_commit_markers'::regclass "
-            "AND attribute.attnum>0 AND NOT attribute.attisdropped ORDER BY attribute.attnum"
-        ).fetchall()
-        expected_columns = [
-            {"attname": "marker_id", "data_type": "text", "attnotnull": True},
-            {"attname": "database_name", "data_type": "text", "attnotnull": True},
-            {"attname": "system_identifier", "data_type": "text", "attnotnull": True},
-            {"attname": "executed_by", "data_type": "text", "attnotnull": True},
-            {"attname": "rollback_sql_sha256", "data_type": "text", "attnotnull": True},
-            {"attname": "source_receipt_digest", "data_type": "text", "attnotnull": True},
-            {"attname": "committed_at", "data_type": "timestamp with time zone", "attnotnull": True},
-        ]
-        if columns != expected_columns:
-            raise RuntimeError(f"database containment marker column contract mismatch: {columns!r}")
-        conn.execute(
-            "INSERT INTO public.applypilot_rollback_commit_markers("
-            "marker_id,database_name,system_identifier,executed_by,rollback_sql_sha256,source_receipt_digest) "
-            "VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(marker_id) DO NOTHING",
-            (
-                marker["marker_id"],
-                marker["database_name"],
-                marker["system_identifier"],
-                marker["executed_by"],
-                marker["rollback_sql_sha256"],
-                marker["source_receipt_digest"],
-            ),
-        )
+
+def _write_database_containment_marker(conn, *, marker: dict) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS public.applypilot_rollback_commit_markers("
+        "marker_id text PRIMARY KEY,database_name text NOT NULL,system_identifier text NOT NULL,"
+        "database_oid oid NOT NULL,"
+        "executed_by text NOT NULL,rollback_sql_sha256 text NOT NULL,source_receipt_digest text NOT NULL,"
+        "committed_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp())"
+    )
+    relation = conn.execute(
+        "SELECT relation.relkind,relation.relpersistence,relation.relrowsecurity,"
+        "relation.relforcerowsecurity,owner.rolname AS owner_name,"
+        "(SELECT count(*) FROM pg_trigger trigger WHERE trigger.tgrelid=relation.oid "
+        "AND NOT trigger.tgisinternal) AS trigger_count,"
+        "(SELECT count(*) FROM pg_policy policy WHERE policy.polrelid=relation.oid) AS policy_count,"
+        "(SELECT count(*) FROM aclexplode(COALESCE(relation.relacl,acldefault('r',relation.relowner))) acl "
+        "WHERE acl.grantee<>relation.relowner) AS nonowner_acl_count "
+        "FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace "
+        "JOIN pg_roles owner ON owner.oid=relation.relowner "
+        "WHERE namespace.nspname='public' AND relation.relname='applypilot_rollback_commit_markers'"
+    ).fetchone()
+    expected_relation = {
+        "relkind": "r",
+        "relpersistence": "p",
+        "relrowsecurity": False,
+        "relforcerowsecurity": False,
+        "owner_name": marker["executed_by"],
+        "trigger_count": 0,
+        "policy_count": 0,
+        "nonowner_acl_count": 0,
+    }
+    if relation != expected_relation:
+        raise RuntimeError(f"database containment marker relation is unsafe: {relation!r}")
+    columns = conn.execute(
+        "SELECT attribute.attname,format_type(attribute.atttypid,attribute.atttypmod) AS data_type,"
+        "attribute.attnotnull FROM pg_attribute attribute "
+        "WHERE attribute.attrelid='public.applypilot_rollback_commit_markers'::regclass "
+        "AND attribute.attnum>0 AND NOT attribute.attisdropped ORDER BY attribute.attnum"
+    ).fetchall()
+    expected_columns = [
+        {"attname": "marker_id", "data_type": "text", "attnotnull": True},
+        {"attname": "database_name", "data_type": "text", "attnotnull": True},
+        {"attname": "system_identifier", "data_type": "text", "attnotnull": True},
+        {"attname": "database_oid", "data_type": "oid", "attnotnull": True},
+        {"attname": "executed_by", "data_type": "text", "attnotnull": True},
+        {"attname": "rollback_sql_sha256", "data_type": "text", "attnotnull": True},
+        {"attname": "source_receipt_digest", "data_type": "text", "attnotnull": True},
+        {"attname": "committed_at", "data_type": "timestamp with time zone", "attnotnull": True},
+    ]
+    if columns != expected_columns:
+        raise RuntimeError(f"database containment marker column contract mismatch: {columns!r}")
+    conn.execute(
+        "INSERT INTO public.applypilot_rollback_commit_markers("
+        "marker_id,database_name,system_identifier,database_oid,executed_by,"
+        "rollback_sql_sha256,source_receipt_digest) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(marker_id) DO NOTHING",
+        (
+            marker["marker_id"],
+            marker["database_name"],
+            marker["system_identifier"],
+            marker["database_oid"],
+            marker["executed_by"],
+            marker["rollback_sql_sha256"],
+            marker["source_receipt_digest"],
+        ),
+    )
+
+
+def _commit_database_containment_transaction(conn) -> None:
+    conn.commit()
+
+
+def _assert_database_containment_marker(conn, *, marker: dict) -> dict:
     observed = conn.execute(
-        "SELECT marker_id,database_name,system_identifier,executed_by,rollback_sql_sha256,"
+        "SELECT marker_id,database_name,system_identifier,database_oid,executed_by,rollback_sql_sha256,"
         "source_receipt_digest,committed_at FROM public.applypilot_rollback_commit_markers "
         "WHERE marker_id=%s",
         (marker["marker_id"],),
@@ -243,6 +267,19 @@ def _commit_database_containment(conn, rollback_sql: str, *, marker: dict[str, s
         "visible": True,
         "committed_at": committed_at.isoformat() if hasattr(committed_at, "isoformat") else str(committed_at),
     }
+
+
+def _commit_database_containment(conn, rollback_sql: str, *, marker: dict) -> dict:
+    """Commit rollback SQL and its idempotent database marker atomically."""
+
+    try:
+        _execute_database_containment_sql(conn, rollback_sql)
+        _write_database_containment_marker(conn, marker=marker)
+        _commit_database_containment_transaction(conn)
+    except BaseException:
+        conn.rollback()
+        raise
+    return _assert_database_containment_marker(conn, marker=marker)
 
 
 def _assert_candidate_artifact_containment(conn, *, break_glass_roles: set[str]) -> dict[str, int]:
@@ -289,7 +326,12 @@ def _fsync_parent(path: Path) -> None:
         os.close(descriptor)
 
 
-def _validate_partial_state_parent(path: Path) -> None:
+def _partial_state_parent_identity(parent_path: Path) -> tuple[str, int, int]:
+    parent = os.lstat(parent_path)
+    return str(parent_path), int(parent.st_dev), int(parent.st_ino)
+
+
+def _validate_partial_state_parent(path: Path) -> tuple[str, int, int]:
     if not path.is_absolute() or path.parent.resolve(strict=True) != path.parent:
         raise RuntimeError("partial-state receipt path must have an absolute canonical parent")
     parent = os.lstat(path.parent)
@@ -297,22 +339,62 @@ def _validate_partial_state_parent(path: Path) -> None:
         raise RuntimeError("partial-state receipt parent must be a real directory")
     if os.name != "nt" and stat.S_IMODE(parent.st_mode) & 0o022:
         raise RuntimeError("partial-state receipt parent must not be group/world writable")
+    return str(path.parent), int(parent.st_dev), int(parent.st_ino)
 
 
-def _write_exclusive_durable(path: Path, payload: bytes) -> None:
-    _validate_partial_state_parent(path)
+def _write_exclusive_durable(
+    path: Path,
+    payload: bytes,
+    *,
+    expected_parent_identity: tuple[str, int, int],
+) -> None:
+    if _partial_state_parent_identity(path.parent) != expected_parent_identity:
+        raise RuntimeError("partial-state receipt parent directory changed after preflight")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
+    descriptor = -1
+    parent_descriptor = -1
+    created = False
     try:
+        if os.open in os.supports_dir_fd:
+            parent_descriptor = os.open(
+                path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened_parent = os.fstat(parent_descriptor)
+            if (str(path.parent), int(opened_parent.st_dev), int(opened_parent.st_ino)) != (
+                expected_parent_identity
+            ):
+                raise RuntimeError("partial-state receipt parent directory changed after preflight")
+            descriptor = os.open(path.name, flags, 0o600, dir_fd=parent_descriptor)
+        else:
+            if _partial_state_parent_identity(path.parent) != expected_parent_identity:
+                raise RuntimeError("partial-state receipt parent directory changed after preflight")
+            descriptor = os.open(path, flags, 0o600)
+        created = True
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = -1
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        _fsync_parent(path)
+        if parent_descriptor >= 0:
+            os.fsync(parent_descriptor)
+        else:
+            _fsync_parent(path)
+    except BaseException:
+        if created:
+            try:
+                if parent_descriptor >= 0 and os.unlink in os.supports_dir_fd:
+                    os.unlink(path.name, dir_fd=parent_descriptor)
+                else:
+                    os.unlink(path)
+            except FileNotFoundError:
+                pass
+        raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
 
 
 def _partial_state_destination(
@@ -402,6 +484,7 @@ def _emit_partial_state_receipt(
     failure: BaseException,
     authentication_key: bytes,
     authentication_key_id: str,
+    partial_parent_identity: tuple[str, int, int],
 ) -> Path:
     destination, predecessor = _partial_state_destination(
         requested_path,
@@ -443,6 +526,7 @@ def _emit_partial_state_receipt(
     _write_exclusive_durable(
         destination,
         (json.dumps(authenticated, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        expected_parent_identity=partial_parent_identity,
     )
     return destination
 
@@ -657,8 +741,9 @@ def main() -> int:
     )
     source_receipt_evidence = _source_receipt_evidence(receipt_path, receipt)
     partial_state_predecessor = None
+    partial_parent_identity = None
     if args.restore_hba:
-        _validate_partial_state_parent(partial_state_path)
+        partial_parent_identity = _validate_partial_state_parent(partial_state_path)
         _partial_destination, partial_state_predecessor = _partial_state_destination(
             partial_state_path,
             authentication_key=authentication_key,
@@ -703,20 +788,33 @@ def main() -> int:
                 _restore_hba_and_reload(conn, receipt, validated=hba_preflight)
             except BaseException as error:
                 hba_observed = _observe_hba_state(receipt, validated=hba_preflight)
-                partial_receipt = _emit_partial_state_receipt(
-                    partial_state_path,
-                    source_receipt=receipt,
-                    source_receipt_evidence=source_receipt_evidence,
-                    rollback_sql_path=rollback_path,
-                    rollback_sql=rollback_sql,
-                    target_identity=target_identity,
-                    database_containment=database_containment,
-                    containment_postcondition=containment_postcondition,
-                    hba_observed=hba_observed,
-                    failure=error,
-                    authentication_key=authentication_key,
-                    authentication_key_id=expected_key_id,
-                )
+                try:
+                    partial_receipt = _emit_partial_state_receipt(
+                        partial_state_path,
+                        source_receipt=receipt,
+                        source_receipt_evidence=source_receipt_evidence,
+                        rollback_sql_path=rollback_path,
+                        rollback_sql=rollback_sql,
+                        target_identity=target_identity,
+                        database_containment=database_containment,
+                        containment_postcondition=containment_postcondition,
+                        hba_observed=hba_observed,
+                        failure=error,
+                        authentication_key=authentication_key,
+                        authentication_key_id=expected_key_id,
+                        partial_parent_identity=partial_parent_identity,
+                    )
+                except BaseException as receipt_error:
+                    failures = BaseExceptionGroup(
+                        "HBA restoration and durable partial-state receipt creation failed",
+                        [error, receipt_error],
+                    )
+                    raise RuntimeError(
+                        "database_containment_committed=true;"
+                        "hba_state=uncertain_not_restored;"
+                        "partial_receipt_created=false;"
+                        "recovery=manual_containment_required"
+                    ) from failures
                 raise RuntimeError(
                     "database rollback committed, but HBA restoration failed; "
                     "partial state: database containment is durable and HBA admission state is uncertain; "
