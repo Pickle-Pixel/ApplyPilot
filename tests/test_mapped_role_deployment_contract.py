@@ -354,7 +354,13 @@ def test_hba_post_write_failure_restores_hba_and_outputs_byte_exact(tmp_path: Pa
         AP_TEST_DIR=str(tmp_path),
     )
     result = _run_hba_function(
-        "$candidate=@('# BEGIN APPLYPILOT MAPPED ROLE mapped_test',"
+        "$candidate=@('# BEGIN APPLYPILOT BACKUP ROLE fleet_backup',"
+        "'host fleet fleet_backup 127.0.0.1/32 scram-sha-256',"
+        "'host fleet fleet_backup ::1/128 scram-sha-256',"
+        "'host fleet fleet_backup 0.0.0.0/0 reject',"
+        "'host fleet fleet_backup ::0/0 reject',"
+        "'# END APPLYPILOT BACKUP ROLE fleet_backup',"
+        "'# BEGIN APPLYPILOT MAPPED ROLE mapped_test',"
         "'host fleet mapped_test 100.64.0.0/10 scram-sha-256',"
         "'host fleet mapped_test 0.0.0.0/0 reject','host fleet mapped_test ::0/0 reject',"
         "'# END APPLYPILOT MAPPED ROLE mapped_test','host all all 0.0.0.0/0 trust'); "

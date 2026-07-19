@@ -48,17 +48,23 @@ function New-ApplyPilotManagedHba {
     )
     $begin = "# BEGIN APPLYPILOT MAPPED ROLE $Role"
     $end = "# END APPLYPILOT MAPPED ROLE $Role"
+    $backupBegin = "# BEGIN APPLYPILOT BACKUP ROLE fleet_backup"
+    $backupEnd = "# END APPLYPILOT BACKUP ROLE fleet_backup"
     $withoutManaged = [Collections.Generic.List[string]]::new()
     $inside = $false
+    $expectedEnd = $null
     foreach ($line in $Lines) {
-        if ($line -eq $begin) {
+        if ($line -eq $begin -or $line -eq $backupBegin) {
             if ($inside) { throw "nested ApplyPilot pg_hba managed blocks" }
             $inside = $true
+            $expectedEnd = if ($line -eq $begin) { $end } else { $backupEnd }
             continue
         }
-        if ($line -eq $end) {
+        if ($line -eq $end -or $line -eq $backupEnd) {
             if (-not $inside) { throw "unmatched ApplyPilot pg_hba managed block end" }
+            if ($line -ne $expectedEnd) { throw "mismatched ApplyPilot pg_hba managed block end" }
             $inside = $false
+            $expectedEnd = $null
             continue
         }
         if (-not $inside) { $withoutManaged.Add($line) }
@@ -74,6 +80,12 @@ function New-ApplyPilotManagedHba {
         }
     }
     $managed = @(
+        $backupBegin,
+        "host $Database fleet_backup 127.0.0.1/32 scram-sha-256",
+        "host $Database fleet_backup ::1/128 scram-sha-256",
+        "host $Database fleet_backup 0.0.0.0/0 reject",
+        "host $Database fleet_backup ::0/0 reject",
+        $backupEnd,
         $begin,
         "host $Database $Role $TailnetCidr scram-sha-256",
         "host $Database $Role 0.0.0.0/0 reject",
@@ -97,6 +109,10 @@ function Assert-ApplyPilotHbaEffectiveOrder {
         [Parameter(Mandatory = $true)][string]$TailnetCidr
     )
     $expected = @(
+        "host $Database fleet_backup 127.0.0.1/32 scram-sha-256",
+        "host $Database fleet_backup ::1/128 scram-sha-256",
+        "host $Database fleet_backup 0.0.0.0/0 reject",
+        "host $Database fleet_backup ::0/0 reject",
         "host $Database $Role $TailnetCidr scram-sha-256",
         "host $Database $Role 0.0.0.0/0 reject",
         "host $Database $Role ::0/0 reject"
@@ -108,17 +124,15 @@ function Assert-ApplyPilotHbaEffectiveOrder {
             $hostIndices += $index
         }
     }
-    if ($hostIndices.Count -lt 3) { throw "managed pg_hba allow/deny rules are missing" }
+    if ($hostIndices.Count -lt 7) { throw "managed backup and mapped-role pg_hba allow/deny rules are missing" }
     $first = $hostIndices[0]
-    if (
-        $Lines[$first].Trim() -ne $expected[0] -or
-        $Lines[$first + 1].Trim() -ne $expected[1] -or
-        $Lines[$first + 2].Trim() -ne $expected[2]
-    ) {
-        throw "managed allow/deny rules do not precede every effective host rule"
+    for ($offset = 0; $offset -lt $expected.Count; $offset++) {
+        if ($Lines[$hostIndices[$offset]].Trim() -ne $expected[$offset]) {
+            throw "managed backup and mapped-role allow/deny rules do not precede every effective host rule"
+        }
     }
-    foreach ($later in $hostIndices | Select-Object -Skip 3) {
-        if ($later -le ($first + 2)) { throw "broad host rule precedes the managed deny boundary" }
+    foreach ($later in $hostIndices | Select-Object -Skip 7) {
+        if ($later -le $hostIndices[6]) { throw "broad host rule precedes the managed deny boundary" }
     }
 }
 
@@ -326,12 +340,14 @@ from applypilot.fleet.pg_roles import AclRegrant, RegrantManifest, ensure_fleet_
 
 with open(os.environ["APPLYPILOT_REGRANT_MANIFEST"], encoding="utf-8") as stream:
     raw = json.load(stream)
-allowed_keys = {"database_owner_role","controller_roles","verifier_roles","retired_admin_roles","infrastructure_superuser_roles","expected_service_roles","regrants"}
+allowed_keys = {"database_owner_role","controller_roles","verifier_roles","retired_admin_roles","backup_role","migrator_role","infrastructure_superuser_roles","expected_service_roles","regrants"}
 unknown = set(raw) - allowed_keys
 if unknown or "regrant_sql" in raw:
     raise SystemExit(f"unsupported regrant manifest fields: {sorted(unknown | ({'regrant_sql'} & set(raw)))}")
 manifest = RegrantManifest(
     database_owner_role=raw["database_owner_role"],
+    backup_role=raw.get("backup_role", "fleet_backup"),
+    migrator_role=raw.get("migrator_role", "brain_schema_migrator"),
     controller_roles=tuple(raw["controller_roles"]),
     verifier_roles=tuple(raw["verifier_roles"]),
     retired_admin_roles=tuple(raw["retired_admin_roles"]),
@@ -442,6 +458,13 @@ $finalizeOutput = {
     $receipt | Add-Member -NotePropertyName hba_rules -NotePropertyValue $inventory.rules
     $receipt | Add-Member -NotePropertyName hba_path -NotePropertyValue $HbaPath
     $receipt | Add-Member -NotePropertyName hba_backup -NotePropertyValue $preflightBackup
+    $receipt | Add-Member -NotePropertyName backup_hba_policy -NotePropertyValue ([ordered]@{
+        role = "fleet_backup"
+        allowed_sources = @("127.0.0.1/32", "::1/128")
+        authentication = "scram-sha-256"
+        all_other_ipv4 = "reject"
+        all_other_ipv6 = "reject"
+    })
     $receipt | Add-Member -NotePropertyName rollback_sql_path -NotePropertyValue $rollbackFull
     $receipt | Add-Member -Force -NotePropertyName status -NotePropertyValue "deployment_committed"
     $receipt | Add-Member -Force -NotePropertyName escalation_required -NotePropertyValue $false
@@ -449,6 +472,7 @@ $finalizeOutput = {
     Write-ApplyPilotDurableAtomicJson -Path $receiptFull -Value $receipt
     $verified = Get-Content -LiteralPath $receiptFull -Raw | ConvertFrom-Json
     if ($verified.hba_path -ne $HbaPath -or $verified.hba_backup -ne $preflightBackup -or
+        $verified.backup_hba_policy.role -ne "fleet_backup" -or
         $verified.status -ne "deployment_committed" -or $verified.escalation_required -or $verified.in_doubt) {
         throw "deployment receipt verification failed"
     }

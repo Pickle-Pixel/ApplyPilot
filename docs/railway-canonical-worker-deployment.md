@@ -60,21 +60,32 @@ Store that credential offline, do not set its DSN in controller or worker
 services, and use it only for bootstrap or execution of the prewritten rollback.
 
 Bootstrap creates the dedicated NOLOGIN database owner, LOGIN/NOSUPERUSER
-controller, NOLOGIN verifier, and NOLOGIN migrator topology. It strips LOGIN,
+controller, NOLOGIN verifier, NOLOGIN migrator, and the fixed `fleet_backup`
+LOGIN topology. `fleet_backup` is `NOINHERIT NOSUPERUSER NOCREATEDB
+NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1`; it has no inbound
+or outbound memberships and owns no object. It receives only database CONNECT,
+schema USAGE, table/view/materialized-view SELECT, sequence SELECT, and explicit
+`pg_catalog.pg_control_system()` EXECUTE for target-identity receipts. Per-database
+settings pin `search_path=pg_catalog, pg_temp` and
+`default_transaction_read_only=on`. Bootstrap also installs global migrator
+default ACLs for future schema USAGE and table/sequence SELECT. It strips LOGIN,
 SUPERUSER, BYPASSRLS, CREATEROLE, CREATEDB, and REPLICATION from separately
 named legacy roles in `retired_admin_roles`; the infrastructure break-glass role
 must never appear in that list. After bootstrap, delete
-`APPLYPILOT_ADMIN_PG_DSN` and `APPLYPILOT_CONTROLLER_PG_PASSWORD` from the
+`APPLYPILOT_ADMIN_PG_DSN`, `APPLYPILOT_CONTROLLER_PG_PASSWORD`, and
+`APPLYPILOT_BACKUP_PG_PASSWORD` from the
 shell. Set `APPLYPILOT_CONTROLLER_PG_DSN` only in the administrative migration
 job. Normal migration and reconciliation run as that non-superuser controller,
-which has explicit `brain_schema_migrator` membership. Never expose any admin or
-controller variable to a worker service.
+which has no owner or `brain_schema_migrator` membership; authority changes use
+the bounded controller functions and the separately constrained owner-to-migrator
+`SET ROLE` edge. Never expose any admin or controller variable to a worker service.
 
 Example one-time bootstrap:
 
 ```powershell
 $env:APPLYPILOT_ADMIN_PG_DSN = '<provider-admin-url>'
 $env:APPLYPILOT_CONTROLLER_PG_PASSWORD = '<new-scram-secret>'
+$env:APPLYPILOT_BACKUP_PG_PASSWORD = '<independent-backup-scram-secret>'
 python scripts/bootstrap-fleet-pg-roles.py `
   --database-owner-role applypilot_database_owner `
   --controller-role applypilot_deployment_controller `
@@ -84,7 +95,7 @@ python scripts/bootstrap-fleet-pg-roles.py `
   --infrastructure-superuser-role postgres `
   --receipt-path .\evidence\bootstrap-receipt.json `
   --rollback-sql .\evidence\bootstrap-rollback.sql
-Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD
+Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD, Env:APPLYPILOT_BACKUP_PG_PASSWORD
 ```
 
 Before role hardening, prepare a reviewed JSON regrant manifest:
@@ -95,6 +106,8 @@ Before role hardening, prepare a reviewed JSON regrant manifest:
   "controller_roles": ["applypilot_deployment_controller"],
   "verifier_roles": ["brain_schema_verifier"],
   "retired_admin_roles": ["legacy_fleet_admin"],
+  "backup_role": "fleet_backup",
+  "migrator_role": "brain_schema_migrator",
   "infrastructure_superuser_roles": ["postgres"],
   "expected_service_roles": [],
   "regrants": [
@@ -120,7 +133,7 @@ from PUBLIC, transfers ownership to the dedicated NOLOGIN/NOSUPERUSER owner,
 retires the named legacy/shared admin logins while preserving the isolated
 infrastructure break-glass role, revokes broad
 PUBLIC/object/default ACLs, then grants CONNECT only to the owner, controller,
-verifier, mapped per-node contract roles, and named infrastructure break-glass
+verifier, fixed backup principal, mapped per-node contract roles, and named infrastructure break-glass
 roles. Final validation enumerates every direct and effective grantee, including
 database-owner and superuser behavior, proves that reconnect-capable roles are
 exactly the explicitly allowlisted LOGIN roles, and checks the complete
@@ -137,8 +150,9 @@ target ACL, the principal mapping's original `created_at`, PostgreSQL 18 inbound
 and outbound membership grantor plus `ADMIN`/`INHERIT`/`SET` options, HBA
 inventory, and backup path. It stores
 only structured fields and the rollback SQL hash, never raw regrant SQL. Keep both artifacts with the
-deployment evidence. The HBA edit inserts an allow followed by IPv4/IPv6 rejects
-before every pre-existing host rule, rejects all include directives and input
+deployment evidence. The HBA edit inserts localhost-only SCRAM rules for
+`fleet_backup` (`127.0.0.1/32` and `::1/128`) followed by IPv4/IPv6 rejects,
+then the mapped-role tailnet allow and rejects, all before every pre-existing host rule. It rejects all include directives and input
 control characters, uses an atomic replacement, validates both parsed rules and
 effective first-match order, reloads, and restores the exact original plus
 pre-write receipt outputs on any post-write failure. Receipt, rollback, HBA,
@@ -153,6 +167,15 @@ flushes its contents and preserved destination ACL/owner metadata to disk, then
 atomically replaces the in-doubt receipt. It never clears `in_doubt` in place;
 abrupt termination therefore leaves either the intact database-reconciled
 in-doubt receipt or the complete committed receipt, never partial JSON.
+
+Logical backup provisioning is fail-closed when any application table has RLS
+enabled/forced or when `pg_largeobject_metadata` contains a row. The backup role
+does not receive `BYPASSRLS` and the launcher must never use
+`pg_dump --enable-row-security`; either condition requires an explicit reviewed
+policy change before backup or cutover. Receipts record the RLS/large-object
+policy, exact role settings, default ACL closure, membership/ownership counts,
+database-identity readability, and `pg_control_system()` capability without a
+password, DSN, verifier, or other secret.
 
 Rollback order is: pause all lanes, retrieve the offline break-glass credential,
 verify the rollback file's SHA-256 against the durable receipt, establish and

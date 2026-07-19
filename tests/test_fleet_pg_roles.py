@@ -31,6 +31,7 @@ DATABASE_OWNER_ROLE = "fleet_database_owner_test"
 MIGRATOR_ROLE = "fleet_migrator_test"
 RETIRED_ADMIN_ROLE = "fleet_provider_admin_test"
 CONTROLLER_PASSWORD = "applypilot-disposable-controller-only"
+BACKUP_PASSWORD = "applypilot-disposable-backup-only"
 
 
 _EVIDENCE_TEMP = tempfile.TemporaryDirectory(prefix="applypilot-role-evidence-")
@@ -60,6 +61,7 @@ def _manifest(
         controller_roles=(CONTROLLER_ROLE,),
         verifier_roles=(VERIFIER_ROLE,),
         retired_admin_roles=(RETIRED_ADMIN_ROLE,),
+        migrator_role=MIGRATOR_ROLE,
         infrastructure_superuser_roles=("postgres",),
         expected_service_roles=expected_services,
         regrants=regrants,
@@ -108,6 +110,7 @@ def _drop_role(conn) -> None:
             cur.execute("DROP OWNED BY fleet_worker_inherited")
             cur.execute("DROP ROLE fleet_worker_inherited")
         for support_role in (
+            pg_roles.FLEET_BACKUP_ROLE,
             CONTROLLER_ROLE,
             VERIFIER_ROLE,
             DATABASE_OWNER_ROLE,
@@ -140,6 +143,15 @@ def worker_role(fleet_db):
         )
         conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(VERIFIER_ROLE)))
         conn.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1 PASSWORD {}"
+            ).format(
+                sql.Identifier(pg_roles.FLEET_BACKUP_ROLE),
+                sql.Literal(BACKUP_PASSWORD),
+            )
+        )
+        conn.execute(
             "INSERT INTO public.workers(worker_id,machine_owner,public_ip,validated,capabilities) "
             "VALUES(%s,'machine-a','1.1.1.1',TRUE,'{\"can_ats\":true}'::jsonb) "
             "ON CONFLICT(worker_id) DO UPDATE SET machine_owner=EXCLUDED.machine_owner,"
@@ -170,12 +182,27 @@ def worker_role(fleet_db):
             )
         )
         conn.execute(
+            sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM PUBLIC").format(
+                sql.Identifier(conninfo_to_dict(conn.info.dsn)["dbname"])
+            )
+        )
+        conn.execute(
             sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
                 sql.Identifier(conninfo_to_dict(conn.info.dsn)["dbname"]),
                 sql.Identifier(CONTROLLER_ROLE),
             )
         )
         conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(CONTROLLER_ROLE)))
+        pg_roles._reconcile_backup_role_boundary(
+            conn.cursor(),
+            topology=pg_roles.BootstrapTopology(
+                database_owner_role=DATABASE_OWNER_ROLE,
+                controller_role=CONTROLLER_ROLE,
+                verifier_role=VERIFIER_ROLE,
+                migrator_role=MIGRATOR_ROLE,
+                retired_admin_roles=(RETIRED_ADMIN_ROLE,),
+            ),
+        )
         conn.commit()
 
         yield
@@ -964,6 +991,9 @@ def test_existing_mapped_role_rollback_restores_catalog_state_and_quarantines_lo
         conn.execute("DROP SEQUENCE IF EXISTS public.rollback_acl_sequence")
         conn.execute("DROP TYPE IF EXISTS public.rollback_acl_type")
         conn.execute("CREATE SEQUENCE public.rollback_acl_sequence")
+        conn.execute(
+            "GRANT SELECT ON SEQUENCE public.rollback_acl_sequence TO fleet_backup"
+        )
         conn.execute("CREATE TYPE public.rollback_acl_type AS ENUM ('before')")
         conn.execute(
             sql.SQL(

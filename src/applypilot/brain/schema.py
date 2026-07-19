@@ -49,6 +49,7 @@ _LEGACY_V1_CHECKSUMS = frozenset({
 })
 _MIGRATION_ROLE = "brain_schema_migrator"
 _VERIFIER_ROLE = "brain_schema_verifier"
+_BACKUP_ROLE = "fleet_backup"
 _UNPINNED_PG18_CATALOG_HASH = "PG18_PIN_REQUIRED"
 _PG_CATALOG_HASHES = MappingProxyType({
     18: MappingProxyType({
@@ -1555,8 +1556,9 @@ def _v5_catalog_contract_hash(cur) -> str:
             "LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee "
             "JOIN pg_roles grantor ON grantor.oid=acl.grantor "
             "WHERE n.nspname='public' AND c.relname=ANY(%s) AND acl.grantee<>c.relowner "
+            "AND COALESCE(grantee.rolname,'PUBLIC')<>%s "
             "ORDER BY c.relname,grantee,acl.privilege_type",
-            (relation_names,),
+            (relation_names, _BACKUP_ROLE),
         )
         relation_acls = cur.fetchall()
         cur.execute(
@@ -2155,6 +2157,9 @@ def _verify_contract(cur) -> None:
     for row in cur.fetchall():
         allowed = row["grantee"] == verifier_identity and row["privilege_type"] == "SELECT"
         allowed = allowed or (
+            row["grantee"] == _BACKUP_ROLE and row["privilege_type"] == "SELECT"
+        )
+        allowed = allowed or (
             row["nspname"] == "public"
             and row["relname"] in _STATUS_READ_RELATIONS
             and row["grantee"] == _STATUS_ROLE
@@ -2224,8 +2229,11 @@ def _verify_contract(cur) -> None:
         "WHERE n.nspname = 'brain_archive' AND acl.grantee <> n.nspowner"
     )
     schema_grants = [row["grantee"] for row in cur.fetchall()]
-    expected_schema_grants = [] if verifier_identity is None else [verifier_identity]
-    if sorted(schema_grants) != expected_schema_grants:
+    expected_schema_grants = [_BACKUP_ROLE] if verifier_identity is None else [_BACKUP_ROLE, verifier_identity]
+    cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (_BACKUP_ROLE,))
+    if cur.fetchone() is None:
+        expected_schema_grants = [] if verifier_identity is None else [verifier_identity]
+    if sorted(schema_grants) != sorted(expected_schema_grants):
         problems.append("brain_archive schema ACL contract mismatch: " + ", ".join(sorted(schema_grants)))
     cur.execute(
         "SELECT COALESCE(grantee.rolname, 'PUBLIC') AS grantee, acl.privilege_type "
@@ -3817,6 +3825,9 @@ def _verify_v7_acl_contract(cur) -> None:
     for row in cur.fetchall():
         allowed = row["grantee"] == _VERIFIER_ROLE and row["privilege_type"] == "SELECT"
         allowed = allowed or (
+            row["grantee"] == _BACKUP_ROLE and row["privilege_type"] == "SELECT"
+        )
+        allowed = allowed or (
             row["grantee"] == _STATUS_ROLE
             and row["relname"] in _STATUS_READ_RELATIONS
             and row["privilege_type"] == "SELECT"
@@ -4004,7 +4015,11 @@ def _verify_v7_topology_relation_contract(cur) -> int:
         "AND acl.grantee<>c.relowner ORDER BY grantee,acl.privilege_type"
     )
     topology_acls = cur.fetchall()
-    if topology_acls != [{"grantee": _VERIFIER_ROLE, "privilege_type": "SELECT"}]:
+    cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (_BACKUP_ROLE,))
+    expected_topology_acls = [{"grantee": _VERIFIER_ROLE, "privilege_type": "SELECT"}]
+    if cur.fetchone() is not None:
+        expected_topology_acls.append({"grantee": _BACKUP_ROLE, "privilege_type": "SELECT"})
+    if topology_acls != expected_topology_acls:
         raise RuntimeError(
             f"brain schema v7 topology ACL contract mismatch: {topology_acls!r}"
         )
@@ -4554,12 +4569,17 @@ def _verify_v8_contract(cur) -> None:
         "WHERE c.oid='public.applypilot_database_identity'::regclass "
         "AND acl.grantee<>c.relowner ORDER BY grantee,acl.privilege_type"
     )
-    if [
+    identity_acls = [
         (row["grantee"], row["privilege_type"]) for row in cur.fetchall()
-    ] != [
+    ]
+    expected_identity_acls = [
         ("brain_artifact_authority_owner", "SELECT"),
         (_VERIFIER_ROLE, "SELECT"),
-    ]:
+    ]
+    cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (_BACKUP_ROLE,))
+    if cur.fetchone() is not None:
+        expected_identity_acls.append((_BACKUP_ROLE, "SELECT"))
+    if identity_acls != expected_identity_acls:
         raise RuntimeError("brain schema v8 identity ACL contract mismatch")
 
     # Append-only storage-retention attestations.
@@ -4603,13 +4623,18 @@ def _verify_v8_contract(cur) -> None:
         "WHERE c.oid='public.brain_artifact_retention_attestations'::regclass "
         "AND acl.grantee<>c.relowner ORDER BY grantee,acl.privilege_type"
     )
-    if [
+    retention_acls = [
         (row["grantee"], row["privilege_type"]) for row in cur.fetchall()
-    ] != [
+    ]
+    expected_retention_acls = [
         ("brain_artifact_authority_owner", "INSERT"),
         ("brain_artifact_authority_owner", "SELECT"),
         (_VERIFIER_ROLE, "SELECT"),
-    ]:
+    ]
+    cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (_BACKUP_ROLE,))
+    if cur.fetchone() is not None:
+        expected_retention_acls.append((_BACKUP_ROLE, "SELECT"))
+    if retention_acls != expected_retention_acls:
         raise RuntimeError("brain schema v8 retention ACL contract mismatch")
 
     # Authority predicate now requires an exact still-current retention attestation

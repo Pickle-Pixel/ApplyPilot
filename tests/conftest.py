@@ -28,6 +28,7 @@ DISPOSABLE_CLUSTER_MARKER_ROLE = "applypilot_disposable_cluster_marker"
 DISPOSABLE_CLUSTER_COMMENT_PREFIX = "applypilot:disposable-postgres-test-cluster:v1:"
 DISPOSABLE_CLUSTER_MARKER_ENV = "APPLYPILOT_PGTEST_CLUSTER_MARKER"
 _FIXED_BRAIN_TEST_ROLES = (
+    "fleet_backup",
     "brain_candidate_reader",
     "brain_candidate_writer",
     "brain_status_reader",

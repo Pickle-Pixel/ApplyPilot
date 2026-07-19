@@ -22,6 +22,7 @@ from typing import Any
 from psycopg import sql
 
 DEFAULT_ROLE = "fleet_worker"
+FLEET_BACKUP_ROLE = "fleet_backup"
 _ROLE_LOCK_KEY = "applypilot:fleet-worker-role:v2"
 _CANDIDATE_ROLE_LOCK_KEY = "applypilot:brain-candidate-roles:v1"
 _ARTIFACT_AUTHORITY_ROLE_LOCK_KEY = "applypilot:brain-artifact-authority-roles:v1"
@@ -77,6 +78,8 @@ class RegrantManifest:
     controller_roles: tuple[str, ...]
     verifier_roles: tuple[str, ...]
     retired_admin_roles: tuple[str, ...]
+    backup_role: str = FLEET_BACKUP_ROLE
+    migrator_role: str = "brain_schema_migrator"
     infrastructure_superuser_roles: tuple[str, ...] = ()
     expected_service_roles: tuple[str, ...] = ()
     regrants: tuple[AclRegrant, ...] = ()
@@ -377,6 +380,7 @@ class BootstrapTopology:
     verifier_role: str
     migrator_role: str
     retired_admin_roles: tuple[str, ...]
+    backup_role: str = FLEET_BACKUP_ROLE
     expected_service_roles: tuple[str, ...] = ()
     infrastructure_superuser_roles: tuple[str, ...] = ()
 
@@ -788,6 +792,7 @@ def _apply_regrants(cur, regrants: tuple[dict[str, Any], ...]) -> None:
 
 
 def _database_inventory(cur, *, role_name: str, manifest: RegrantManifest) -> dict[str, Any]:
+    _reject_unsupported_backup_objects(cur)
     controller_roles = tuple(dict.fromkeys(manifest.controller_roles))
     verifier_roles = tuple(dict.fromkeys(manifest.verifier_roles))
     retired_admin_roles = tuple(dict.fromkeys(manifest.retired_admin_roles))
@@ -798,12 +803,31 @@ def _database_inventory(cur, *, role_name: str, manifest: RegrantManifest) -> di
         raise RuntimeError("explicit regrant manifest requires at least one break-glass superuser role")
     if not _IDENTIFIER.fullmatch(manifest.database_owner_role):
         raise ValueError("database_owner_role must be one plain role identifier")
+    if manifest.backup_role != FLEET_BACKUP_ROLE:
+        raise RuntimeError(f"regrant manifest backup role must be {FLEET_BACKUP_ROLE!r}")
+    if not _IDENTIFIER.fullmatch(manifest.migrator_role):
+        raise ValueError("migrator_role must be one plain role identifier")
     if set(retired_admin_roles) & set(
-        (manifest.database_owner_role, *controller_roles, *verifier_roles, *break_glass_roles)
+        (
+            manifest.database_owner_role,
+            manifest.backup_role,
+            manifest.migrator_role,
+            *controller_roles,
+            *verifier_roles,
+            *break_glass_roles,
+        )
     ):
         raise RuntimeError("retired admin roles must be disjoint from owner/controller/verifier/break-glass roles")
-    if set(break_glass_roles) & set((manifest.database_owner_role, *controller_roles, *verifier_roles)):
-        raise RuntimeError("break-glass roles must be disjoint from owner/controller/verifier roles")
+    if set(break_glass_roles) & set(
+        (
+            manifest.database_owner_role,
+            manifest.backup_role,
+            manifest.migrator_role,
+            *controller_roles,
+            *verifier_roles,
+        )
+    ):
+        raise RuntimeError("break-glass roles must be disjoint from managed topology roles")
     cur.execute(
         "SELECT session_user AS session_name,current_user AS current_name,current_database() AS database_name,"
         "owner.rolname AS owner_name "
@@ -839,6 +863,7 @@ def _database_inventory(cur, *, role_name: str, manifest: RegrantManifest) -> di
         dict.fromkeys(
             (
                 manifest.database_owner_role,
+                manifest.backup_role,
                 *controller_roles,
                 *verifier_roles,
                 *break_glass_roles,
@@ -953,6 +978,8 @@ def _database_inventory(cur, *, role_name: str, manifest: RegrantManifest) -> di
         "database_owner_after": manifest.database_owner_role,
         "retired_admin_roles": retired_admin_roles,
         "infrastructure_superuser_roles": break_glass_roles,
+        "backup_role": manifest.backup_role,
+        "backup_role_boundary_expected": "fixed_read_only_no_membership_no_ownership",
         "active_service_roles": active_services,
         "explicit_connect_roles": explicit_connect_roles,
         "default_acls": default_acls,
@@ -3761,6 +3788,7 @@ def _forward_v7_containment_sql(
             topology.controller_role,
             topology.verifier_role,
             topology.migrator_role,
+            topology.backup_role,
             *topology.retired_admin_roles,
         ),
         future_owner_role_names=(
@@ -3787,6 +3815,39 @@ def _forward_v7_containment_sql(
         ).rstrip()
     )
     statements.append(_bootstrap_object_rollback_sql(cur, ownership).rstrip())
+    backup = sql.Identifier(topology.backup_role)
+    migrator = sql.Identifier(topology.migrator_role)
+    backup_cleanup = [
+        sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM {};")
+        .format(sql.Identifier(database_name), backup)
+        .as_string(cur.connection)
+    ]
+    for schema_name in _user_schemas(cur):
+        schema = sql.Identifier(schema_name)
+        for statement in (
+            sql.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {};").format(schema, backup),
+            sql.SQL("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA {} FROM {};").format(schema, backup),
+            sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM {};").format(schema, backup),
+            sql.SQL("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {} FROM {};").format(schema, backup),
+        ):
+            backup_cleanup.append(statement.as_string(cur.connection))
+    for statement in (
+        sql.SQL("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM {};").format(backup),
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE USAGE ON SCHEMAS FROM {};").format(migrator, backup),
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE SELECT ON TABLES FROM {};").format(migrator, backup),
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE SELECT ON SEQUENCES FROM {};").format(migrator, backup),
+        sql.SQL("ALTER ROLE {} IN DATABASE {} RESET ALL;").format(backup, sql.Identifier(database_name)),
+        sql.SQL("DROP ROLE IF EXISTS {};").format(backup),
+    ):
+        backup_cleanup.append(statement.as_string(cur.connection))
+    statements.append(
+        "DO $applypilot_backup_rollback$ BEGIN\n"
+        + "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
+        + sql.Literal(topology.backup_role).as_string(cur.connection)
+        + ") THEN\n"
+        + "\n".join(backup_cleanup)
+        + "\nEND IF;\nEND $applypilot_backup_rollback$;"
+    )
     # Forward containment must not recreate retired or provider-admin edges.
     # Their pre-upgrade shape remains authenticated in the receipt inventory.
     _ = retired_memberships
@@ -3797,6 +3858,54 @@ def _forward_v7_containment_sql(
 # Kept as a private compatibility alias for callers preparing older topology-only
 # packets; all newly authenticated authority receipts use V7 containment mode.
 _forward_v5_deactivation_sql = _forward_v7_containment_sql
+
+
+def _backup_role_rollback_sql(
+    cur,
+    *,
+    topology: BootstrapTopology,
+    database_name: str,
+) -> str:
+    """Return idempotent, non-cascading cleanup for the owned-object-free backup role."""
+    backup = sql.Identifier(topology.backup_role)
+    migrator = sql.Identifier(topology.migrator_role)
+    cleanup = [
+        sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM {};")
+        .format(sql.Identifier(database_name), backup)
+        .as_string(cur.connection),
+        sql.SQL("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM {};")
+        .format(backup)
+        .as_string(cur.connection),
+    ]
+    for schema_name in _user_schemas(cur):
+        schema = sql.Identifier(schema_name)
+        cleanup.extend(
+            statement.as_string(cur.connection)
+            for statement in (
+                sql.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {};").format(schema, backup),
+                sql.SQL("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA {} FROM {};").format(schema, backup),
+                sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM {};").format(schema, backup),
+                sql.SQL("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {} FROM {};").format(schema, backup),
+            )
+        )
+    cleanup.extend(
+        statement.as_string(cur.connection)
+        for statement in (
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE USAGE ON SCHEMAS FROM {};").format(migrator, backup),
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE SELECT ON TABLES FROM {};").format(migrator, backup),
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE SELECT ON SEQUENCES FROM {};").format(migrator, backup),
+            sql.SQL("ALTER ROLE {} IN DATABASE {} RESET ALL;").format(backup, sql.Identifier(database_name)),
+            sql.SQL("DROP ROLE IF EXISTS {};").format(backup),
+        )
+    )
+    return (
+        "DO $applypilot_backup_rollback$ BEGIN\n"
+        "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
+        + sql.Literal(topology.backup_role).as_string(cur.connection)
+        + ") THEN\n"
+        + "\n".join(cleanup)
+        + "\nEND IF;\nEND $applypilot_backup_rollback$;\n"
+    )
 
 
 def _other_database_inventory(
@@ -4297,11 +4406,13 @@ def _validate_other_database_isolation(
 
 
 def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
+    _reject_unsupported_backup_objects(cur)
     role_names = (
         topology.database_owner_role,
         topology.controller_role,
         topology.verifier_role,
         topology.migrator_role,
+        topology.backup_role,
         *topology.retired_admin_roles,
         *topology.infrastructure_superuser_roles,
     )
@@ -4312,9 +4423,12 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
         topology.controller_role,
         topology.verifier_role,
         topology.migrator_role,
+        topology.backup_role,
     }
-    if len(permanent_roles) != 4:
-        raise RuntimeError("bootstrap owner/controller/verifier/migrator roles must be distinct")
+    if len(permanent_roles) != 5:
+        raise RuntimeError("bootstrap owner/controller/verifier/migrator/backup roles must be distinct")
+    if topology.backup_role != FLEET_BACKUP_ROLE:
+        raise RuntimeError(f"bootstrap backup role must be {FLEET_BACKUP_ROLE!r}")
     if not topology.retired_admin_roles:
         raise RuntimeError("bootstrap requires at least one retired provider-admin role")
     if permanent_roles & set(topology.retired_admin_roles):
@@ -4458,6 +4572,7 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
         topology.migrator_role: (False, False, False, False, False, False, False),
         topology.verifier_role: (False, False, False, False, False, False, False),
         topology.controller_role: (True, False, False, False, False, False, False),
+        topology.backup_role: (True, False, False, False, False, False, False),
     }
     for role_name, expected in expected_attributes.items():
         cur.execute(
@@ -4556,6 +4671,7 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
         topology.database_owner_role,
         topology.controller_role,
         topology.verifier_role,
+        topology.backup_role,
         *topology.infrastructure_superuser_roles,
     }
     if has_public_connect or actual_connect != expected_connect:
@@ -4578,6 +4694,7 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
     expected_reconnect = {
         topology.database_owner_role,
         topology.controller_role,
+        topology.backup_role,
         *topology.infrastructure_superuser_roles,
     }
     if reconnect != expected_reconnect:
@@ -4588,9 +4705,251 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
     return effective
 
 
+def _reject_unsupported_backup_objects(cur) -> None:
+    """Fail closed rather than silently produce a partial logical backup."""
+    schemas = _user_schemas(cur)
+    cur.execute(
+        "SELECT namespace.nspname,relation.relname FROM pg_class relation "
+        "JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace "
+        "WHERE namespace.nspname=ANY(%s) AND relation.relkind IN ('r','p') "
+        "AND (relation.relrowsecurity OR relation.relforcerowsecurity) "
+        "ORDER BY namespace.nspname,relation.relname LIMIT 1",
+        (list(schemas),),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        raise RuntimeError(
+            "fleet_backup refuses an RLS-bearing database because it has no BYPASSRLS: "
+            f"{_row_value(row, 'nspname')}.{_row_value(row, 'relname', 1)}"
+        )
+    cur.execute("SELECT oid FROM pg_largeobject_metadata ORDER BY oid LIMIT 1")
+    row = cur.fetchone()
+    if row is not None:
+        raise RuntimeError(
+            "fleet_backup refuses a database containing large objects; explicit large-object policy is required"
+        )
+
+
+def _reconcile_backup_role_boundary(cur, *, topology: BootstrapTopology) -> None:
+    """Install the fixed read-only backup principal's complete ACL boundary."""
+    if topology.backup_role != FLEET_BACKUP_ROLE:
+        raise RuntimeError(f"backup role must be the fixed principal {FLEET_BACKUP_ROLE!r}")
+    _reject_unsupported_backup_objects(cur)
+    _reconcile_role_memberships(cur, role_name=topology.backup_role)
+    database = sql.Identifier(cur.connection.info.dbname)
+    backup = sql.Identifier(topology.backup_role)
+    migrator = sql.Identifier(topology.migrator_role)
+    cur.execute(
+        sql.SQL(
+            "ALTER ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+            "NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1"
+        ).format(backup)
+    )
+    cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON DATABASE {} FROM {}").format(database, backup))
+    cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(database, backup))
+    cur.execute(
+        sql.SQL("ALTER ROLE {} IN DATABASE {} SET search_path TO pg_catalog, pg_temp").format(
+            backup, database
+        )
+    )
+    cur.execute(
+        sql.SQL("ALTER ROLE {} IN DATABASE {} SET default_transaction_read_only TO on").format(
+            backup, database
+        )
+    )
+    cur.execute(
+        sql.SQL("GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO {}").format(backup)
+    )
+    schemas = _user_schemas(cur)
+    for schema_name in schemas:
+        schema = sql.Identifier(schema_name)
+        cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {}").format(schema, backup))
+        cur.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(schema, backup))
+        cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA {} FROM {}").format(schema, backup))
+        cur.execute(sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO {}").format(schema, backup))
+        cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM {}").format(schema, backup))
+        cur.execute(sql.SQL("GRANT SELECT ON ALL SEQUENCES IN SCHEMA {} TO {}").format(schema, backup))
+        cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {} FROM {}").format(schema, backup))
+        # Schema USAGE plus PostgreSQL's default PUBLIC EXECUTE would otherwise
+        # give the backup login an application-code execution path.
+        cur.execute(sql.SQL("REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA {} FROM PUBLIC").format(schema))
+    cur.execute(
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}").format(
+            migrator, backup
+        )
+    )
+    cur.execute(
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON TABLES TO {}").format(
+            migrator, backup
+        )
+    )
+    cur.execute(
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON SEQUENCES TO {}").format(
+            migrator, backup
+        )
+    )
+    cur.execute(
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC").format(
+            migrator
+        )
+    )
+
+
+def _validate_backup_role_boundary(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
+    """Prove the fixed backup role has only the intended read capability."""
+    if topology.backup_role != FLEET_BACKUP_ROLE:
+        raise RuntimeError(f"backup role must be the fixed principal {FLEET_BACKUP_ROLE!r}")
+    _reject_unsupported_backup_objects(cur)
+    cur.execute(
+        "SELECT rolcanlogin,rolinherit,rolsuper,rolcreatedb,rolcreaterole,rolreplication,"
+        "rolbypassrls,rolconnlimit FROM pg_roles WHERE rolname=%s",
+        (topology.backup_role,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise RuntimeError("fixed fleet_backup role does not exist")
+    actual = tuple(_row_value(row, key, index) for index, key in enumerate(
+        ("rolcanlogin", "rolinherit", "rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls", "rolconnlimit")
+    ))
+    expected = (True, False, False, False, False, False, False, 1)
+    if actual != expected:
+        raise RuntimeError(f"fleet_backup role attributes mismatch: expected={expected!r}, actual={actual!r}")
+    cur.execute(
+        "SELECT parent.rolname AS parent_role,member.rolname AS member_role FROM pg_auth_members membership "
+        "JOIN pg_roles parent ON parent.oid=membership.roleid "
+        "JOIN pg_roles member ON member.oid=membership.member "
+        "WHERE parent.rolname=%s OR member.rolname=%s ORDER BY parent.rolname,member.rolname",
+        (topology.backup_role, topology.backup_role),
+    )
+    memberships = cur.fetchall()
+    if memberships:
+        raise RuntimeError(f"fleet_backup must have no inbound or outbound memberships: {memberships!r}")
+    cur.execute(
+        "SELECT dependency.classid::regclass::text AS class_name,dependency.objid "
+        "FROM pg_shdepend dependency JOIN pg_roles role ON role.oid=dependency.refobjid "
+        "WHERE dependency.refclassid='pg_authid'::regclass AND dependency.deptype='o' "
+        "AND role.rolname=%s ORDER BY dependency.classid,dependency.objid LIMIT 1",
+        (topology.backup_role,),
+    )
+    owned = cur.fetchone()
+    if owned is not None:
+        raise RuntimeError(f"fleet_backup owns a database object: {owned!r}")
+    cur.execute(
+        "SELECT has_database_privilege(%s,current_database(),'CONNECT') AS connect,"
+        "has_database_privilege(%s,current_database(),'CREATE') AS create,"
+        "has_database_privilege(%s,current_database(),'TEMPORARY') AS temporary",
+        (topology.backup_role, topology.backup_role, topology.backup_role),
+    )
+    database_acl = cur.fetchone()
+    if tuple(_row_value(database_acl, key, index) for index, key in enumerate(("connect", "create", "temporary"))) != (True, False, False):
+        raise RuntimeError("fleet_backup database ACL must be CONNECT-only")
+    schemas = _user_schemas(cur)
+    cur.execute(
+        "SELECT namespace.nspname,has_schema_privilege(%s,namespace.oid,'USAGE') AS usage,"
+        "has_schema_privilege(%s,namespace.oid,'CREATE') AS create FROM pg_namespace namespace "
+        "WHERE namespace.nspname=ANY(%s) ORDER BY namespace.nspname",
+        (topology.backup_role, topology.backup_role, list(schemas)),
+    )
+    invalid_schemas = [row for row in cur.fetchall() if not bool(_row_value(row, "usage", 1)) or bool(_row_value(row, "create", 2))]
+    if invalid_schemas:
+        raise RuntimeError(f"fleet_backup schema ACL mismatch: {invalid_schemas!r}")
+    cur.execute(
+        "SELECT namespace.nspname,relation.relname FROM pg_class relation "
+        "JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace "
+        "WHERE namespace.nspname=ANY(%s) AND relation.relkind IN ('r','p','v','m','f') "
+        "AND (NOT has_table_privilege(%s,relation.oid,'SELECT') OR "
+        "has_table_privilege(%s,relation.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')) "
+        "ORDER BY namespace.nspname,relation.relname LIMIT 1",
+        (list(schemas), topology.backup_role, topology.backup_role),
+    )
+    invalid_relation = cur.fetchone()
+    if invalid_relation is not None:
+        raise RuntimeError(f"fleet_backup relation ACL mismatch: {invalid_relation!r}")
+    cur.execute(
+        "SELECT namespace.nspname,relation.relname FROM pg_class relation "
+        "JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace "
+        "WHERE namespace.nspname=ANY(%s) AND relation.relkind='S' "
+        "AND (NOT has_sequence_privilege(%s,relation.oid,'SELECT') OR "
+        "has_sequence_privilege(%s,relation.oid,'USAGE,UPDATE')) "
+        "ORDER BY namespace.nspname,relation.relname LIMIT 1",
+        (list(schemas), topology.backup_role, topology.backup_role),
+    )
+    invalid_sequence = cur.fetchone()
+    if invalid_sequence is not None:
+        raise RuntimeError(f"fleet_backup sequence ACL mismatch: {invalid_sequence!r}")
+    cur.execute(
+        "SELECT namespace.nspname,routine.proname FROM pg_proc routine "
+        "JOIN pg_namespace namespace ON namespace.oid=routine.pronamespace "
+        "WHERE namespace.nspname=ANY(%s) AND has_function_privilege(%s,routine.oid,'EXECUTE') "
+        "ORDER BY namespace.nspname,routine.proname LIMIT 1",
+        (list(schemas), topology.backup_role),
+    )
+    executable = cur.fetchone()
+    if executable is not None:
+        raise RuntimeError(f"fleet_backup retains effective application EXECUTE: {executable!r}")
+    cur.execute(
+        "SELECT has_function_privilege(%s,'pg_catalog.pg_control_system()','EXECUTE') AS allowed",
+        (topology.backup_role,),
+    )
+    if not bool(_row_value(cur.fetchone(), "allowed")):
+        raise RuntimeError("fleet_backup requires pg_control_system() EXECUTE for target identity receipts")
+    cur.execute("SELECT to_regclass('public.applypilot_database_identity') AS relation")
+    database_identity_present = _row_value(cur.fetchone(), "relation") is not None
+    if database_identity_present:
+        cur.execute(
+            "SELECT has_table_privilege(%s,'public.applypilot_database_identity','SELECT') AS allowed",
+            (topology.backup_role,),
+        )
+        if not bool(_row_value(cur.fetchone(), "allowed")):
+            raise RuntimeError("fleet_backup cannot read applypilot_database_identity")
+    cur.execute(
+        "SELECT COALESCE(namespace.nspname,'*') AS schema_name,defaults.defaclobjtype,"
+        "acl.privilege_type,acl.is_grantable FROM pg_default_acl defaults "
+        "JOIN pg_roles owner ON owner.oid=defaults.defaclrole "
+        "LEFT JOIN pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
+        "CROSS JOIN LATERAL aclexplode(defaults.defaclacl) acl "
+        "JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE owner.rolname=%s AND grantee.rolname=%s "
+        "ORDER BY schema_name,defaults.defaclobjtype,acl.privilege_type",
+        (topology.migrator_role, topology.backup_role),
+    )
+    defaults = tuple(
+        (_row_value(row, "schema_name"), _row_value(row, "defaclobjtype", 1), _row_value(row, "privilege_type", 2), bool(_row_value(row, "is_grantable", 3)))
+        for row in cur.fetchall()
+    )
+    expected_defaults = (("*", "S", "SELECT", False), ("*", "n", "USAGE", False), ("*", "r", "SELECT", False))
+    if defaults != expected_defaults:
+        raise RuntimeError(f"fleet_backup default ACL mismatch: expected={expected_defaults!r}, actual={defaults!r}")
+    cur.execute(
+        "SELECT setting FROM pg_db_role_setting setting "
+        "JOIN pg_roles role ON role.oid=setting.setrole "
+        "JOIN pg_database database ON database.oid=setting.setdatabase "
+        "CROSS JOIN LATERAL unnest(setting.setconfig) value(setting) "
+        "WHERE role.rolname=%s AND database.datname=current_database() ORDER BY setting",
+        (topology.backup_role,),
+    )
+    settings = tuple(_row_value(row, "setting") for row in cur.fetchall())
+    expected_settings = ("default_transaction_read_only=on", "search_path=pg_catalog, pg_temp")
+    if settings != expected_settings:
+        raise RuntimeError(f"fleet_backup role settings mismatch: expected={expected_settings!r}, actual={settings!r}")
+    return {
+        "role_name": topology.backup_role,
+        "connection_limit": 1,
+        "memberships": 0,
+        "owned_objects": 0,
+        "rls_policy": "fail_closed_if_present",
+        "large_object_policy": "fail_closed_if_present",
+        "database_identity_readable": database_identity_present,
+        "pg_control_system_execute": True,
+        "role_settings": settings,
+        "default_acl_entries": defaults,
+    }
+
+
 def bootstrap_database_roles(
     conn,
     controller_password: str,
+    backup_password: str,
     *,
     topology: BootstrapTopology,
     evidence_paths: DurableEvidencePaths,
@@ -4605,6 +4964,7 @@ def bootstrap_database_roles(
         _require_pg18_authority_catalog(preflight_cur)
     _validate_evidence_paths(evidence_paths)
     verifier = _client_scram_verifier(conn, role_name=topology.controller_role, password=controller_password)
+    backup_verifier = _client_scram_verifier(conn, role_name=topology.backup_role, password=backup_password)
     fence_active = False
     preserve_fence_on_failure = False
     lock_acquired = False
@@ -4622,6 +4982,7 @@ def bootstrap_database_roles(
                 topology.database_owner_role,
                 topology.controller_role,
                 topology.verifier_role,
+                topology.backup_role,
                 *topology.infrastructure_superuser_roles,
             )
             rollback_mode = "forward_v7_containment" if install_brain_authority else "topology_exact"
@@ -4653,17 +5014,37 @@ def bootstrap_database_roles(
                     cur,
                     memberships=inventory["retired_admin_memberships_before"],
                 )
+                rollback_sql += _backup_role_rollback_sql(
+                    cur,
+                    topology=topology,
+                    database_name=inventory["database_name"],
+                )
                 for role_name in (
                     topology.controller_role,
                     topology.verifier_role,
-                    topology.migrator_role,
-                    topology.database_owner_role,
                 ):
                     rollback_sql += (
                         sql.SQL("DROP ROLE IF EXISTS {};\n")
                         .format(sql.Identifier(role_name))
                         .as_string(conn)
                     )
+                rollback_sql += (
+                    "DO $applypilot_migrator_rollback$ BEGIN\n"
+                    "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
+                    + sql.Literal(topology.migrator_role).as_string(conn)
+                    + ") THEN\n"
+                    + sql.SQL(
+                        "ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT EXECUTE ON FUNCTIONS TO PUBLIC;\n"
+                        "DROP ROLE {};\n"
+                    ).format(
+                        sql.Identifier(topology.migrator_role),
+                        sql.Identifier(topology.migrator_role),
+                    ).as_string(conn)
+                    + "END IF;\nEND $applypilot_migrator_rollback$;\n"
+                    + sql.SQL("DROP ROLE IF EXISTS {};\n")
+                    .format(sql.Identifier(topology.database_owner_role))
+                    .as_string(conn)
+                )
 
             prepared_at = datetime.now(timezone.utc).isoformat()
             prepared_inventory = {
@@ -4679,6 +5060,7 @@ def bootstrap_database_roles(
                     "controller_role": topology.controller_role,
                     "verifier_role": topology.verifier_role,
                     "migrator_role": topology.migrator_role,
+                    "backup_role": topology.backup_role,
                     "retired_admin_roles": topology.retired_admin_roles,
                     "infrastructure_superuser_roles": topology.infrastructure_superuser_roles,
                 },
@@ -4741,6 +5123,12 @@ def bootstrap_database_roles(
                     "NOBYPASSRLS PASSWORD {}"
                 ).format(sql.Identifier(topology.controller_role), sql.Literal(verifier))
             )
+            cur.execute(
+                sql.SQL(
+                    "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION "
+                    "NOBYPASSRLS CONNECTION LIMIT 1 PASSWORD {}"
+                ).format(sql.Identifier(topology.backup_role), sql.Literal(backup_verifier))
+            )
             _transfer_application_ownership(cur, new_owner_role=topology.migrator_role)
             database = sql.Identifier(inventory["database_name"])
             cur.execute(
@@ -4771,14 +5159,17 @@ def bootstrap_database_roles(
                 cur,
                 retired_admin_roles=topology.retired_admin_roles,
             )
+            _reconcile_backup_role_boundary(cur, topology=topology)
             if install_brain_authority:
                 _install_brain_authority_in_transaction(cur, topology=topology)
+            _reconcile_backup_role_boundary(cur, topology=topology)
             _validate_other_database_isolation(
                 cur,
                 databases=inventory["other_connectable_databases"],
                 topology=topology,
             )
             effective = _validate_bootstrap_boundary(cur, topology=topology)
+            backup_boundary = _validate_backup_role_boundary(cur, topology=topology)
             _validate_retired_admin_memberships_closed(
                 cur,
                 retired_admin_roles=topology.retired_admin_roles,
@@ -4800,10 +5191,11 @@ def bootstrap_database_roles(
                 "controller_role": topology.controller_role,
                 "verifier_role": topology.verifier_role,
                 "migrator_role": topology.migrator_role,
+                "backup_role": topology.backup_role,
                 "retired_admin_roles": topology.retired_admin_roles,
                 "infrastructure_superuser_roles": topology.infrastructure_superuser_roles,
             },
-            inventory=prepared_inventory,
+            inventory={**prepared_inventory, "backup_role_boundary": backup_boundary},
             effective_connect_grantees=effective,
             rollback_sql=rollback_sql,
             escalation_required=install_brain_authority,
@@ -4838,6 +5230,7 @@ def bootstrap_database_roles(
 
 def upgrade_brain_authority_existing_topology(
     conn,
+    backup_password: str,
     *,
     topology: BootstrapTopology,
     evidence_paths: DurableEvidencePaths,
@@ -4856,6 +5249,9 @@ def upgrade_brain_authority_existing_topology(
     if conn.info.transaction_status.name != "IDLE":
         raise RuntimeError("authority upgrade requires an idle provider-admin connection")
     _validate_evidence_paths(evidence_paths)
+    backup_verifier = _client_scram_verifier(
+        conn, role_name=topology.backup_role, password=backup_password
+    )
     lock_acquired = False
     try:
         with conn.cursor() as cur:
@@ -4898,6 +5294,7 @@ def upgrade_brain_authority_existing_topology(
                     "controller_role": topology.controller_role,
                     "verifier_role": topology.verifier_role,
                     "migrator_role": topology.migrator_role,
+                    "backup_role": topology.backup_role,
                     "retired_admin_roles": topology.retired_admin_roles,
                     "infrastructure_superuser_roles": topology.infrastructure_superuser_roles,
                 },
@@ -4910,8 +5307,12 @@ def upgrade_brain_authority_existing_topology(
                 inventory=prepared_inventory,
                 rollback_sql=rollback_sql,
             )
-            _transition_existing_authority_topology(cur, topology=topology)
+            _transition_existing_authority_topology(
+                cur, topology=topology, backup_password_verifier=backup_verifier
+            )
+            _reconcile_backup_role_boundary(cur, topology=topology)
             candidate_roles = _install_brain_authority_in_transaction(cur, topology=topology)
+            _reconcile_backup_role_boundary(cur, topology=topology)
             _existing_authority_topology_inventory(
                 cur,
                 topology=topology,
@@ -4919,6 +5320,7 @@ def upgrade_brain_authority_existing_topology(
                 expected_system_identifier=expected_system_identifier,
                 require_v7=True,
             )
+            backup_boundary = _validate_backup_role_boundary(cur, topology=topology)
         conn.commit()
         return BootstrapReceipt(
             database_name=inventory["database_name"],
@@ -4931,6 +5333,7 @@ def upgrade_brain_authority_existing_topology(
                     "writer_role": candidate_roles.writer_role,
                     "reconciled_at": candidate_roles.reconciled_at,
                 },
+                "backup_role_boundary": backup_boundary,
             },
             effective_connect_grantees=(),
             rollback_sql=rollback_sql,
@@ -4959,7 +5362,8 @@ def _existing_authority_topology_inventory(
     expected_system_identifier: str,
     require_v7: bool = False,
 ) -> dict[str, Any]:
-    role_names = (
+    _reject_unsupported_backup_objects(cur)
+    core_role_names = (
         topology.database_owner_role,
         topology.controller_role,
         topology.verifier_role,
@@ -4967,6 +5371,7 @@ def _existing_authority_topology_inventory(
         *topology.retired_admin_roles,
         *topology.infrastructure_superuser_roles,
     )
+    role_names = (*core_role_names, *((topology.backup_role,) if require_v7 else ()))
     if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]{0,62}", name) for name in role_names):
         raise ValueError("authority upgrade role names must be plain PostgreSQL identifiers")
     permanent_roles = {
@@ -4974,9 +5379,12 @@ def _existing_authority_topology_inventory(
         topology.controller_role,
         topology.verifier_role,
         topology.migrator_role,
+        topology.backup_role,
     }
-    if len(permanent_roles) != 4:
-        raise RuntimeError("authority upgrade owner/controller/verifier/migrator roles must be distinct")
+    if len(permanent_roles) != 5:
+        raise RuntimeError("authority upgrade owner/controller/verifier/migrator/backup roles must be distinct")
+    if topology.backup_role != FLEET_BACKUP_ROLE:
+        raise RuntimeError(f"authority upgrade backup role must be {FLEET_BACKUP_ROLE!r}")
     if not topology.retired_admin_roles:
         raise RuntimeError("authority upgrade requires at least one retired provider-admin role")
     if permanent_roles & set(topology.retired_admin_roles):
@@ -5019,6 +5427,10 @@ def _existing_authority_topology_inventory(
     missing = sorted(set(role_names) - set(roles))
     if missing:
         raise RuntimeError("authority upgrade topology roles do not exist: " + ", ".join(missing))
+    if not require_v7:
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (topology.backup_role,))
+        if cur.fetchone() is not None:
+            raise RuntimeError("authority upgrade requires fleet_backup to be absent before atomic provisioning")
     admin = roles[session_user]
     if not bool(_row_value(admin, "rolcanlogin", 1)) or not bool(_row_value(admin, "rolsuper", 3)):
         raise RuntimeError("authority upgrade requires a LOGIN SUPERUSER provider-admin session")
@@ -5130,6 +5542,7 @@ def _existing_authority_topology_inventory(
             topology.controller_role: (True, False, False, False, False, False, False),
             topology.verifier_role: (False, False, False, False, False, False, False),
             topology.migrator_role: (False, False, False, False, False, False, False),
+            topology.backup_role: (True, False, False, False, False, False, False),
         }
         for role_name, expected in expected_final_attributes.items():
             actual = tuple(
@@ -5366,7 +5779,12 @@ def _existing_capability_memberships(
     return rows
 
 
-def _transition_existing_authority_topology(cur, *, topology: BootstrapTopology) -> None:
+def _transition_existing_authority_topology(
+    cur,
+    *,
+    topology: BootstrapTopology,
+    backup_password_verifier: str,
+) -> None:
     # Close the known legacy admin graph first.  Forward rollback intentionally
     # never restores these memberships or elevated/login attributes.
     _close_retired_admin_memberships(cur, retired_admin_roles=topology.retired_admin_roles)
@@ -5379,6 +5797,13 @@ def _transition_existing_authority_topology(cur, *, topology: BootstrapTopology)
             "ALTER ROLE {} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
         ).format(sql.Identifier(role_name)))
     _validate_retired_admin_memberships_closed(cur, retired_admin_roles=topology.retired_admin_roles)
+
+    cur.execute(
+        sql.SQL(
+            "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION "
+            "NOBYPASSRLS CONNECTION LIMIT 1 PASSWORD {}"
+        ).format(sql.Identifier(topology.backup_role), sql.Literal(backup_password_verifier))
+    )
 
     for role_name, login in (
         (topology.database_owner_role, True),
@@ -5586,6 +6011,19 @@ def ensure_fleet_worker_role(
                 break_glass_roles=regrant_manifest.infrastructure_superuser_roles,
                 approved_grantee_roles=approved_grantee_roles,
             )
+            backup_boundary = _validate_backup_role_boundary(
+                cur,
+                topology=BootstrapTopology(
+                    database_owner_role=regrant_manifest.database_owner_role,
+                    controller_role=regrant_manifest.controller_roles[0],
+                    verifier_role=regrant_manifest.verifier_roles[0],
+                    migrator_role=regrant_manifest.migrator_role,
+                    retired_admin_roles=regrant_manifest.retired_admin_roles,
+                    backup_role=regrant_manifest.backup_role,
+                    infrastructure_superuser_roles=regrant_manifest.infrastructure_superuser_roles,
+                ),
+            )
+            evidence_inventory["backup_role_boundary"] = backup_boundary
         conn.commit()
         return RoleReconciliationReceipt(
             role_name=role,

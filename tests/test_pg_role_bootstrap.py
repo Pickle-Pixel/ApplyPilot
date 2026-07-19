@@ -30,6 +30,7 @@ RETIRED_ADMIN = "bootstrap_retired_admin_test"
 OWNER = "bootstrap_database_owner_test"
 CONTROLLER = "bootstrap_controller_test"
 CONTROLLER_PASSWORD = "bootstrap-controller-password"
+BACKUP_PASSWORD = "bootstrap-backup-password"
 VERIFIER = "bootstrap_verifier_test"
 MIGRATOR = "bootstrap_migrator_test"
 WORKER_ROLE = "bootstrap_worker_test"
@@ -150,6 +151,7 @@ def test_evidence_api_rejects_hostile_callable_without_invoking_it(monkeypatch) 
         pg_roles.bootstrap_database_roles(
             connection,
             "password",
+            "backup-password",
             topology=pg_roles.BootstrapTopology(
                 database_owner_role="owner",
                 controller_role="controller",
@@ -190,7 +192,7 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(tmp_path
         def __exit__(self, *_args):
             return False
 
-    def fake_bootstrap(_conn, _password, *, topology, evidence_paths, install_brain_authority):
+    def fake_bootstrap(_conn, _password, _backup_password, *, topology, evidence_paths, install_brain_authority):
         nonlocal authority_requested, committed
         inventory = {
             "prepared_at": "2001-02-03T04:05:06+00:00",
@@ -227,6 +229,7 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(tmp_path
     monkeypatch.setattr(module, "_replace_durable", lambda *_args: (_ for _ in ()).throw(OSError("crash")))
     monkeypatch.setenv("APPLYPILOT_ADMIN_PG_DSN", "secret-admin-dsn")
     monkeypatch.setenv("APPLYPILOT_CONTROLLER_PG_PASSWORD", "secret-controller-password")
+    monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "secret-backup-password")
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", _EVIDENCE_KEY.hex())
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", _EVIDENCE_KEY_ID)
     monkeypatch.setattr(
@@ -2128,6 +2131,7 @@ def test_bootstrap_refuses_autocommit_before_database_mutation(fleet_db: str) ->
             pg_roles.bootstrap_database_roles(
                 conn,
                 CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -2188,6 +2192,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
         infrastructure_superuser_roles=("postgres",),
     )
     role_names = (
+        pg_roles.FLEET_BACKUP_ROLE,
         "brain_artifact_authority_writer",
         "brain_artifact_authority_owner",
         "brain_candidate_writer",
@@ -2328,6 +2333,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
             with pytest.raises(RuntimeError, match="zero active unexpired leases"):
                 pg_roles.upgrade_brain_authority_existing_topology(
                     root,
+                    BACKUP_PASSWORD,
                     topology=topology,
                     evidence_paths=blocked_evidence,
                     expected_database_name=database_name,
@@ -2344,7 +2350,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
             original_transition = pg_roles._transition_existing_authority_topology
             blocked_statements: list[str] = []
 
-            def transition_with_lock_probe(cur, *, topology):
+            def transition_with_lock_probe(cur, *, topology, backup_password_verifier):
                 probes = (
                     "UPDATE public.fleet_config SET paused=FALSE WHERE id=1",
                     "UPDATE public.apply_queue SET status=status WHERE FALSE",
@@ -2358,7 +2364,11 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                             contender.execute(statement)
                         contender.rollback()
                     blocked_statements.append(statement)
-                return original_transition(cur, topology=topology)
+                return original_transition(
+                    cur,
+                    topology=topology,
+                    backup_password_verifier=backup_password_verifier,
+                )
 
             monkeypatch.setattr(
                 pg_roles,
@@ -2368,6 +2378,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
 
             receipt = pg_roles.upgrade_brain_authority_existing_topology(
                 root,
+                BACKUP_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
                 expected_database_name=database_name,
@@ -2910,11 +2921,27 @@ def test_pg18_bootstrap_validates_connection_then_database_then_evidence(monkeyp
         pg_roles.bootstrap_database_roles(
             FakeConnection(),
             CONTROLLER_PASSWORD,
+            BACKUP_PASSWORD,
             topology=_atomic_topology(),
             evidence_paths=object(),
             install_brain_authority=True,
         )
     assert events == ["pg18_database_preflight", "evidence_paths"]
+
+
+def test_backup_source_policy_fails_closed_for_rls_and_large_objects(fleet_db: str) -> None:
+    with pgqueue.connect(fleet_db) as root:
+        require_disposable_postgres(root)
+        root.execute("CREATE TABLE public.backup_rls_policy_probe(id bigint)")
+        root.execute("ALTER TABLE public.backup_rls_policy_probe ENABLE ROW LEVEL SECURITY")
+        with pytest.raises(RuntimeError, match="RLS-bearing database"):
+            pg_roles._reject_unsupported_backup_objects(root.cursor())
+        root.execute("DROP TABLE public.backup_rls_policy_probe")
+        large_object_oid = root.execute("SELECT lo_create(0) AS oid").fetchone()["oid"]
+        with pytest.raises(RuntimeError, match="containing large objects"):
+            pg_roles._reject_unsupported_backup_objects(root.cursor())
+        root.execute("SELECT lo_unlink(%s)", (large_object_oid,))
+        root.rollback()
 
 
 def test_unsupported_major_pg16_bootstrap_rejects_before_lock_evidence_or_database_drift(
@@ -2959,6 +2986,7 @@ def test_unsupported_major_pg16_bootstrap_rejects_before_lock_evidence_or_databa
             pg_roles.bootstrap_database_roles(
                 connection,
                 CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
                 topology=_atomic_topology(),
                 evidence_paths=evidence,
                 install_brain_authority=True,
@@ -3015,6 +3043,7 @@ def _drop_atomic_bootstrap_roles(conn) -> None:
     conn.execute("DROP SCHEMA IF EXISTS brain_archive CASCADE")
     conn.execute("DROP SCHEMA public CASCADE")
     for role_name in (
+        pg_roles.FLEET_BACKUP_ROLE,
         "brain_candidate_reader",
         "brain_candidate_writer",
         *ATOMIC_LIFECYCLE_ROLES,
@@ -3239,6 +3268,7 @@ def test_fixed_atomic_authority_install_failure_rolls_back_everything(fleet_db: 
                 pg_roles.bootstrap_database_roles(
                     root,
                     CONTROLLER_PASSWORD,
+                    BACKUP_PASSWORD,
                     topology=topology,
                     evidence_paths=_test_evidence_paths(),
                     install_brain_authority=True,
@@ -3287,6 +3317,7 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
             receipt = pg_roles.bootstrap_database_roles(
                 root,
                 CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
                 install_brain_authority=True,
@@ -3294,6 +3325,63 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
             assert receipt.escalation_required is True
             assert receipt.inventory["database_oid"] > 0
             assert receipt.inventory["system_identifier"].isdigit()
+            assert receipt.inventory["backup_role_boundary"] == {
+                "role_name": pg_roles.FLEET_BACKUP_ROLE,
+                "connection_limit": 1,
+                "memberships": 0,
+                "owned_objects": 0,
+                "rls_policy": "fail_closed_if_present",
+                "large_object_policy": "fail_closed_if_present",
+                "database_identity_readable": False,
+                "pg_control_system_execute": True,
+                "role_settings": (
+                    "default_transaction_read_only=on",
+                    "search_path=pg_catalog, pg_temp",
+                ),
+                "default_acl_entries": (
+                    ("*", "S", "SELECT", False),
+                    ("*", "n", "USAGE", False),
+                    ("*", "r", "SELECT", False),
+                ),
+            }
+
+            root.execute("GRANT USAGE,CREATE ON SCHEMA public TO brain_schema_migrator")
+            root.execute("SET ROLE brain_schema_migrator")
+            root.execute("CREATE TABLE public.backup_future_acl_probe(id bigint)")
+            root.execute("INSERT INTO public.backup_future_acl_probe VALUES (1)")
+            root.execute("RESET ROLE")
+            root.execute("REVOKE USAGE,CREATE ON SCHEMA public FROM brain_schema_migrator")
+            root.commit()
+            backup_dsn = _dsn(fleet_db, user=pg_roles.FLEET_BACKUP_ROLE, password=BACKUP_PASSWORD)
+            with psycopg.connect(backup_dsn, row_factory=dict_row) as backup:
+                assert backup.execute(
+                    "SELECT id FROM public.backup_future_acl_probe"
+                ).fetchone()["id"] == 1
+                assert backup.execute(
+                    "SELECT (pg_catalog.pg_control_system()).system_identifier::text AS system_identifier"
+                ).fetchone()["system_identifier"] == receipt.inventory["system_identifier"]
+                assert backup.execute("SHOW default_transaction_read_only").fetchone()[
+                    "default_transaction_read_only"
+                ] == "on"
+                assert backup.execute("SHOW search_path").fetchone()["search_path"] == "pg_catalog, pg_temp"
+                with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+                    backup.execute("INSERT INTO public.backup_future_acl_probe VALUES (2)")
+                backup.rollback()
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    backup.execute("SELECT public.brain_v5_sha256_text('denied')")
+                backup.rollback()
+            controller_dsn = _dsn(
+                fleet_db,
+                user=ATOMIC_CONTROLLER,
+                password=CONTROLLER_PASSWORD,
+            )
+            with psycopg.connect(controller_dsn, row_factory=dict_row) as controller:
+                controller.execute("SET ROLE brain_policy_controller")
+                with pytest.raises(psycopg.errors.NoDataFound, match="unknown policy_version"):
+                    controller.execute(
+                        "SELECT public.brain_controller_transition_policy('missing-policy','validated',NULL)"
+                    )
+                controller.rollback()
 
             assert root.execute(
                 "SELECT array_agg(version ORDER BY version) AS versions FROM public.brain_schema_versions"
@@ -3627,6 +3715,7 @@ def test_bootstrap_isolates_other_database_and_rollback_restores_public_connect(
             receipt = pg_roles.bootstrap_database_roles(
                 root,
                 CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -3826,6 +3915,7 @@ def test_bootstrap_terminates_active_nonbreakglass_session_on_other_database(fle
             receipt = pg_roles.bootstrap_database_roles(
                 root,
                 CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
                 topology=topology,
                 evidence_paths=evidence_paths,
             )
@@ -3924,6 +4014,7 @@ def test_bootstrap_closes_and_rollback_restores_retired_admin_membership_edges(f
             receipt = pg_roles.bootstrap_database_roles(
                 root,
                 CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -4010,6 +4101,7 @@ def test_retired_membership_rollback_preserves_grantor_and_supported_options(fle
             receipt = pg_roles.bootstrap_database_roles(
                 root,
                 CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -4079,6 +4171,7 @@ def test_retired_membership_closure_fails_without_cascading_dependent_grants(fle
                 pg_roles.bootstrap_database_roles(
                     root,
                     CONTROLLER_PASSWORD,
+                    BACKUP_PASSWORD,
                     topology=topology,
                     evidence_paths=_test_evidence_paths(),
                 )
@@ -4150,6 +4243,7 @@ def test_live_bootstrap_hands_off_to_non_superuser_controller_and_reconciles(fle
             receipt = pg_roles.bootstrap_database_roles(
                 root,
                 CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
                 topology=pg_roles.BootstrapTopology(
                     database_owner_role=OWNER,
                     controller_role=CONTROLLER,
@@ -4215,12 +4309,20 @@ def test_live_bootstrap_hands_off_to_non_superuser_controller_and_reconciles(fle
                     controller_roles=(CONTROLLER,),
                     verifier_roles=(VERIFIER,),
                     retired_admin_roles=(RETIRED_ADMIN,),
+                    migrator_role=MIGRATOR,
                     infrastructure_superuser_roles=("postgres",),
                     expected_service_roles=(),
                 ),
                 evidence_paths=_test_evidence_paths(),
             )
             assert worker_receipt.contract == "compute"
+            worker_dsn = _dsn(fleet_db, user=WORKER_ROLE, password=WORKER_PASSWORD)
+            with psycopg.connect(worker_dsn, row_factory=dict_row) as worker:
+                identity = worker.execute(
+                    "SELECT public.fleet_worker_identity() AS identity"
+                ).fetchone()["identity"]
+                assert identity["worker_id"] == WORKER_ID
+                assert identity["contract"] == "compute"
 
             root.execute(worker_receipt.rollback_sql)
             root.commit()
@@ -4251,7 +4353,15 @@ def test_live_bootstrap_hands_off_to_non_superuser_controller_and_reconciles(fle
             )
             pg_roles._transfer_application_ownership(root.cursor(), new_owner_role="postgres")
             root.execute("DELETE FROM public.fleet_worker_principals WHERE role_name=%s", (WORKER_ROLE,))
-            for role_name in (WORKER_ROLE, CONTROLLER, VERIFIER, MIGRATOR, OWNER, RETIRED_ADMIN):
+            for role_name in (
+                WORKER_ROLE,
+                pg_roles.FLEET_BACKUP_ROLE,
+                CONTROLLER,
+                VERIFIER,
+                MIGRATOR,
+                OWNER,
+                RETIRED_ADMIN,
+            ):
                 if root.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role_name,)).fetchone():
                     root.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role_name)))
                     root.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role_name)))
