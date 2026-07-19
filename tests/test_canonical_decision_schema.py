@@ -41,10 +41,14 @@ def _insert_decision(
     )
 
 
-def _create_previous_canonical_schema(db_path) -> sqlite3.Connection:
+def _create_previous_canonical_schema(
+    db_path,
+    *,
+    job_decisions_suffix: str = "",
+) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.executescript(
-        """
+        f"""
         CREATE TABLE jobs (
             url TEXT PRIMARY KEY,
             title TEXT
@@ -85,7 +89,8 @@ def _create_previous_canonical_schema(db_path) -> sqlite3.Connection:
             explanation TEXT,
             input_hash TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            expires_at TEXT,
+            expires_at TEXT
+            {job_decisions_suffix},
             UNIQUE(job_url, policy_version, input_hash),
             FOREIGN KEY(job_url) REFERENCES jobs(url),
             FOREIGN KEY(policy_version) REFERENCES decision_policy_versions(policy_version)
@@ -296,6 +301,29 @@ def test_init_db_adds_decision_snapshot_without_rewriting_existing_decisions(tmp
     ).fetchone()[0] == snapshot
 
 
+def test_canonical_schema_allows_duplicate_snapshot_payloads(tmp_path) -> None:
+    conn = database.init_db(tmp_path / "duplicate-snapshots.db")
+    conn.execute("INSERT INTO jobs(url) VALUES ('https://example.test/job')")
+    _insert_policy(conn)
+    _insert_decision(conn, "decision-1", input_hash="input-1")
+    _insert_decision(conn, "decision-2", input_hash="input-2")
+    snapshot = '{"schemaVersion":"applypilot_canonical_decision_snapshot_v1"}'
+
+    conn.execute(
+        "UPDATE job_decisions SET decision_snapshot_json = ?",
+        (snapshot,),
+    )
+
+    assert conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM job_decisions
+        WHERE decision_snapshot_json = ?
+        """,
+        (snapshot,),
+    ).fetchone()[0] == 2
+
+
 def test_fresh_and_upgraded_job_decision_layouts_match_exactly(tmp_path) -> None:
     fresh_path = tmp_path / "fresh-canonical.db"
     upgraded_path = tmp_path / "upgraded-canonical.db"
@@ -399,6 +427,138 @@ def test_snapshot_migration_rejects_primary_key_column(tmp_path) -> None:
         connection.close()
 
 
+@pytest.mark.parametrize(
+    "job_decisions_suffix",
+    (
+        ", decision_snapshot_json TEXT UNIQUE",
+        ", decision_snapshot_json TEXT CHECK(length(decision_snapshot_json) > 0)",
+        ", decision_snapshot_json TEXT COLLATE NOCASE",
+        ", decision_snapshot_json TEXT REFERENCES jobs(url)",
+        ", decision_snapshot_json TEXT GENERATED ALWAYS AS (lower(input_hash)) VIRTUAL",
+        ", decision_snapshot_json TEXT GENERATED ALWAYS AS (lower(input_hash)) STORED",
+        ', "decision_snapshot_json" TEXT',
+        ", decision_snapshot_json TEXT, UNIQUE(decision_snapshot_json)",
+        ", decision_snapshot_json TEXT, CHECK(decision_snapshot_json IS NULL)",
+        (
+            ", decision_snapshot_json TEXT, "
+            "FOREIGN KEY(decision_snapshot_json) REFERENCES jobs(url)"
+        ),
+    ),
+)
+def test_snapshot_migration_rejects_noncanonical_inline_and_table_constraints(
+    tmp_path, job_decisions_suffix: str
+) -> None:
+    connection = _create_previous_canonical_schema(
+        tmp_path / "incompatible-table-constraint.db",
+        job_decisions_suffix=job_decisions_suffix,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="incompatible decision_snapshot_json"):
+            database.ensure_canonical_decision_tables(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "index_sql",
+    (
+        (
+            "CREATE UNIQUE INDEX snapshot_unique "
+            "ON job_decisions(decision_snapshot_json)"
+        ),
+        "CREATE INDEX snapshot_index ON job_decisions(decision_snapshot_json)",
+        (
+            "CREATE UNIQUE INDEX snapshot_expression_unique "
+            "ON job_decisions(lower(decision_snapshot_json))"
+        ),
+        (
+            "CREATE UNIQUE INDEX snapshot_partial_unique ON job_decisions(decision_id) "
+            "WHERE decision_snapshot_json IS NOT NULL"
+        ),
+        (
+            "CREATE INDEX snapshot_partial_index ON job_decisions(decision_id) "
+            "WHERE decision_snapshot_json IS NOT NULL"
+        ),
+    ),
+)
+def test_snapshot_migration_rejects_indexes_that_involve_snapshot_column(
+    tmp_path, index_sql: str
+) -> None:
+    connection = _create_previous_canonical_schema(
+        tmp_path / "incompatible-index.db",
+        job_decisions_suffix=", decision_snapshot_json TEXT",
+    )
+    connection.execute(index_sql)
+
+    try:
+        with pytest.raises(RuntimeError, match="incompatible decision_snapshot_json"):
+            database.ensure_canonical_decision_tables(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "trigger_sql",
+    (
+        """
+        CREATE TRIGGER snapshot_before_abort
+        BEFORE INSERT ON job_decisions
+        WHEN NEW.decision_snapshot_json IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'snapshot writes disabled');
+        END
+        """,
+        """
+        CREATE TRIGGER snapshot_after_transform
+        AFTER INSERT ON job_decisions
+        BEGIN
+            UPDATE job_decisions
+            SET decision_snapshot_json = upper(NEW.decision_snapshot_json)
+            WHERE decision_id = NEW.decision_id;
+        END
+        """,
+    ),
+)
+def test_snapshot_migration_rejects_triggers_that_involve_snapshot_column(
+    tmp_path, trigger_sql: str
+) -> None:
+    connection = _create_previous_canonical_schema(
+        tmp_path / "incompatible-trigger.db",
+        job_decisions_suffix=", decision_snapshot_json TEXT",
+    )
+    connection.executescript(trigger_sql)
+
+    try:
+        with pytest.raises(RuntimeError, match="incompatible decision_snapshot_json"):
+            database.ensure_canonical_decision_tables(connection)
+    finally:
+        connection.close()
+
+
+def test_snapshot_migration_allows_unrelated_schema_objects(tmp_path) -> None:
+    connection = _create_previous_canonical_schema(
+        tmp_path / "compatible-unrelated-objects.db",
+        job_decisions_suffix=", decision_snapshot_json TEXT",
+    )
+    connection.executescript(
+        """
+        CREATE INDEX idx_decision_snapshot_json_name_only
+        ON job_decisions(decision_id);
+        CREATE TRIGGER trg_decision_snapshot_json_name_only
+        AFTER INSERT ON job_decisions
+        BEGIN
+            SELECT NEW.decision_id;
+        END;
+        """
+    )
+
+    try:
+        database.ensure_canonical_decision_tables(connection)
+    finally:
+        connection.close()
+
+
 def test_snapshot_migration_preserves_nonduplicate_operational_error(tmp_path) -> None:
     db_path = tmp_path / "nonduplicate-error.db"
     connection = _create_previous_canonical_schema(db_path)
@@ -442,7 +602,7 @@ def test_concurrent_snapshot_migration_is_idempotent(tmp_path) -> None:
             cursor = self.inner.execute(sql, parameters)
             if (
                 not self.synchronized_snapshot
-                and sql.strip().lower() == "pragma table_info(job_decisions)"
+                and sql.strip().lower() == "pragma table_xinfo(job_decisions)"
             ):
                 self.synchronized_snapshot = True
                 pragma_barrier.wait(timeout=5)

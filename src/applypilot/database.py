@@ -825,6 +825,312 @@ def ensure_outcome_tables(conn: sqlite3.Connection | None = None) -> None:
     conn.commit()
 
 
+def _quote_sqlite_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _sqlite_schema_tokens(sql: str) -> list[tuple[str, str, bool]]:
+    """Tokenize SQLite DDL while distinguishing bare and quoted identifiers."""
+    tokens: list[tuple[str, str, bool]] = []
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if char.isspace():
+            index += 1
+            continue
+        if sql.startswith("--", index):
+            newline = sql.find("\n", index + 2)
+            index = len(sql) if newline < 0 else newline + 1
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("unterminated SQLite DDL comment")
+            index = end + 2
+            continue
+        if char == "'":
+            index += 1
+            while index < len(sql):
+                if sql[index] != "'":
+                    index += 1
+                    continue
+                if index + 1 < len(sql) and sql[index + 1] == "'":
+                    index += 2
+                    continue
+                index += 1
+                break
+            else:
+                raise ValueError("unterminated SQLite DDL string")
+            tokens.append(("string", "", False))
+            continue
+        if char in {'"', "`"}:
+            delimiter = char
+            index += 1
+            value: list[str] = []
+            while index < len(sql):
+                if sql[index] != delimiter:
+                    value.append(sql[index])
+                    index += 1
+                    continue
+                if index + 1 < len(sql) and sql[index + 1] == delimiter:
+                    value.append(delimiter)
+                    index += 2
+                    continue
+                index += 1
+                break
+            else:
+                raise ValueError("unterminated quoted SQLite identifier")
+            tokens.append(("identifier", "".join(value), False))
+            continue
+        if char == "[":
+            end = sql.find("]", index + 1)
+            if end < 0:
+                raise ValueError("unterminated bracketed SQLite identifier")
+            tokens.append(("identifier", sql[index + 1 : end], False))
+            index = end + 1
+            continue
+        if char == "_" or char.isalpha() or ord(char) >= 128:
+            end = index + 1
+            while end < len(sql):
+                candidate = sql[end]
+                if not (
+                    candidate in {"_", "$"}
+                    or candidate.isalnum()
+                    or ord(candidate) >= 128
+                ):
+                    break
+                end += 1
+            tokens.append(("identifier", sql[index:end], True))
+            index = end
+            continue
+        tokens.append(("punctuation", char, False))
+        index += 1
+    return tokens
+
+
+def _has_identifier(
+    tokens: list[tuple[str, str, bool]],
+    identifier: str,
+) -> bool:
+    expected = identifier.casefold()
+    return any(
+        kind == "identifier" and value.casefold() == expected
+        for kind, value, _bare in tokens
+    )
+
+
+def _has_canonical_snapshot_table_definition(
+    table_sql: str,
+    snapshot_column_name: str,
+) -> bool:
+    """Require one bare ``decision_snapshot_json TEXT`` table element."""
+    try:
+        tokens = _sqlite_schema_tokens(table_sql)
+    except ValueError:
+        return False
+    try:
+        opening = next(
+            index
+            for index, token in enumerate(tokens)
+            if token[0] == "punctuation" and token[1] == "("
+        )
+    except StopIteration:
+        return False
+
+    elements: list[list[tuple[str, str, bool]]] = []
+    current: list[tuple[str, str, bool]] = []
+    depth = 1
+    for token in tokens[opening + 1 :]:
+        if token[0] == "punctuation" and token[1] == "(":
+            depth += 1
+        elif token[0] == "punctuation" and token[1] == ")":
+            depth -= 1
+            if depth == 0:
+                if current:
+                    elements.append(current)
+                break
+        if depth == 1 and token[0] == "punctuation" and token[1] == ",":
+            elements.append(current)
+            current = []
+            continue
+        current.append(token)
+    else:
+        return False
+
+    expected = snapshot_column_name.casefold()
+    snapshot_elements = [
+        element
+        for element in elements
+        if element
+        and element[0][0] == "identifier"
+        and element[0][1].casefold() == expected
+    ]
+    if len(snapshot_elements) != 1:
+        return False
+    snapshot_element = snapshot_elements[0]
+    if not (
+        len(snapshot_element) == 2
+        and snapshot_element[0] == ("identifier", snapshot_column_name, True)
+        and snapshot_element[1][0] == "identifier"
+        and snapshot_element[1][1].casefold() == "text"
+        and snapshot_element[1][2]
+    ):
+        return False
+
+    references = sum(
+        1
+        for element in elements
+        for kind, value, _bare in element
+        if kind == "identifier" and value.casefold() == expected
+    )
+    return references == 1
+
+
+def _index_sql_references_column(sql: str, column_name: str) -> bool | None:
+    try:
+        tokens = _sqlite_schema_tokens(sql)
+    except ValueError:
+        return None
+    on_index = next(
+        (
+            index
+            for index, (kind, value, _bare) in enumerate(tokens)
+            if kind == "identifier" and value.casefold() == "on"
+        ),
+        None,
+    )
+    if on_index is None:
+        return None
+    opening = next(
+        (
+            index
+            for index in range(on_index + 1, len(tokens))
+            if tokens[index][0] == "punctuation" and tokens[index][1] == "("
+        ),
+        None,
+    )
+    if opening is None:
+        return None
+    return _has_identifier(tokens[opening:], column_name)
+
+
+def _trigger_sql_references_column(sql: str, column_name: str) -> bool | None:
+    try:
+        tokens = _sqlite_schema_tokens(sql)
+    except ValueError:
+        return None
+    trigger_index = next(
+        (
+            index
+            for index, (kind, value, _bare) in enumerate(tokens)
+            if kind == "identifier" and value.casefold() == "trigger"
+        ),
+        None,
+    )
+    if trigger_index is None:
+        return None
+    index = trigger_index + 1
+    if (
+        index + 2 < len(tokens)
+        and tokens[index][0] == "identifier"
+        and tokens[index][1].casefold() == "if"
+        and tokens[index + 1][0] == "identifier"
+        and tokens[index + 1][1].casefold() == "not"
+        and tokens[index + 2][0] == "identifier"
+        and tokens[index + 2][1].casefold() == "exists"
+    ):
+        index += 3
+    if index >= len(tokens) or tokens[index][0] != "identifier":
+        return None
+    index += 1
+    if (
+        index + 1 < len(tokens)
+        and tokens[index][0] == "punctuation"
+        and tokens[index][1] == "."
+        and tokens[index + 1][0] == "identifier"
+    ):
+        index += 2
+    return _has_identifier(tokens[index:], column_name)
+
+
+def _snapshot_schema_issues(
+    conn: sqlite3.Connection,
+    snapshot_column_name: str,
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    table_row = conn.execute(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
+        ("job_decisions",),
+    ).fetchone()
+    if (
+        table_row is None
+        or not isinstance(table_row[0], str)
+        or not _has_canonical_snapshot_table_definition(
+            table_row[0], snapshot_column_name
+        )
+    ):
+        issues.append("table DDL is not the canonical bare nullable TEXT definition")
+
+    for foreign_key in conn.execute(
+        "PRAGMA foreign_key_list(job_decisions)"
+    ).fetchall():
+        if str(foreign_key[3]).casefold() == snapshot_column_name.casefold():
+            issues.append("foreign key constrains the snapshot column")
+            break
+
+    for index_row in conn.execute("PRAGMA index_list(job_decisions)").fetchall():
+        index_name = str(index_row[1])
+        quoted_index = _quote_sqlite_identifier(index_name)
+        index_details = conn.execute(f"PRAGMA index_xinfo({quoted_index})").fetchall()
+        if any(
+            detail[2] is not None
+            and str(detail[2]).casefold() == snapshot_column_name.casefold()
+            for detail in index_details
+        ):
+            issues.append(f"index {index_name!r} constrains the snapshot column")
+            continue
+        schema_row = conn.execute(
+            """
+            SELECT sql
+            FROM sqlite_schema
+            WHERE type = 'index' AND name = ? AND tbl_name = 'job_decisions'
+            """,
+            (index_name,),
+        ).fetchone()
+        if schema_row is None:
+            issues.append(f"index {index_name!r} has no schema metadata")
+            continue
+        index_sql = schema_row[0]
+        if index_sql is None:
+            continue
+        references_column = _index_sql_references_column(
+            str(index_sql), snapshot_column_name
+        )
+        if references_column is None:
+            issues.append(f"index {index_name!r} DDL could not be validated")
+        elif references_column:
+            issues.append(f"index {index_name!r} expression constrains the snapshot column")
+
+    for trigger_name, trigger_sql in conn.execute(
+        """
+        SELECT name, sql
+        FROM sqlite_schema
+        WHERE type = 'trigger' AND tbl_name = 'job_decisions'
+        """
+    ).fetchall():
+        if not isinstance(trigger_sql, str):
+            issues.append(f"trigger {trigger_name!r} has no schema DDL")
+            continue
+        references_column = _trigger_sql_references_column(
+            trigger_sql, snapshot_column_name
+        )
+        if references_column is None:
+            issues.append(f"trigger {trigger_name!r} DDL could not be validated")
+        elif references_column:
+            issues.append(f"trigger {trigger_name!r} affects the snapshot column")
+    return tuple(issues)
+
+
 def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> None:
     """Create additive policy, immutable decision, and reviewed-outcome tables."""
     if conn is None:
@@ -886,7 +1192,7 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
     snapshot_column = next(
         (
             row
-            for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+            for row in conn.execute("PRAGMA table_xinfo(job_decisions)").fetchall()
             if row[1] == snapshot_column_name
         ),
         None,
@@ -909,7 +1215,7 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
         snapshot_column = next(
             (
                 row
-                for row in conn.execute("PRAGMA table_info(job_decisions)").fetchall()
+                for row in conn.execute("PRAGMA table_xinfo(job_decisions)").fetchall()
                 if row[1] == snapshot_column_name
             ),
             None,
@@ -920,8 +1226,14 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
         and snapshot_column[3] == 0
         and snapshot_column[4] is None
         and snapshot_column[5] == 0
+        and snapshot_column[6] == 0
     )
-    if not compatible_snapshot_column:
+    schema_issues = (
+        _snapshot_schema_issues(conn, snapshot_column_name)
+        if compatible_snapshot_column
+        else ()
+    )
+    if not compatible_snapshot_column or schema_issues:
         observed_contract = (
             None
             if snapshot_column is None
@@ -931,12 +1243,14 @@ def ensure_canonical_decision_tables(conn: sqlite3.Connection | None = None) -> 
                 snapshot_column[3],
                 snapshot_column[4],
                 snapshot_column[5],
+                snapshot_column[6],
             )
         )
         contract_error = RuntimeError(
             "incompatible decision_snapshot_json column contract: "
-            "expected ('decision_snapshot_json', 'TEXT', 0, None, 0), "
-            f"observed {observed_contract!r}"
+            "expected ('decision_snapshot_json', 'TEXT', 0, None, 0, 0) "
+            "with canonical bare table DDL and no dependent constraints, "
+            f"observed {observed_contract!r}; schema issues={schema_issues!r}"
         )
         if duplicate_column_error is not None:
             raise contract_error from duplicate_column_error
