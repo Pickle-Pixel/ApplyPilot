@@ -126,30 +126,26 @@ def set_spend_cap(conn, cap_usd: float) -> dict[str, float]:
     fails closed (raising, so the CLI exits non-zero) when the singleton config row is
     absent, and records a durable ``fleet_console_audit`` row for the change.
     """
-    if cap_usd < 0:
-        raise ValueError("spend cap must be non-negative (0 means UNCAPPED)")
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE fleet_config SET spend_cap_usd=%s, updated_at=now() WHERE id=1",
-            (cap_usd,),
-        )
-        if cur.rowcount != 1:
-            conn.rollback()
-            raise RuntimeError("fleet_config row id=1 is missing; refusing to set the spend cap")
-        cur.execute(
-            "INSERT INTO fleet_console_audit "
-            "(action, actor, lane, target, message, ok) VALUES (%s,%s,%s,%s,%s,%s)",
-            (
-                "set_spend_cap",
-                "apply-home",
-                "ats",
-                f"${cap_usd:.2f}",
-                "set fleet-wide hard spend cap via the mapped control-plane principal",
-                True,
-            ),
-        )
-    conn.commit()
-    return {"spend_cap_usd": cap_usd}
+    try:
+        normalized = pgqueue.update_spend_cap(conn, cap_usd)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO fleet_console_audit "
+                "(action, actor, lane, target, message, ok) VALUES (%s,%s,%s,%s,%s,%s)",
+                (
+                    "set_spend_cap",
+                    "apply-home",
+                    "ats",
+                    f"${normalized:.2f}",
+                    "set ATS hard spend cap via the mapped control-plane principal",
+                    True,
+                ),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {"spend_cap_usd": normalized}
 
 
 def _canary_capacity(conn) -> int:

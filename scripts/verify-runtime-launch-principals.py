@@ -125,6 +125,7 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
             r"(?:os\.)?environ\s*\[\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"]\s*\]"
             r"|(?:os\.)?(?:getenv|environ\.get)\(\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"]"
             r"|\$env:(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\b"
+            r"|\$\{env:(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\}"
             r"|\[Environment\]::GetEnvironmentVariable\(\s*['\"](?:DATABASE_URL|APPLYPILOT_FLEET_DSN)['\"])",
             re.IGNORECASE,
         ),
@@ -171,13 +172,29 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     # source), which every fleet launcher uses to re-expose the validated DSN under the old name.
     (
         "powershell_generic_dsn_env_source",
-        re.compile(r"(?i)\$env:(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\b(?!\s*=)"),
+        re.compile(
+            r"(?i)(?:\$env:(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\b"
+            r"|\$\{env:(?:DATABASE_URL|APPLYPILOT_FLEET_DSN)\})(?!\s*=)"
+        ),
     ),
 )
 
 # postgres URL DSN whose userinfo we percent-decode before checking (URI-encoded identities
 # such as postgresql://%70ostgres:pw@host/db that the literal patterns above cannot see).
 _URL_USERINFO_RE = re.compile(r"\bpostgres(?:ql)?://([^/@\s\"']+)@", re.IGNORECASE)
+_PSQL_COMMAND_RE = re.compile(
+    r"\bpsql\b.*(?:^|\s)(?:-c\b|--command(?:=|\b))", re.IGNORECASE | re.DOTALL
+)
+_FLEET_CONFIG_WRITE_RE = re.compile(
+    r"\b(?:UPDATE\s+(?:public\.)?fleet_config\b"
+    r"|INSERT\s+INTO\s+(?:public\.)?fleet_config\b"
+    r"|DELETE\s+FROM\s+(?:public\.)?fleet_config\b"
+    r"|UPSERT(?:\s+INTO)?\s+(?:public\.)?fleet_config\b"
+    r"|MERGE(?:\s+INTO)?\s+(?:public\.)?fleet_config\b"
+    r"|TRUNCATE(?:\s+TABLE)?\s+(?:public\.)?fleet_config\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+_POWERSHELL_ASSIGNMENT_RE = re.compile(r"^\s*(\$[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 
 
 @dataclass(frozen=True)
@@ -201,6 +218,63 @@ def _url_encoded_admin_principal(line: str) -> bool:
         if decoded.strip().lower() in {"postgres", "fleet_worker"}:
             return True
     return False
+
+
+def _raw_psql_fleet_config_write_lines(text: str) -> set[int]:
+    """Return psql invocation lines that execute a fleet_config mutation.
+
+    The ordinary forbidden-pattern pass is intentionally line-oriented.  This
+    companion recognizes the bounded PowerShell/shell command forms that cross a
+    physical line: here-strings, continued ``-c`` commands, and a SQL string assigned
+    to a variable and later supplied to ``psql -c``.  It reports the invocation line,
+    not every line of the SQL literal.
+    """
+    lines = text.splitlines()
+    dangerous_variables: set[str] = set()
+
+    for index, line in enumerate(lines):
+        assignment = _POWERSHELL_ASSIGNMENT_RE.match(line)
+        if not assignment:
+            continue
+        variable, value = assignment.groups()
+        block = value
+        stripped = value.lstrip()
+        if stripped.startswith(('@"', "@'")):
+            terminator = '"@' if stripped.startswith('@"') else "'@"
+            cursor = index + 1
+            while terminator not in block and cursor < min(len(lines), index + 200):
+                block += "\n" + lines[cursor]
+                cursor += 1
+        if _FLEET_CONFIG_WRITE_RE.search(block):
+            dangerous_variables.add(variable.lower())
+
+    findings: set[int] = set()
+    for index, line in enumerate(lines):
+        if not re.search(r"\bpsql\b", line, re.IGNORECASE):
+            continue
+        block = line
+        cursor = index + 1
+        while block.rstrip().endswith(("`", "\\")) and cursor < min(len(lines), index + 50):
+            block += "\n" + lines[cursor]
+            cursor += 1
+        if '@"' in block or "@'" in block:
+            marker = '@"' if '@"' in block else "@'"
+            terminator = '"@' if marker == '@"' else "'@"
+            while terminator not in block and cursor < min(len(lines), index + 200):
+                block += "\n" + lines[cursor]
+                cursor += 1
+
+        if not _PSQL_COMMAND_RE.search(block):
+            continue
+
+        direct_write = _FLEET_CONFIG_WRITE_RE.search(block) is not None
+        indirect_write = any(
+            re.search(re.escape(variable) + r"(?![A-Za-z0-9_])", block, re.IGNORECASE)
+            for variable in dangerous_variables
+        )
+        if direct_write or indirect_write:
+            findings.add(index + 1)
+    return findings
 
 
 def scan_text(text: str) -> list[Finding]:
@@ -227,6 +301,11 @@ def scan_text(text: str) -> list[Finding]:
             ):
                 findings.append(Finding(file="", line=lineno, pattern="url_encoded_admin_or_shared"))
                 matched.add("url_encoded_admin_or_shared")
+    existing_raw_lines = {
+        finding.line for finding in findings if finding.pattern == "raw_psql_fleet_config_write"
+    }
+    for lineno in sorted(_raw_psql_fleet_config_write_lines(text) - existing_raw_lines):
+        findings.append(Finding(file="", line=lineno, pattern="raw_psql_fleet_config_write"))
     return findings
 
 

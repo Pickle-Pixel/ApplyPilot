@@ -33,7 +33,6 @@ import hmac
 import http.cookies
 import ipaddress
 import json
-import math
 import os
 import re
 import secrets
@@ -3425,15 +3424,9 @@ def _do_reclaim(conn, body: dict) -> str:
 
 def _do_set_cap(conn, body: dict) -> str:
     usd = body.get("usd")
-    # Reject NaN/Infinity explicitly: `usd < 0` is False for BOTH NaN (all NaN
-    # comparisons are False) and +inf, so the old guard let them through and
-    # silently DISABLED the spend rail (should_halt's `spend_cap_usd > 0` is
-    # False for NaN -> treated as "no cap"; +inf would 500 on NUMERIC(10,2)).
-    if (isinstance(usd, bool) or not isinstance(usd, (int, float))
-            or not math.isfinite(usd) or usd < 0):
-        raise ValueError("set_cap requires a finite number usd >= 0")
-    pgqueue.set_spend_cap(conn, float(usd))
-    cap_txt = "no cap" if usd == 0 else f"${float(usd):.2f}"
+    normalized = pgqueue.validate_spend_cap(usd)
+    pgqueue.set_spend_cap(conn, normalized)
+    cap_txt = "no cap" if normalized == 0 else f"${normalized:.2f}"
     return f"Spend cap set to {cap_txt}."
 
 

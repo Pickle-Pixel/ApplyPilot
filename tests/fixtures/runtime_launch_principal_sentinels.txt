@@ -23,3 +23,5 @@ dsn = os.environ.get("FLEET_PG_DSN") or os.environ.get("APPLYPILOT_FLEET_DSN")
 p.add_argument("--dsn", help="Postgres DSN (default: DATABASE_URL / APPLYPILOT_FLEET_DSN env).")
 RAWPSQL= & $psql --dbname=$Dsn -v ON_ERROR_STOP=1 -c "UPDATE fleet_config SET spend_cap_usd=0 WHERE id=1;"
 PSENVSRC= if ($env:FLEET_PG_DSN) { $env:FLEET_PG_DSN } else { $env:APPLYPILOT_FLEET_DSN }
+PSBRACE= ${env:APPLYPILOT_FLEET_DSN}
+PSINDIRECT= $q = "UPDATE fleet_config SET spend_cap_usd=0 WHERE id=1"; & $psql -c $q

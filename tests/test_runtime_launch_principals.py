@@ -228,14 +228,48 @@ def test_scanner_flags_powershell_generic_dsn_env_source(line):
 @pytest.mark.parametrize(
     "line",
     [
+        "$Dsn = ${env:DATABASE_URL}",
+        "Start-Worker -Dsn (${env:APPLYPILOT_FLEET_DSN})",
+    ],
+)
+def test_scanner_flags_braced_powershell_generic_dsn_env_source(line):
+    assert "powershell_generic_dsn_env_source" in {f.pattern for f in scanner.scan_text(line)}, line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         # Aliasing the validated FLEET_PG_DSN under the legacy name is a WRITE TARGET, not a source.
         "$env:APPLYPILOT_FLEET_DSN = $env:FLEET_PG_DSN",
         "$env:APPLYPILOT_FLEET_DSN = $Dsn",
         "$env:DATABASE_URL=$foo",
+        "${env:DATABASE_URL} = $foo",
     ],
 )
 def test_scanner_ignores_generic_dsn_env_alias_write_target(line):
     assert "powershell_generic_dsn_env_source" not in {f.pattern for f in scanner.scan_text(line)}, line
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '& $psql --dbname=$Dsn -c @"\nUPDATE fleet_config\nSET spend_cap_usd=0 WHERE id=1;\n"@',
+        '& $psql `\n  --dbname=$Dsn `\n  -c @"\nUPDATE fleet_config SET spend_cap_usd=0 WHERE id=1\n"@',
+        '$query = "UPDATE fleet_config SET spend_cap_usd=0 WHERE id=1"\n& $psql -c $query',
+        '$query = "UPDATE fleet_config SET spend_cap_usd=0 WHERE id=1"\n& $psql `\n  --dbname=$Dsn `\n  -c $query',
+        "$query = @'\nDELETE FROM fleet_config WHERE id=1\n'@\n& $psql --command $query",
+    ],
+)
+def test_scanner_flags_multiline_or_indirected_raw_psql_fleet_config_write(text):
+    assert "raw_psql_fleet_config_write" in {f.pattern for f in scanner.scan_text(text)}, text
+
+
+def test_scanner_does_not_join_unrelated_psql_read_and_later_safe_python_text():
+    text = (
+        '& $psql --dbname=$Dsn -c "SELECT spend_cap_usd FROM fleet_config"\n'
+        'print("UPDATE fleet_config appears only in a later non-psql diagnostic")\n'
+    )
+    assert "raw_psql_fleet_config_write" not in {f.pattern for f in scanner.scan_text(text)}
 
 
 def test_discovery_includes_python_dash_m_targets_and_their_imports():

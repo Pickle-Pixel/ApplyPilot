@@ -21,6 +21,7 @@ discarded. This suite proves the closure:
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import shutil
 import subprocess
@@ -114,6 +115,7 @@ class _FakeConn:
         self._cur = _FakeCursor(rowcount=rowcount)
         self.committed = False
         self.rolled_back = False
+        self.closed = False
 
     def cursor(self):
         return self._cur
@@ -123,6 +125,9 @@ class _FakeConn:
 
     def rollback(self):
         self.rolled_back = True
+
+    def close(self):
+        self.closed = True
 
 
 def test_set_spend_cap_is_parameterized_transactional_and_audited():
@@ -156,8 +161,100 @@ def test_set_spend_cap_fails_closed_when_config_row_missing():
 def test_set_spend_cap_rejects_negative_cap():
     from applypilot.fleet import apply_home_main as hm
 
-    with pytest.raises(ValueError, match="non-negative"):
+    with pytest.raises(ValueError, match="finite"):
         hm.set_spend_cap(_FakeConn(), -1.0)
+
+
+@pytest.mark.parametrize("cap", [math.nan, math.inf, -math.inf])
+def test_set_spend_cap_rejects_non_finite_cap_before_sql(cap):
+    from applypilot.fleet import apply_home_main as hm
+
+    conn = _FakeConn()
+    with pytest.raises(ValueError, match="finite"):
+        hm.set_spend_cap(conn, cap)
+    assert conn._cur.calls == []
+    assert not conn.committed
+
+
+def test_set_spend_cap_rolls_back_update_when_audit_fails():
+    from applypilot.fleet import apply_home_main as hm
+
+    class AuditFailCursor(_FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if "INSERT INTO fleet_console_audit" in sql:
+                raise RuntimeError("audit unavailable")
+
+    conn = _FakeConn()
+    conn._cur = AuditFailCursor()
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        hm.set_spend_cap(conn, 25.0)
+    assert conn.rolled_back and not conn.committed
+
+
+@pytest.mark.parametrize("cap", [math.nan, math.inf, -math.inf, -0.01, True])
+def test_pgqueue_set_spend_cap_rejects_unsafe_values_before_sql(cap):
+    conn = _FakeConn()
+    with pytest.raises(ValueError, match="finite number.*>= 0"):
+        pgqueue.set_spend_cap(conn, cap)
+    assert conn._cur.calls == []
+    assert conn.rolled_back and not conn.committed
+
+
+def test_pgqueue_update_spend_cap_is_shared_rowcount_guarded_transaction_primitive():
+    conn = _FakeConn()
+    assert pgqueue.update_spend_cap(conn, 12.5) == 12.5
+    assert conn._cur.calls == [
+        (
+            "UPDATE fleet_config SET spend_cap_usd=%s, updated_at=now() WHERE id=1",
+            (12.5,),
+        )
+    ]
+    assert not conn.committed and not conn.rolled_back
+
+    missing = _FakeConn(rowcount=0)
+    with pytest.raises(RuntimeError, match="fleet_config row id=1 is missing"):
+        pgqueue.update_spend_cap(missing, 12.5)
+    assert not missing.committed
+
+
+@pytest.mark.parametrize("cap", [math.nan, math.inf, -math.inf, -1.0, True, "12.5"])
+def test_console_set_cap_uses_central_fail_closed_validation(cap):
+    from applypilot.fleet import console_app
+
+    conn = _FakeConn()
+    with pytest.raises(ValueError, match="finite number.*>= 0"):
+        console_app._do_set_cap(conn, {"usd": cap})
+    assert conn._cur.calls == []
+
+
+@pytest.mark.parametrize("raw_cap", ["nan", "Infinity", "-Infinity", "-1"])
+def test_fleet_sync_set_cap_rejects_hostile_cli_values_before_sql(monkeypatch, raw_cap):
+    from applypilot.apply import fleet_sync
+
+    conn = _FakeConn()
+    monkeypatch.setattr(pgqueue, "connect", lambda: conn)
+    monkeypatch.setattr(sys, "argv", ["fleet_sync", "set-cap", f"--cap={raw_cap}"])
+    with pytest.raises(ValueError, match="finite number.*>= 0"):
+        fleet_sync._cli()
+    assert conn._cur.calls == []
+    assert conn.closed
+
+
+def test_console_and_fleet_sync_preserve_committing_set_cap_semantics(monkeypatch):
+    from applypilot.apply import fleet_sync
+    from applypilot.fleet import console_app
+
+    console_conn = _FakeConn()
+    assert console_app._do_set_cap(console_conn, {"usd": 18}) == "Spend cap set to $18.00."
+    assert console_conn.committed and console_conn._cur.calls[0][1] == (18.0,)
+
+    sync_conn = _FakeConn()
+    monkeypatch.setattr(pgqueue, "connect", lambda: sync_conn)
+    monkeypatch.setattr(sys, "argv", ["fleet_sync", "set-cap", "--cap", "19.5"])
+    assert fleet_sync._cli() == 0
+    assert sync_conn.committed and sync_conn.closed
+    assert sync_conn._cur.calls[0][1] == (19.5,)
 
 
 def test_set_spend_cap_writes_and_audits_against_disposable_db(fleet_db):

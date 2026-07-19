@@ -20,6 +20,7 @@ Concurrency contract (the part that must never break):
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -525,13 +526,47 @@ def set_ats_paused(conn: psycopg.Connection, paused: bool, *, source: str | None
     conn.commit()
 
 
-def set_spend_cap(conn: psycopg.Connection, cap_usd: float) -> None:
+def validate_spend_cap(cap_usd: float) -> float:
+    """Return a safe finite spend cap, rejecting values that disable the rail.
+
+    PostgreSQL accepts ``NaN`` and infinities for numeric inputs, and comparisons
+    against those values do not enforce the intended hard ceiling.  Validate at the
+    shared queue boundary so every current and future caller gets the same fail-closed
+    behavior before SQL is executed.
+    """
+    if isinstance(cap_usd, bool) or not isinstance(cap_usd, (int, float)):
+        raise ValueError("spend cap must be a finite number >= 0 (0 means UNCAPPED)")
+    normalized = float(cap_usd)
+    if not math.isfinite(normalized) or normalized < 0:
+        raise ValueError("spend cap must be a finite number >= 0 (0 means UNCAPPED)")
+    return normalized
+
+
+def update_spend_cap(conn: psycopg.Connection, cap_usd: float) -> float:
+    """Update the singleton spend cap without committing the caller's transaction.
+
+    This is the one parameterized, rowcount-guarded write primitive.  Callers that
+    need to append audit records can do so in the same transaction before committing.
+    """
+    normalized = validate_spend_cap(cap_usd)
     with conn.cursor() as cur:
         cur.execute(
-            "UPDATE fleet_config SET spend_cap_usd = %s, updated_at = now() WHERE id = 1",
-            (cap_usd,),
+            "UPDATE fleet_config SET spend_cap_usd=%s, updated_at=now() WHERE id=1",
+            (normalized,),
         )
-    conn.commit()
+        if cur.rowcount != 1:
+            raise RuntimeError("fleet_config row id=1 is missing; refusing to set the spend cap")
+    return normalized
+
+
+def set_spend_cap(conn: psycopg.Connection, cap_usd: float) -> None:
+    """Set and commit a spend cap for compatibility with existing queue callers."""
+    try:
+        update_spend_cap(conn, cap_usd)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def set_paused(conn: psycopg.Connection, paused: bool) -> None:
