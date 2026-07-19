@@ -664,7 +664,7 @@ _RETENTION_SQL = (
 
 
 def attest_retention(connection: Any, attestations: tuple[RetentionAttestation, ...]) -> list[int]:
-    """Append each retention attestation through the exact V8 authority function.
+    """Append each retention attestation through the exact V9 authority function.
 
     A commit exception is classified as ambiguous so the caller replays the identical, idempotent
     request rather than guessing a later deadline or minting a second row.
@@ -690,6 +690,136 @@ def attest_retention(connection: Any, attestations: tuple[RetentionAttestation, 
     except Exception as exc:
         raise AmbiguousCommitError("retention attestation commit disposition is ambiguous") from exc
     return ids
+
+
+_PERSISTED_RETENTION_COLUMNS = (
+    "retention_attestation_id",
+    "database_incarnation_id",
+    "artifact_hash",
+    "backend",
+    "bucket_or_container",
+    "object_key",
+    "provider_version_id",
+    "provider_checksum",
+    "retain_until",
+    "verified_at",
+    "verification_lease_id",
+    "verification_lease_expires_at",
+    "canonical_payload",
+    "payload_sha256",
+    "signing_key_id",
+    "signature",
+)
+
+
+def _persisted_retention_row(row: object) -> dict[str, Any]:
+    if isinstance(row, Mapping):
+        values = {name: row.get(name) for name in _PERSISTED_RETENTION_COLUMNS}
+    elif isinstance(row, (tuple, list)) and len(row) == len(_PERSISTED_RETENTION_COLUMNS):
+        values = dict(zip(_PERSISTED_RETENTION_COLUMNS, row, strict=True))
+    else:
+        raise ArtifactAuthorityError("database returned an invalid retention verification row")
+    required_text = (
+        "artifact_hash",
+        "backend",
+        "object_key",
+        "provider_version_id",
+        "provider_checksum",
+        "verification_lease_id",
+        "payload_sha256",
+        "signing_key_id",
+        "signature",
+    )
+    if not isinstance(values["retention_attestation_id"], int) or any(
+        not isinstance(values[name], str) for name in required_text
+    ):
+        raise ArtifactAuthorityError("database returned malformed retention verification fields")
+    if values["bucket_or_container"] is not None and not isinstance(
+        values["bucket_or_container"], str
+    ):
+        raise ArtifactAuthorityError("database returned malformed retention bucket")
+    if not all(
+        isinstance(values[name], datetime)
+        for name in ("retain_until", "verified_at", "verification_lease_expires_at")
+    ):
+        raise ArtifactAuthorityError("database returned malformed retention instants")
+    try:
+        values["canonical_payload"] = bytes(values["canonical_payload"])
+        values["database_incarnation_id"] = str(uuid.UUID(str(values["database_incarnation_id"])))
+    except (TypeError, ValueError) as exc:
+        raise ArtifactAuthorityError("database returned malformed bound retention evidence") from exc
+    return values
+
+
+def verify_persisted_retention(
+    connection: Any,
+    retention_attestation_ids: tuple[int, ...],
+    *,
+    keys: Mapping[str, bytes],
+    now: datetime,
+) -> list[int]:
+    """Re-read, cryptographically verify, and verifier-mark exact committed V9 rows."""
+    verification_ids: list[int] = []
+    try:
+        with connection.cursor() as cursor:
+            for attestation_id in retention_attestation_ids:
+                cursor.execute(
+                    "SELECT * FROM brain_get_artifact_retention_for_verification(%s)",
+                    (attestation_id,),
+                )
+                raw = cursor.fetchone()
+                if raw is None:
+                    raise ArtifactAuthorityError("committed retention attestation is unavailable")
+                row = _persisted_retention_row(raw)
+                if row["retention_attestation_id"] != attestation_id:
+                    raise ArtifactAuthorityError("database returned a different retention attestation")
+                attestation = RetentionAttestation(
+                    artifact_hash=row["artifact_hash"],
+                    backend=row["backend"],
+                    bucket_or_container=row["bucket_or_container"],
+                    object_key=row["object_key"],
+                    provider_version_id=row["provider_version_id"],
+                    provider_checksum=row["provider_checksum"],
+                    retention_until=row["retain_until"],
+                    verified_at=row["verified_at"],
+                    verification_lease_id=row["verification_lease_id"],
+                    verification_expires_at=row["verification_lease_expires_at"],
+                    canonical_bytes=row["canonical_payload"],
+                    payload_sha256=row["payload_sha256"],
+                    key_id=row["signing_key_id"],
+                    signature=row["signature"],
+                )
+                validate_retention_attestation(attestation, now=now, keys=keys)
+                cursor.execute(
+                    "SELECT brain_verify_artifact_retention(%s,%s::uuid,%s,%s,%s)",
+                    (
+                        attestation_id,
+                        row["database_incarnation_id"],
+                        attestation.payload_sha256,
+                        attestation.key_id,
+                        attestation.signature,
+                    ),
+                )
+                verified_row = cursor.fetchone()
+                verification_id = (
+                    next(iter(verified_row.values()))
+                    if isinstance(verified_row, Mapping)
+                    else (verified_row[0] if verified_row else None)
+                )
+                if not isinstance(verification_id, int):
+                    raise ArtifactAuthorityError("database returned no retention verification id")
+                verification_ids.append(verification_id)
+    except Exception:
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+        raise
+    try:
+        connection.commit()
+    except Exception as exc:
+        raise AmbiguousCommitError("retention verification commit disposition is ambiguous") from exc
+    return verification_ids
 
 
 def _database_artifacts(verified: VerifiedManifest) -> list[dict[str, Any]]:
@@ -855,6 +985,25 @@ def _attest_once(
             pass
 
 
+def _verify_persisted_once(
+    connection_factory: Callable[[], Any],
+    retention_attestation_ids: tuple[int, ...],
+    *,
+    keys: Mapping[str, bytes],
+    now: datetime,
+) -> list[int]:
+    connection = connection_factory()
+    try:
+        return verify_persisted_retention(
+            connection, retention_attestation_ids, keys=keys, now=now
+        )
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
 def query_artifact_authority(
     connection_factory: Callable[[], Any], artifact_hashes: tuple[str, ...]
 ) -> dict[str, bool]:
@@ -897,6 +1046,7 @@ def coordinate_retention_attestation(
     expected_database_name: str,
     s3_client: Any,
     connection_factory: Callable[[], Any] | None,
+    verifier_connection_factory: Callable[[], Any] | None = None,
     dry_run: bool = False,
     now: datetime | None = None,
     lease_duration: timedelta = DEFAULT_VERIFICATION_LEASE,
@@ -938,8 +1088,8 @@ def coordinate_retention_attestation(
             "retention_attestation_count": len(attestations),
             "storage_observation_completed_at": _instant_text(observation.completed_at),
         }
-    if connection_factory is None:
-        raise ArtifactAuthorityError("database connection is required")
+    if connection_factory is None or verifier_connection_factory is None:
+        raise ArtifactAuthorityError("separate writer and verifier database connections are required")
     try:
         retention_ids = _attest_once(connection_factory, attestations)
     except AmbiguousCommitError:
@@ -947,14 +1097,31 @@ def coordinate_retention_attestation(
         # for an identical retention identity and fails closed on a conflicting payload), so a lost
         # commit disposition is resolved by re-issuing the identical request.
         retention_ids = _attest_once(connection_factory, attestations)
+    retention_id_tuple = tuple(retention_ids)
+    verification_now = observation.completed_at
+    try:
+        verification_ids = _verify_persisted_once(
+            verifier_connection_factory,
+            retention_id_tuple,
+            keys=keys,
+            now=verification_now,
+        )
+    except AmbiguousCommitError:
+        verification_ids = _verify_persisted_once(
+            verifier_connection_factory,
+            retention_id_tuple,
+            keys=keys,
+            now=verification_now,
+        )
     artifact_hashes = tuple(item.artifact_hash for item in attestations)
-    authority = query_artifact_authority(connection_factory, artifact_hashes)
+    authority = query_artifact_authority(verifier_connection_factory, artifact_hashes)
     return {
         "authoritative": bool(authority) and all(authority.values()),
         "artifact_authority": authority,
         "manifest_sha256": verified.manifest_sha256,
         "request_id": verified.manifest["requestId"],
         "retention_attestation_ids": retention_ids,
+        "retention_verification_ids": verification_ids,
         "storage_observation_completed_at": _instant_text(observation.completed_at),
     }
 
@@ -968,6 +1135,7 @@ def coordinate_artifact_authority(
     expected_database_name: str,
     s3_client: Any,
     connection_factory: Callable[[], Any] | None,
+    verifier_connection_factory: Callable[[], Any] | None = None,
     dry_run: bool = False,
     now: datetime | None = None,
     allow_expired_replay: bool = False,
@@ -997,8 +1165,8 @@ def coordinate_artifact_authority(
             "request_id": verified.manifest["requestId"],
             "storage_observation_completed_at": _instant_text(initial_observation.completed_at),
         }
-    if connection_factory is None:
-        raise ArtifactAuthorityError("database connection is required")
+    if connection_factory is None or verifier_connection_factory is None:
+        raise ArtifactAuthorityError("separate writer and verifier database connections are required")
     try:
         registration = _register_once(connection_factory, verified)
     except AmbiguousCommitError:
@@ -1018,12 +1186,29 @@ def coordinate_artifact_authority(
         retention_ids = _attest_once(connection_factory, attestations)
     except AmbiguousCommitError:
         retention_ids = _attest_once(connection_factory, attestations)
+    retention_id_tuple = tuple(retention_ids)
+    verification_now = final_observation.completed_at
+    try:
+        verification_ids = _verify_persisted_once(
+            verifier_connection_factory,
+            retention_id_tuple,
+            keys=keys,
+            now=verification_now,
+        )
+    except AmbiguousCommitError:
+        verification_ids = _verify_persisted_once(
+            verifier_connection_factory,
+            retention_id_tuple,
+            keys=keys,
+            now=verification_now,
+        )
     artifact_hashes = tuple(attestation.artifact_hash for attestation in attestations)
-    authority = query_artifact_authority(connection_factory, artifact_hashes)
+    authority = query_artifact_authority(verifier_connection_factory, artifact_hashes)
     return {
         **registration,
         "authoritative": bool(authority) and all(authority.values()),
         "artifact_authority": authority,
         "retention_attestation_ids": retention_ids,
+        "retention_verification_ids": verification_ids,
         "storage_observation_completed_at": _instant_text(final_observation.completed_at),
     }

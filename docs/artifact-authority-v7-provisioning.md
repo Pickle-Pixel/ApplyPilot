@@ -12,8 +12,30 @@ dedicated control-plane provider owns the database, one additional permanent
 membership is required: `brain_schema_migrator -> <current database owner>`,
 with the same three options and grantor OID 10. The provider is exactly LOGIN,
 NOSUPERUSER, NOCREATEROLE, and NOINHERIT, with no CREATEDB, REPLICATION, or
-BYPASSRLS authority and no other role memberships. The writer role has no
-descendants.
+BYPASSRLS authority and no other role memberships. Before V10, the writer role
+has no descendants; V10 replaces that legacy closure with the fixed,
+single-purpose login edges described below.
+
+V10 adds two fixed, separated database identities:
+
+- `brain_artifact_authority_writer_login` may `SET ROLE brain_artifact_authority_writer` only.
+- `brain_artifact_authority_verifier_login` may `SET ROLE brain_artifact_authority_verifier` only.
+
+Both login roles are `NOINHERIT`, unprivileged, and have no administrative
+membership. Provision their authentication secrets out of band; never reuse a
+credential or DSN between them. The supported coordinator requires
+`--writer-database-dsn-file` and `--verifier-database-dsn-file`, authenticates
+each DSN as its exact fixed login role, and then activates only the matching
+capability role. The legacy single `--database-dsn-file` path fails closed.
+
+The writer can register a manifest and append signed retention evidence, but
+that row is never authoritative by itself. After the writer commits, the
+verifier connection independently re-reads the durable row, validates its
+exact canonical payload, digest, key ID, and HMAC signature against the pinned
+operator keyring, and writes an exact-row verification through a verifier-only
+function. The cutover-facing `brain_artifact_is_authoritative` predicate
+requires that immutable verifier result. Writer sessions have neither table
+access nor function execution authority over the verification ledger.
 
 The permanent provider SET edge avoids a grant/revoke crash window during
 schema migration. A non-superuser provider only migrates a graph that was

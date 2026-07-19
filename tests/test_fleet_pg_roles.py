@@ -1424,11 +1424,18 @@ def test_artifact_authority_roles_are_fixed_nologin_and_membership_closed(fleet_
                     )
             roles = provider.execute(
                 "SELECT rolname,rolcanlogin,rolinherit,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls "
-                "FROM pg_roles WHERE rolname IN "
-                "('brain_artifact_authority_owner','brain_artifact_authority_writer') ORDER BY rolname"
+                "FROM pg_roles WHERE rolname LIKE 'brain_artifact_authority_%' ORDER BY rolname"
             ).fetchall()
-            assert len(roles) == 2
-            assert all(not any(value for key, value in role.items() if key != "rolname") for role in roles)
+            assert len(roles) == 5
+            for role in roles:
+                assert role["rolcanlogin"] is role["rolname"].endswith("_login")
+                assert not any(
+                    role[key]
+                    for key in (
+                        "rolinherit", "rolsuper", "rolcreatedb", "rolcreaterole",
+                        "rolreplication", "rolbypassrls",
+                    )
+                )
             assert provider.execute(
                 "SELECT array_agg(parent.rolname || '->' || member.rolname ORDER BY parent.rolname,member.rolname) "
                 "AS edges FROM pg_auth_members membership "
@@ -1436,7 +1443,11 @@ def test_artifact_authority_roles_are_fixed_nologin_and_membership_closed(fleet_
                 "JOIN pg_roles member ON member.oid=membership.member "
                 "WHERE parent.rolname LIKE 'brain_artifact_authority_%' "
                 "OR member.rolname LIKE 'brain_artifact_authority_%'"
-            ).fetchone()["edges"] == ["brain_artifact_authority_owner->brain_schema_migrator"]
+            ).fetchone()["edges"] == [
+                "brain_artifact_authority_owner->brain_schema_migrator",
+                "brain_artifact_authority_verifier->brain_artifact_authority_verifier_login",
+                "brain_artifact_authority_writer->brain_artifact_authority_writer_login",
+            ]
             assert provider.execute(
                 "SELECT has_schema_privilege('brain_artifact_authority_owner','public','CREATE') AS owner_create,"
                 "has_schema_privilege('brain_artifact_authority_writer','public','CREATE') AS writer_create"
@@ -1445,8 +1456,11 @@ def test_artifact_authority_roles_are_fixed_nologin_and_membership_closed(fleet_
             provider.rollback()
             require_disposable_postgres(provider)
             for role_name in (
-                "brain_artifact_authority_owner",
+                "brain_artifact_authority_verifier_login",
+                "brain_artifact_authority_writer_login",
+                "brain_artifact_authority_verifier",
                 "brain_artifact_authority_writer",
+                "brain_artifact_authority_owner",
                 "brain_schema_migrator",
             ):
                 if provider.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role_name,)).fetchone():

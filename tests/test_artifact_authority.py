@@ -316,8 +316,11 @@ class _FakeAuthorityDB:
         self._next_id = 5000
         self.attest_commit_failures = 0
         self.register_commit_failures = 0
+        self.verify_commit_failures = 0
         self.authority_override: bool | None = None
         self._recorded_payload: dict = {}
+        self._attest_rows: dict[int, tuple] = {}
+        self.verifications: dict[int, int] = {}
 
     def register(self, params: tuple) -> dict:
         self.registration_params.append(params)
@@ -346,7 +349,27 @@ class _FakeAuthorityDB:
         self._next_id += 1
         self.attestations[identity] = self._next_id
         self._recorded_payload[identity] = params
+        self._attest_rows[self._next_id] = params
         return self._next_id
+
+    def persisted(self, attestation_id: int) -> tuple:
+        params = self._attest_rows[attestation_id]
+        return (
+            attestation_id,
+            "12345678-1234-1234-1234-123456789abc",
+            *params[:6],
+            datetime.fromisoformat(params[6].replace("Z", "+00:00")),
+            datetime.fromisoformat(params[7].replace("Z", "+00:00")),
+            params[8],
+            datetime.fromisoformat(params[9].replace("Z", "+00:00")),
+            *params[10:14],
+        )
+
+    def verify(self, params: tuple) -> int:
+        attestation_id = params[0]
+        row = self.persisted(attestation_id)
+        assert params[1:] == (row[1], row[13], row[14], row[15])
+        return self.verifications.setdefault(attestation_id, 7000 + attestation_id)
 
     def connection(self):
         return _FakeAuthorityConnection(self)
@@ -371,12 +394,22 @@ class _FakeAuthorityCursor:
         elif "brain_attest_artifact_retention" in flattened:
             self.connection.last_op = "attest"
             self._row = (self.connection.db.attest(params),)
+        elif "brain_get_artifact_retention_for_verification" in flattened:
+            self.connection.last_op = "read-verification"
+            self._row = self.connection.db.persisted(params[0])
+        elif "brain_verify_artifact_retention" in flattened:
+            self.connection.last_op = "verify"
+            self._row = (self.connection.db.verify(params),)
         elif "brain_artifact_is_authoritative" in flattened:
             self.connection.last_op = "query"
             authoritative = (
                 self.connection.db.authority_override
                 if self.connection.db.authority_override is not None
-                else any(identity[0] == params[0] for identity in self.connection.db.attestations)
+                else any(
+                    identity[0] == params[0]
+                    and attestation_id in self.connection.db.verifications
+                    for identity, attestation_id in self.connection.db.attestations.items()
+                )
             )
             self._row = (authoritative,)
         else:
@@ -405,6 +438,10 @@ class _FakeAuthorityConnection:
             self.db.attest_commit_failures -= 1
             self.last_op = None
             raise RuntimeError("commit disposition lost")
+        if self.last_op == "verify" and self.db.verify_commit_failures > 0:
+            self.db.verify_commit_failures -= 1
+            self.last_op = None
+            raise RuntimeError("verification commit disposition lost")
         self.committed += 1
 
     def rollback(self) -> None:
@@ -423,6 +460,7 @@ def _coordinate(db: _FakeAuthorityDB, retain_until: datetime | None = None, **ov
         expected_database_name="brain",
         s3_client=_S3() if retain_until is None else _S3(retain_until=retain_until),
         connection_factory=db.connection,
+        verifier_connection_factory=db.connection,
         now=_NOW,
         clock=lambda: observation_time,
     )
@@ -604,6 +642,15 @@ def test_retention_attestation_retry_is_idempotent() -> None:
     assert len(db.attestations) == 1
 
 
+def test_retention_verification_ambiguous_commit_replays_exact_row() -> None:
+    db = _FakeAuthorityDB()
+    db.verify_commit_failures = 1
+    result = _coordinate(db)
+    assert result["retention_verification_ids"] == [12001]
+    assert db.verifications == {5001: 12001}
+    assert sum("brain_verify_artifact_retention" in sql for sql in db.executed) == 2
+
+
 def test_provider_extension_appends_a_new_attestation() -> None:
     db = _FakeAuthorityDB()
     _coordinate(db)
@@ -655,6 +702,7 @@ def test_combined_path_registers_then_reobserves_attests_and_queries() -> None:
         expected_database_name="brain",
         s3_client=s3,
         connection_factory=db.connection,
+        verifier_connection_factory=db.connection,
         now=_NOW,
         clock=lambda: _NOW,
     )
@@ -680,6 +728,7 @@ def test_combined_path_never_claims_authority_without_database_predicate() -> No
         expected_database_name="brain",
         s3_client=_S3(),
         connection_factory=db.connection,
+        verifier_connection_factory=db.connection,
         now=_NOW,
         clock=lambda: _NOW,
     )
@@ -700,6 +749,7 @@ def test_observation_expiry_during_transfer_fails_before_persistence() -> None:
             expected_database_name="brain",
             s3_client=_S3(retain_until=expiring),
             connection_factory=db.connection,
+            verifier_connection_factory=db.connection,
             now=_NOW,
             clock=lambda: next(moments),
         )

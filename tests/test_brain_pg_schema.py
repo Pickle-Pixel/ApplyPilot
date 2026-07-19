@@ -29,6 +29,7 @@ from applypilot.brain.artifact_authority import (
     retention_signing_message,
     signing_message,
     validate_retention_attestation,
+    verify_persisted_retention,
 )
 from applypilot.brain.lifecycle import arm_canary, authority_status, stop_canary
 from applypilot.brain.policy_artifacts import compile_policy_artifacts
@@ -1857,6 +1858,7 @@ def test_pg18_catalog_pins_match_authoritative_fresh_fixtures() -> None:
         "v7": "b8bcc3e3fedea82fe0149d3dd0372332e24b94579c692e949d9b9c3dce8a0ee5",
         "v8": "b1ae7f1df9e7c902d4954b4f1fa29c3fdf9d4c55516ff1f5011375b23163cebf",
         "v9": "322c814379eb24c36a09a4f154efe15b986055f71433733d59d7bcbfc49a6102",
+        "v10": "258dcb0d753108746fda0f71a832ad5907d71ea363f52cdf1e1ac65518babe28",
     }
 
 
@@ -4461,6 +4463,17 @@ def _append_v9(connection) -> None:
         connection.execute("ALTER SCHEMA public OWNER TO pg_database_owner")
 
 
+def _append_v10(connection) -> None:
+    with connection.transaction():
+        connection.execute("ALTER SCHEMA public OWNER TO brain_schema_migrator")
+        with connection.cursor() as cursor:
+            schema.ensure_brain_schema_v10_in_transaction(
+                cursor, expected_controller_role="brain_controller_test_login"
+            )
+        connection.execute("RESET ROLE")
+        connection.execute("ALTER SCHEMA public OWNER TO pg_database_owner")
+
+
 def _register_v8_artifact(connection, *, request_id: str, digest: str, artifact_hash: str):
     params = _v7_registration_params(
         connection, request_id=request_id, digest=digest, artifact_hash=artifact_hash
@@ -5260,6 +5273,7 @@ def test_v9_combined_operator_path_renews_and_persists_verifiable_evidence(brain
     with psycopg.connect(brain_pg, row_factory=dict_row) as owner:
         _install_v8_authority(owner)
         _append_v9(owner)
+        _append_v10(owner)
         identity = owner.execute(
             "SELECT (pg_control_system()).system_identifier::text AS system_id,"
             "current_database() AS database_name"
@@ -5314,6 +5328,12 @@ def test_v9_combined_operator_path_renews_and_persists_verifiable_evidence(brain
         connection.commit()
         return connection
 
+    def verifier_connection_factory():
+        connection = psycopg.connect(brain_pg, row_factory=dict_row)
+        connection.execute("SET ROLE brain_artifact_authority_verifier")
+        connection.commit()
+        return connection
+
     first = coordinate_artifact_authority(
         manifest,
         envelope,
@@ -5322,6 +5342,7 @@ def test_v9_combined_operator_path_renews_and_persists_verifiable_evidence(brain
         expected_database_name=identity["database_name"],
         s3_client=s3,
         connection_factory=connection_factory,
+        verifier_connection_factory=verifier_connection_factory,
         now=issued,
         lease_duration=timedelta(microseconds=1),
     )
@@ -5335,6 +5356,7 @@ def test_v9_combined_operator_path_renews_and_persists_verifiable_evidence(brain
         expected_database_name=identity["database_name"],
         s3_client=s3,
         connection_factory=connection_factory,
+        verifier_connection_factory=verifier_connection_factory,
         now=issued,
     )
     assert renewed["authoritative"] is True
@@ -5402,4 +5424,121 @@ def test_v9_combined_operator_path_renews_and_persists_verifiable_evidence(brain
                 audit.execute(attest_sql, (*persisted_args[:-1], "A" * 43))
         audit.execute("RESET ROLE")
         audit.commit()
-        schema.verify_brain_schema_v9(audit)
+        schema.verify_brain_schema_v10(audit)
+
+
+def test_v10_direct_writer_forgery_never_confers_authority(brain_pg) -> None:
+    artifact_hash = "d" * 64
+    request_id = "9ddddddd-dddd-dddd-dddd-dddddddddddd"
+    with psycopg.connect(brain_pg, row_factory=dict_row) as owner:
+        _install_v8_authority(owner)
+        _append_v9(owner)
+        _append_v10(owner)
+        location = _register_v8_artifact(
+            owner,
+            request_id=request_id,
+            digest="e" * 64,
+            artifact_hash=artifact_hash,
+        )
+        location_verified_at = _v8_location_verified_at(
+            owner, artifact_hash, location["object_key"]
+        )
+        retain_until = datetime.now(timezone.utc) + timedelta(days=30)
+        lease_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        payload = canonical_manifest_bytes(
+            {
+                "purpose": "brain-artifact-retention-attestation-v1",
+                "requestId": request_id,
+                "artifactSha256": artifact_hash,
+                "backend": location["backend"],
+                "bucketOrContainer": location["bucket_or_container"],
+                "objectKey": location["object_key"],
+                "providerVersionId": location["provider_version_id"],
+                "providerChecksum": location["provider_checksum"],
+                "retentionMode": "COMPLIANCE",
+                "retainUntil": retain_until.isoformat().replace("+00:00", "Z"),
+                "verifiedAt": location_verified_at.isoformat().replace("+00:00", "Z"),
+                "verificationLeaseId": "forged-direct-writer-lease",
+                "verificationExpiresAt": lease_expires.isoformat().replace("+00:00", "Z"),
+            }
+        )
+        args = (
+            artifact_hash,
+            location["backend"],
+            location["bucket_or_container"],
+            location["object_key"],
+            location["provider_version_id"],
+            location["provider_checksum"],
+            retain_until,
+            location_verified_at,
+            "forged-direct-writer-lease",
+            lease_expires,
+            payload,
+            hashlib.sha256(payload).hexdigest(),
+            "nonexistent-key",
+            "A" * 43,
+        )
+        owner.execute("SET ROLE brain_artifact_authority_writer")
+        mismatched_payload = payload.replace(
+            request_id.encode("ascii"), b"90000000-0000-0000-0000-000000000000"
+        )
+        mismatched_args = (
+            *args[:10],
+            mismatched_payload,
+            hashlib.sha256(mismatched_payload).hexdigest(),
+            *args[12:],
+        )
+        with pytest.raises(psycopg.errors.CheckViolation, match="registered artifact"):
+            with owner.transaction():
+                owner.execute(
+                    "SELECT brain_attest_artifact_retention("
+                    "%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz,"
+                    "%s::bytea,%s,%s,%s)",
+                    mismatched_args,
+                )
+        forged_id = owner.execute(
+            "SELECT brain_attest_artifact_retention("
+            "%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz,"
+            "%s::bytea,%s,%s,%s) AS id",
+            args,
+        ).fetchone()["id"]
+        owner.commit()
+        assert owner.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is False
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            owner.execute(
+                "SELECT brain_verify_artifact_retention(%s,%s::uuid,%s,%s,%s)",
+                (
+                    forged_id,
+                    _v8_current_incarnation(owner),
+                    hashlib.sha256(payload).hexdigest(),
+                    "nonexistent-key",
+                    "A" * 43,
+                ),
+            )
+        owner.rollback()
+        owner.execute("RESET ROLE")
+        owner.commit()
+
+    with psycopg.connect(brain_pg, row_factory=dict_row) as verifier:
+        verifier.execute("SET ROLE brain_artifact_authority_verifier")
+        verifier.commit()
+        with pytest.raises(ValueError, match="payload drift|signing key"):
+            verify_persisted_retention(
+                verifier,
+                (forged_id,),
+                keys={"trusted-key": b"t" * 32},
+                now=datetime.now(timezone.utc),
+            )
+        verifier.rollback()
+        assert verifier.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is False
+        verifier.execute("RESET ROLE")
+        verifier.commit()
+        assert verifier.execute(
+            "SELECT count(*) AS count FROM public.brain_artifact_retention_verifications "
+            "WHERE retention_attestation_id=%s",
+            (forged_id,),
+        ).fetchone()["count"] == 0

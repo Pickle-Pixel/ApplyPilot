@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hmac
 import json
 import os
 import re
@@ -391,7 +392,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--aws-region", required=True)
     parser.add_argument("--expected-system-id", required=True)
     parser.add_argument("--expected-database-name", required=True)
-    parser.add_argument("--database-dsn-file", type=Path)
+    parser.add_argument("--writer-database-dsn-file", type=Path)
+    parser.add_argument("--verifier-database-dsn-file", type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--recover-committed", action="store_true")
@@ -400,12 +402,21 @@ def _parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     assert_receipt_destination_available(args.receipt)
-    if args.dry_run and args.database_dsn_file is not None:
+    writer_dsn_file = getattr(args, "writer_database_dsn_file", None)
+    verifier_dsn_file = getattr(args, "verifier_database_dsn_file", None)
+    legacy_dsn_file = getattr(args, "database_dsn_file", None)
+    if legacy_dsn_file is not None:
+        raise ArtifactAuthorityError(
+            "single --database-dsn-file authority is forbidden; use separated writer and verifier DSNs"
+        )
+    if args.dry_run and (writer_dsn_file is not None or verifier_dsn_file is not None):
         raise ArtifactAuthorityError("dry-run forbids database inputs")
     if args.dry_run and args.recover_committed:
         raise ArtifactAuthorityError("dry-run cannot recover a committed request")
-    if not args.dry_run and args.database_dsn_file is None:
-        raise ArtifactAuthorityError("--database-dsn-file is required unless --dry-run is used")
+    if not args.dry_run and (writer_dsn_file is None or verifier_dsn_file is None):
+        raise ArtifactAuthorityError(
+            "--writer-database-dsn-file and --verifier-database-dsn-file are required unless --dry-run is used"
+        )
     manifest = parse_json_strict(read_secure_regular_file(args.manifest, max_bytes=MAX_JSON_BYTES))
     envelope = parse_json_strict(read_secure_regular_file(args.signature, max_bytes=MAX_SECRET_BYTES))
     if envelope.get("keyId") != args.key_id:
@@ -418,13 +429,52 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     s3_client = _aws_client(args.aws_credentials, args.aws_region)
 
     connection_factory = None
+    verifier_connection_factory = None
     if not args.dry_run:
-        dsn = _load_text_secret(args.database_dsn_file, "database DSN")
+        writer_dsn = _load_text_secret(writer_dsn_file, "writer database DSN")
+        verifier_dsn = _load_text_secret(verifier_dsn_file, "verifier database DSN")
+        if hmac.compare_digest(writer_dsn, verifier_dsn):
+            raise ArtifactAuthorityError("writer and verifier database DSNs must be distinct")
 
-        def connection_factory() -> Any:
+        def role_connection(dsn: str, login_role: str, capability_role: str) -> Any:
             import psycopg
 
-            return psycopg.connect(dsn)
+            connection = psycopg.connect(dsn)
+            try:
+                before = connection.execute(
+                    "SELECT session_user,current_user"
+                ).fetchone()
+                if before is None or tuple(before) != (login_role, login_role):
+                    raise ArtifactAuthorityError(
+                        f"database DSN must authenticate directly as {login_role} without startup SET ROLE"
+                    )
+                connection.execute(f"SET ROLE {capability_role}")
+                after = connection.execute(
+                    "SELECT session_user,current_user"
+                ).fetchone()
+                if after is None or tuple(after) != (login_role, capability_role):
+                    raise ArtifactAuthorityError(
+                        f"database principal cannot activate required {capability_role} capability"
+                    )
+                connection.commit()
+                return connection
+            except Exception:
+                connection.close()
+                raise
+
+        def connection_factory() -> Any:
+            return role_connection(
+                writer_dsn,
+                "brain_artifact_authority_writer_login",
+                "brain_artifact_authority_writer",
+            )
+
+        def verifier_connection_factory() -> Any:
+            return role_connection(
+                verifier_dsn,
+                "brain_artifact_authority_verifier_login",
+                "brain_artifact_authority_verifier",
+            )
 
     receipt = coordinate_artifact_authority(
         manifest,
@@ -434,6 +484,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         expected_database_name=args.expected_database_name,
         s3_client=s3_client,
         connection_factory=connection_factory,
+        verifier_connection_factory=verifier_connection_factory,
         dry_run=args.dry_run,
         allow_expired_replay=args.recover_committed,
     )

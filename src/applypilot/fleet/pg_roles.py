@@ -35,6 +35,9 @@ BRAIN_CANDIDATE_READER_ROLE = "brain_candidate_reader"
 BRAIN_CANDIDATE_WRITER_ROLE = "brain_candidate_writer"
 BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE = "brain_artifact_authority_owner"
 BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE = "brain_artifact_authority_writer"
+BRAIN_ARTIFACT_AUTHORITY_VERIFIER_ROLE = "brain_artifact_authority_verifier"
+BRAIN_ARTIFACT_AUTHORITY_WRITER_LOGIN_ROLE = "brain_artifact_authority_writer_login"
+BRAIN_ARTIFACT_AUTHORITY_VERIFIER_LOGIN_ROLE = "brain_artifact_authority_verifier_login"
 _CANDIDATE_READ_RELATIONS = (
     "brain_authority_scope_state",
     "brain_v4_candidate_decisions",
@@ -2552,10 +2555,16 @@ def _verify_artifact_authority_membership_closure(
         "FROM closure JOIN pg_catalog.pg_roles root ON root.oid=closure.root_oid "
         "JOIN pg_catalog.pg_roles member ON member.oid=closure.member_oid "
         "ORDER BY root.rolname,member.rolname",
-        ([BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE, BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE],),
+        ([
+            BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE,
+            BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE,
+            BRAIN_ARTIFACT_AUTHORITY_VERIFIER_ROLE,
+        ],),
     )
     allowed = {
         (BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE, "brain_schema_migrator"),
+        (BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE, BRAIN_ARTIFACT_AUTHORITY_WRITER_LOGIN_ROLE),
+        (BRAIN_ARTIFACT_AUTHORITY_VERIFIER_ROLE, BRAIN_ARTIFACT_AUTHORITY_VERIFIER_LOGIN_ROLE),
     }
     if allowed_session_descendant is not None:
         allowed.add((BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE, allowed_session_descendant))
@@ -2710,7 +2719,7 @@ def ensure_brain_artifact_authority_roles_in_transaction(
     *,
     migrator_role: str = "brain_schema_migrator",
 ) -> tuple[str, str]:
-    """Reconcile the fixed NOLOGIN v6 owner/writer capability roles."""
+    """Reconcile separated owner, writer, and verifier authority principals."""
     _require_pg18_authority_catalog(cur)
     if migrator_role != "brain_schema_migrator":
         raise RuntimeError("artifact authority roles require fixed brain_schema_migrator")
@@ -2723,7 +2732,16 @@ def ensure_brain_artifact_authority_roles_in_transaction(
     if cur.fetchone() is None:
         raise RuntimeError("artifact authority role reconciliation requires brain_schema_migrator")
     cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_ARTIFACT_AUTHORITY_ROLE_LOCK_KEY,))
-    for role_name in (BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE, BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE):
+    capability_roles = (
+        BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE,
+        BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE,
+        BRAIN_ARTIFACT_AUTHORITY_VERIFIER_ROLE,
+    )
+    login_roles = (
+        BRAIN_ARTIFACT_AUTHORITY_WRITER_LOGIN_ROLE,
+        BRAIN_ARTIFACT_AUTHORITY_VERIFIER_LOGIN_ROLE,
+    )
+    for role_name in (*capability_roles, *login_roles):
         identifier = sql.Identifier(role_name)
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role_name,))
         if cur.fetchone() is None:
@@ -2738,10 +2756,11 @@ def ensure_brain_artifact_authority_roles_in_transaction(
             attributes[name] for name in ("rolsuper", "rolreplication", "rolbypassrls")
         ):
             raise RuntimeError(f"unsafe privileged capability role requires superuser repair: {role_name}")
+        expected_login = role_name in login_roles
         attribute_repairs = [
             sql.SQL(clause)
             for enabled, clause in (
-                (attributes["rolcanlogin"], "NOLOGIN"),
+                (attributes["rolcanlogin"] != expected_login, "LOGIN" if expected_login else "NOLOGIN"),
                 (attributes["rolinherit"], "NOINHERIT"),
                 (attributes["rolcreatedb"], "NOCREATEDB"),
                 (attributes["rolcreaterole"], "NOCREATEROLE"),
@@ -2754,7 +2773,8 @@ def ensure_brain_artifact_authority_roles_in_transaction(
                 + sql.SQL(" ").join(attribute_repairs)
             )
         cur.execute(sql.SQL("REVOKE CREATE ON SCHEMA public FROM {}").format(identifier))
-        cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(identifier))
+        if role_name in capability_roles:
+            cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(identifier))
     cur.execute(
         "SELECT grantor.oid AS grantor_oid,grantor.rolname AS grantor_role,"
         "grantor.rolsuper AS grantor_is_superuser,"
@@ -2789,7 +2809,21 @@ def ensure_brain_artifact_authority_roles_in_transaction(
         approved_grantee_roles=(migrator_role,),
         validate_approved_grantee_descendants=False,
     )
-    _reconcile_role_memberships(cur, role_name=BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE)
+    for capability_role, login_role in (
+        (BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE, BRAIN_ARTIFACT_AUTHORITY_WRITER_LOGIN_ROLE),
+        (BRAIN_ARTIFACT_AUTHORITY_VERIFIER_ROLE, BRAIN_ARTIFACT_AUTHORITY_VERIFIER_LOGIN_ROLE),
+    ):
+        cur.execute(
+            sql.SQL("GRANT {} TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE").format(
+                sql.Identifier(capability_role), sql.Identifier(login_role)
+            )
+        )
+        _reconcile_role_memberships(
+            cur, role_name=capability_role, approved_grantee_roles=(login_role,)
+        )
+        _reconcile_role_memberships(
+            cur, role_name=login_role, approved_parent_roles=(capability_role,)
+        )
     return BRAIN_ARTIFACT_AUTHORITY_OWNER_ROLE, BRAIN_ARTIFACT_AUTHORITY_WRITER_ROLE
 
 

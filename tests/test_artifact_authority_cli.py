@@ -568,8 +568,30 @@ def test_dry_run_ignores_hostile_database_environment_and_opens_no_database(
         )
     )
     assert captured["connection_factory"] is None
+    assert captured["verifier_connection_factory"] is None
     assert result["dry_run"] is True and result["promotable"] is False
     assert parse_json_strict(receipt.read_bytes()) == result
+
+
+def test_single_database_dsn_is_rejected_before_secret_or_external_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _load_cli()
+    monkeypatch.setattr(
+        cli,
+        "read_secure_regular_file",
+        lambda *_args, **_kwargs: pytest.fail("legacy DSN must fail before reading inputs"),
+    )
+    with pytest.raises(ArtifactAuthorityError, match="single .* forbidden"):
+        cli.run(
+            SimpleNamespace(
+                receipt=tmp_path / "receipt.json",
+                dry_run=False,
+                database_dsn_file=tmp_path / "legacy-dsn",
+                writer_database_dsn_file=None,
+                verifier_database_dsn_file=None,
+            )
+        )
 
 
 def test_receipt_link_failure_leaves_neither_partial_receipt_nor_temp_file(
