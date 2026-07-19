@@ -65,3 +65,6 @@ Thumbs.db
 # Claude Code
 .claude/
 .fleet-logs/
+
+# Disposable agent run directory (venv, pip cache, pytest temp)
+.agent-run/

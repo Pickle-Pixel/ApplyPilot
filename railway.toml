@@ -1,0 +1,22 @@
+# Railway service definition for the private authority-migrator.
+#
+# This file bakes NO target identity, NO credential, and NO default DSN. The
+# start command references the *names* of service variables the operator must
+# set explicitly on the service; it never embeds a literal host, database,
+# system identifier, or password. A migrator built from this config refuses to
+# run against an unnamed or mismatched target (see
+# scripts/run-private-authority-migrator.py).
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile.authority-migrator"
+
+[deploy]
+# One-shot migration job: never auto-restart, single replica. The three explicit
+# target parameters are supplied through service variables, not hardcoded here:
+#   AUTHORITY_MIGRATOR_TARGET_DSN       -- the private target DSN (a secret)
+#   AUTHORITY_MIGRATOR_EXPECTED_DB      -- exact target database name
+#   AUTHORITY_MIGRATOR_EXPECTED_SYSID   -- exact target pg_control system_identifier
+startCommand = "python3 /app/scripts/run-private-authority-migrator.py --target-dsn-env AUTHORITY_MIGRATOR_TARGET_DSN --expected-database-name ${AUTHORITY_MIGRATOR_EXPECTED_DB} --expected-system-identifier ${AUTHORITY_MIGRATOR_EXPECTED_SYSID}"
+restartPolicyType = "never"
+numReplicas = 1

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
+import importlib.util
 import json
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,29 +21,67 @@ from applypilot.fleet import schema as fleet_schema
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "src" / "applypilot" / "fleet" / "migrations" / "manifest-v1.json"
 
+# The canonical, published predecessor tuple these tests build archives around.
+PINNED_COMMIT = "2b3a7c83118df840dda60c9b728f29e3dc0c1b9d"
+PINNED_TREE = "b160cec1ef3c2bd35989bf7127ca0554269b45a0"
+# Canonical (sorted) predecessor file -> exact committed blob id.
+PINNED_FILES = {
+    "src/applypilot/apply/fleet_schema.sql": "6eb4a84dcc05568233ee32551b28c75f13b0a17f",
+    "src/applypilot/fleet/schema.py": "5637001b6457f9fc8f0c22f4220fe2e1249ff9c0",
+    "src/applypilot/fleet/schema_v3.sql": "0741a6e675d2ea42a3bb0d785fd4c0c444e96b3d",
+}
+
 
 def _git_blob_id(data: bytes) -> str:
     return hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
 
 
-def _write_manifest(root: Path, migrations: list[dict[str, object]]) -> Path:
-    predecessor_files = []
-    for relative in (
-        "src/applypilot/fleet/schema_v3.sql",
-        "src/applypilot/apply/fleet_schema.sql",
-        "src/applypilot/fleet/schema.py",
-    ):
-        data = (REPO_ROOT / relative).read_bytes()
-        destination = root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(data)
-        predecessor_files.append({"path": relative, "git_blob": _git_blob_id(data.replace(b"\r\n", b"\n"))})
+def _cat_blob(git_blob: str) -> bytes:
+    """The exact committed predecessor bytes, as a real release archive carries them."""
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "cat-file", "blob", git_blob],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def _write_predecessor_bundle(
+    root: Path,
+    files: dict[str, str],
+    *,
+    overrides: dict[str, bytes] | None = None,
+) -> list[dict[str, str]]:
+    """Write the content-addressed predecessor byte bundle a release archive carries."""
+    overrides = overrides or {}
+    bundle = root / "src" / "applypilot" / "fleet" / "migrations" / "predecessor"
+    bundle.mkdir(parents=True, exist_ok=True)
+    predecessor_files: list[dict[str, str]] = []
+    for relative in sorted(files):
+        git_blob = files[relative]
+        (bundle / git_blob).write_bytes(overrides.get(git_blob, _cat_blob(git_blob)))
+        predecessor_files.append({"path": relative, "git_blob": git_blob})
+    return predecessor_files
+
+
+def _write_manifest(
+    root: Path,
+    migrations: list[dict[str, object]],
+    *,
+    runtime_commit: str = PINNED_COMMIT,
+    runtime_tree: str = PINNED_TREE,
+    files: dict[str, str] | None = None,
+    bundle_overrides: dict[str, bytes] | None = None,
+) -> Path:
+    predecessor_files = _write_predecessor_bundle(
+        root, files if files is not None else PINNED_FILES, overrides=bundle_overrides
+    )
     payload = {
         "schema_version": 1,
         "manifest_id": "applypilot-fleet-migrations-v1",
         "migration_role": "applypilot_fleet_migrator",
         "predecessor": {
-            "runtime_commit": "2b3a7c83118df840dda60c9b728f29e3dc0c1b9d",
+            "runtime_commit": runtime_commit,
+            "runtime_tree": runtime_tree,
             "files": predecessor_files,
         },
         "migrations": migrations,
@@ -113,11 +154,15 @@ def migration_pg(fleet_pg):
 def test_repository_manifest_pins_the_exact_legacy_predecessor():
     manifest = migrator.load_manifest(MANIFEST_PATH)
     assert manifest.predecessor.runtime_commit == "2b3a7c83118df840dda60c9b728f29e3dc0c1b9d"
+    assert manifest.predecessor.runtime_tree == "b160cec1ef3c2bd35989bf7127ca0554269b45a0"
     assert {item.path: item.git_blob for item in manifest.predecessor.files} == {
         "src/applypilot/fleet/schema_v3.sql": "0741a6e675d2ea42a3bb0d785fd4c0c444e96b3d",
         "src/applypilot/apply/fleet_schema.sql": "6eb4a84dcc05568233ee32551b28c75f13b0a17f",
         "src/applypilot/fleet/schema.py": "5637001b6457f9fc8f0c22f4220fe2e1249ff9c0",
     }
+    # The predecessor blobs are the historical bytes, not today's HEAD bytes.
+    assert manifest.predecessor.runtime_tree == PINNED_TREE
+    assert {item.path: item.git_blob for item in manifest.predecessor.files} == PINNED_FILES
     assert _git_blob_id((REPO_ROOT / "src/applypilot/fleet/schema_v3.sql").read_bytes()) != (
         "0741a6e675d2ea42a3bb0d785fd4c0c444e96b3d"
     )
@@ -144,22 +189,63 @@ def test_repository_manifest_rejects_wrong_predecessor_commit(tmp_path):
         migrator.verify_predecessor(manifest, REPO_ROOT)
 
 
-def test_pinned_predecessor_is_verified_without_git_metadata(tmp_path):
-    manifest = migrator.load_manifest(MANIFEST_PATH)
-    for item in manifest.predecessor.files:
-        source = REPO_ROOT / item.path
-        target = tmp_path / item.path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(source.read_bytes())
-
+def test_archive_without_git_requires_exact_predecessor_bytes(tmp_path):
+    # A faithful release archive omits .git and carries the exact predecessor bytes.
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, []))
+    assert not (tmp_path / ".git").exists()
     migrator.verify_predecessor(manifest, tmp_path)
 
-    payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    payload["predecessor"]["runtime_commit"] = "0" * 40
-    unknown_path = tmp_path / "unknown-manifest.json"
-    unknown_path.write_text(json.dumps(payload) + "\n", encoding="utf-8", newline="\n")
+    # The current (HEAD) schema_v3 bytes hash to a different blob than the pinned
+    # predecessor. Carrying them in the bundle under the matching pinned (commit,
+    # tree, files) tuple is exactly the "wrong bytes over a matching tuple" attack
+    # and must fail closed -- the tuple alone is never sufficient.
+    schema_v3_blob = PINNED_FILES["src/applypilot/fleet/schema_v3.sql"]
+    current = (REPO_ROOT / "src/applypilot/fleet/schema_v3.sql").read_bytes()
+    assert migrator._blob_id(current) != schema_v3_blob
+    migrator.load_manifest(
+        _write_manifest(tmp_path, [], bundle_overrides={schema_v3_blob: current})
+    )
     with pytest.raises(migrator.ManifestError, match="predecessor blob mismatch"):
-        migrator.verify_predecessor(migrator.load_manifest(unknown_path), tmp_path)
+        migrator.verify_predecessor(manifest, tmp_path)
+
+
+def test_archive_rejects_unpinned_commit_and_tree_drift(tmp_path):
+    # An unknown predecessor commit is not a pinned release predecessor.
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, [], runtime_commit="0" * 40))
+    with pytest.raises(migrator.ManifestError, match="not a pinned release predecessor"):
+        migrator.verify_predecessor(manifest, tmp_path)
+
+    # The right commit under a forged tree fails the tree binding.
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, [], runtime_tree="1" * 40))
+    with pytest.raises(migrator.ManifestError, match="predecessor tree mismatch"):
+        migrator.verify_predecessor(manifest, tmp_path)
+
+
+def test_archive_rejects_missing_and_extra_predecessor_files(tmp_path):
+    # A missing pinned file is a closed-set mismatch.
+    subset = dict(PINNED_FILES)
+    subset.pop("src/applypilot/fleet/schema.py")
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, [], files=subset))
+    with pytest.raises(migrator.ManifestError, match="does not match the pinned release tuple"):
+        migrator.verify_predecessor(manifest, tmp_path)
+
+    # An extra file (even one carrying a real blob) is also a closed-set mismatch.
+    extra = dict(PINNED_FILES)
+    extra["src/applypilot/apply/extra_probe.sql"] = PINNED_FILES[
+        "src/applypilot/apply/fleet_schema.sql"
+    ]
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, [], files=extra))
+    with pytest.raises(migrator.ManifestError, match="does not match the pinned release tuple"):
+        migrator.verify_predecessor(manifest, tmp_path)
+
+
+def test_manifest_rejects_reordered_predecessor_files(tmp_path):
+    path = _write_manifest(tmp_path, [])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["predecessor"]["files"].reverse()
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8", newline="\n")
+    with pytest.raises(migrator.ManifestError, match="canonical sorted order"):
+        migrator.load_manifest(path)
 
 
 def test_manifest_rejects_duplicate_keys_unknown_fields_and_unsafe_paths(tmp_path):
@@ -198,7 +284,8 @@ def test_manifest_rejects_reordered_duplicate_and_broken_chains(tmp_path):
 def test_predecessor_and_sql_checksums_are_verified_from_bytes(tmp_path):
     manifest_path = _write_manifest(tmp_path, [])
     manifest = migrator.load_manifest(manifest_path)
-    (tmp_path / "src/applypilot/fleet/schema.py").write_bytes(b"tampered\n")
+    schema_py_blob = PINNED_FILES["src/applypilot/fleet/schema.py"]
+    (tmp_path / "src/applypilot/fleet/migrations/predecessor" / schema_py_blob).write_bytes(b"tampered\n")
     with pytest.raises(migrator.ManifestError, match="predecessor blob"):
         migrator.verify_predecessor(manifest, tmp_path)
 
@@ -351,3 +438,53 @@ def test_application_authority_is_single_owner_and_crash_conservative(migration_
             with psycopg.connect(migration_pg, autocommit=True) as provider:
                 provider.execute("DROP OWNED BY fleet_worker")
                 provider.execute("DROP ROLE fleet_worker")
+
+
+def _load_authority_migrator_wrapper():
+    path = REPO_ROOT / "scripts" / "run-private-authority-migrator.py"
+    spec = importlib.util.spec_from_file_location("authority_migrator_wrapper_it", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_private_wrapper_applies_to_explicit_target_and_never_leaks(migration_pg, capsys, monkeypatch):
+    wrapper = _load_authority_migrator_wrapper()
+    # Start from a clean authority slate: the migration_pg fixture rebuilds the
+    # ledger per test but leaves migration-created relations behind, and the
+    # first migration's CREATE TABLE is not idempotent.
+    with psycopg.connect(migration_pg, autocommit=True) as admin:
+        admin.execute("DROP TABLE IF EXISTS fleet_application_alias CASCADE")
+        admin.execute("DROP TABLE IF EXISTS fleet_application_authority CASCADE")
+    with psycopg.connect(migration_pg, row_factory=dict_row) as conn:
+        identity = conn.execute(
+            "SELECT current_database() AS db,"
+            "control.system_identifier::text AS sysid FROM pg_control_system() AS control"
+        ).fetchone()
+    password = psycopg.conninfo.conninfo_to_dict(migration_pg).get("password")
+    assert password, "the disposable test DSN is expected to carry a password to redact"
+
+    monkeypatch.setenv("AUTHORITY_MIGRATOR_IT_DSN", migration_pg)
+    base = dict(
+        target_dsn_env="AUTHORITY_MIGRATOR_IT_DSN",
+        expected_database_name=identity["db"],
+        expected_system_identifier=identity["sysid"],
+        repository_root=str(REPO_ROOT),
+        package_manifest=str(REPO_ROOT / "deploy" / "authority-migrator" / "package-manifest.json"),
+    )
+
+    # The explicit, matching target applies exactly the three real migrations.
+    assert wrapper.run(argparse.Namespace(**base)) == 0
+    out = capsys.readouterr().out
+    assert "applied=3" in out
+    assert password not in out
+    assert "AUTHORITY_MIGRATOR_IT_DSN" not in out  # the value, not the name, stays private
+
+    # A mismatched declared database fails closed before touching the schema, and
+    # still never surfaces the DSN/password.
+    wrong = argparse.Namespace(**{**base, "expected_database_name": "not_the_declared_target"})
+    with pytest.raises(wrapper.TargetError, match="database name does not match"):
+        wrapper.run(wrong)
+    leaked = capsys.readouterr()
+    assert password not in leaked.out
+    assert password not in leaked.err

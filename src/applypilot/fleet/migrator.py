@@ -13,7 +13,7 @@ from typing import Any
 
 
 _MANIFEST_FIELDS = frozenset({"schema_version", "manifest_id", "migration_role", "predecessor", "migrations"})
-_PREDECESSOR_FIELDS = frozenset({"runtime_commit", "files"})
+_PREDECESSOR_FIELDS = frozenset({"runtime_commit", "runtime_tree", "files"})
 _PREDECESSOR_FILE_FIELDS = frozenset({"path", "git_blob"})
 _MIGRATION_FIELDS = frozenset(
     {
@@ -35,11 +35,19 @@ _LOCK_KEY = "applypilot:fleet:migrations:v1"
 _DEFAULT_LOCK_TIMEOUT_SECONDS = 30.0
 _DEFAULT_STATEMENT_TIMEOUT_MS = 300_000
 _LEDGER_TABLE = "applypilot_fleet_schema_migrations"
+# The published, canonical predecessor tuples. A release archive strips `.git`,
+# so it cannot appeal to the object store to prove its predecessor bytes. The
+# only artifact-safe boundary is a pinned (commit, tree, files) tuple *plus* the
+# exact predecessor bytes carried in the archive: the tuple alone is never
+# enough (see verify_predecessor / _verify_predecessor_archive).
 _PINNED_PREDECESSORS = {
     "2b3a7c83118df840dda60c9b728f29e3dc0c1b9d": {
-        "src/applypilot/fleet/schema_v3.sql": "0741a6e675d2ea42a3bb0d785fd4c0c444e96b3d",
-        "src/applypilot/apply/fleet_schema.sql": "6eb4a84dcc05568233ee32551b28c75f13b0a17f",
-        "src/applypilot/fleet/schema.py": "5637001b6457f9fc8f0c22f4220fe2e1249ff9c0",
+        "runtime_tree": "b160cec1ef3c2bd35989bf7127ca0554269b45a0",
+        "files": {
+            "src/applypilot/apply/fleet_schema.sql": "6eb4a84dcc05568233ee32551b28c75f13b0a17f",
+            "src/applypilot/fleet/schema.py": "5637001b6457f9fc8f0c22f4220fe2e1249ff9c0",
+            "src/applypilot/fleet/schema_v3.sql": "0741a6e675d2ea42a3bb0d785fd4c0c444e96b3d",
+        },
     }
 }
 
@@ -61,6 +69,7 @@ class PredecessorFile:
 @dataclass(frozen=True)
 class Predecessor:
     runtime_commit: str
+    runtime_tree: str
     files: tuple[PredecessorFile, ...]
 
 
@@ -181,6 +190,9 @@ def load_manifest(path: str | Path) -> Manifest:
     runtime_commit = predecessor_payload["runtime_commit"]
     if not isinstance(runtime_commit, str) or not _HEX40.fullmatch(runtime_commit):
         raise ManifestError("invalid predecessor runtime commit")
+    runtime_tree = predecessor_payload["runtime_tree"]
+    if not isinstance(runtime_tree, str) or not _HEX40.fullmatch(runtime_tree):
+        raise ManifestError("invalid predecessor runtime tree")
     files_payload = predecessor_payload["files"]
     if not isinstance(files_payload, list) or not files_payload:
         raise ManifestError("predecessor files must be a nonempty array")
@@ -196,6 +208,11 @@ def load_manifest(path: str | Path) -> Manifest:
             raise ManifestError(f"invalid predecessor blob for {file_path}")
         seen_paths.add(file_path)
         predecessor_files.append(PredecessorFile(path=file_path, git_blob=git_blob))
+    # Canonical order so a reordered predecessor manifest fails closed rather
+    # than presenting the same closed set of blobs under a shuffled tree.
+    ordered_paths = [item.path for item in predecessor_files]
+    if ordered_paths != sorted(ordered_paths):
+        raise ManifestError("predecessor files must be in canonical sorted order")
     migrations_payload = root["migrations"]
     if not isinstance(migrations_payload, list):
         raise ManifestError("migrations must be an array")
@@ -218,7 +235,11 @@ def load_manifest(path: str | Path) -> Manifest:
         schema_version=1,
         manifest_id="applypilot-fleet-migrations-v1",
         migration_role=role,
-        predecessor=Predecessor(runtime_commit=runtime_commit, files=tuple(predecessor_files)),
+        predecessor=Predecessor(
+            runtime_commit=runtime_commit,
+            runtime_tree=runtime_tree,
+            files=tuple(predecessor_files),
+        ),
         migrations=migrations,
     )
 
@@ -254,29 +275,93 @@ def _git_predecessor_blob(root: Path, runtime_commit: str, path: str) -> str | N
     return fields[2]
 
 
+def _git_commit_tree(root: Path, runtime_commit: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", f"{runtime_commit}^{{tree}}"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    tree = result.stdout.strip()
+    return tree if _HEX40.fullmatch(tree) else None
+
+
+def _predecessor_bundle_dir(root: Path) -> Path:
+    return root / "src" / "applypilot" / "fleet" / "migrations" / "predecessor"
+
+
+def _verify_predecessor_tuple_with_git(manifest: Manifest, root: Path) -> None:
+    # With a real object store, bind the declared tree to the declared commit and
+    # prove each declared blob is exactly what that commit's tree carried. This
+    # verifies provenance against history rather than against the (current) live
+    # working tree, which legitimately carries newer bytes than the predecessor.
+    actual_tree = _git_commit_tree(root, manifest.predecessor.runtime_commit)
+    if actual_tree is not None and actual_tree != manifest.predecessor.runtime_tree:
+        raise ManifestError(
+            f"predecessor tree mismatch for {manifest.predecessor.runtime_commit}: "
+            f"expected {manifest.predecessor.runtime_tree}, got {actual_tree}"
+        )
+    for item in manifest.predecessor.files:
+        git_blob = _git_predecessor_blob(root, manifest.predecessor.runtime_commit, item.path)
+        if git_blob != item.git_blob:
+            raise ManifestError(
+                f"predecessor blob mismatch for {item.path}: expected {item.git_blob}, got {git_blob}"
+            )
+
+
+def _verify_predecessor_tuple_pinned(manifest: Manifest) -> None:
+    # A release archive omits .git, so it cannot appeal to the object store. The
+    # declared (commit, tree, files) tuple must instead match a pinned, published
+    # predecessor exactly. Tuple identity alone is never sufficient -- the exact
+    # bytes are still checked against the carried bundle below.
+    pinned = _PINNED_PREDECESSORS.get(manifest.predecessor.runtime_commit)
+    if pinned is None:
+        raise ManifestError(
+            f"predecessor tuple is not a pinned release predecessor: {manifest.predecessor.runtime_commit}"
+        )
+    if manifest.predecessor.runtime_tree != pinned["runtime_tree"]:
+        raise ManifestError(
+            f"predecessor tree mismatch for {manifest.predecessor.runtime_commit}: "
+            f"expected {pinned['runtime_tree']}, got {manifest.predecessor.runtime_tree}"
+        )
+    declared = {item.path: item.git_blob for item in manifest.predecessor.files}
+    if declared != pinned["files"]:
+        raise ManifestError("predecessor file manifest does not match the pinned release tuple")
+
+
+def _verify_predecessor_bundle(manifest: Manifest, bundle: Path) -> None:
+    # Every release (with or without .git) carries the exact predecessor bytes as
+    # content-addressed provenance artifacts. This is the artifact-safe substitute
+    # for the object store: prefix-only (short id would not name a file),
+    # reconstructed/normalized (blob id differs), and missing artifacts all fail
+    # closed here -- there is no tuple-only escape hatch.
+    for item in manifest.predecessor.files:
+        artifact = (bundle / item.git_blob).resolve()
+        if not artifact.is_relative_to(bundle.resolve()) or not artifact.is_file():
+            raise ManifestError(
+                f"missing carried predecessor byte artifact for {item.path}: {item.git_blob}"
+            )
+        data = artifact.read_bytes()
+        actual = _blob_id(data)
+        # Exact bytes only -- no CRLF/normalization leniency for carried bytes.
+        if actual != item.git_blob:
+            raise ManifestError(
+                f"predecessor blob mismatch for {item.path}: expected {item.git_blob}, got {actual}"
+            )
+
+
 def verify_predecessor(manifest: Manifest, repository_root: str | Path) -> None:
     root = Path(repository_root).resolve()
-    declared = {item.path: item.git_blob for item in manifest.predecessor.files}
-    for item in manifest.predecessor.files:
-        path = (root / Path(*PurePosixPath(item.path).parts)).resolve()
-        if not path.is_relative_to(root) or not path.is_file():
-            raise ManifestError(f"predecessor blob path is missing: {item.path}")
-        data = path.read_bytes()
-        actual = _blob_id(data)
-        if actual != item.git_blob and b"\r" in data:
-            if data.replace(b"\r\n", b"").find(b"\r") != -1:
-                raise ManifestError(f"predecessor blob has a non-CRLF carriage return: {item.path}")
-            actual = _blob_id(data.replace(b"\r\n", b"\n"))
-        if actual != item.git_blob:
-            git_blob = _git_predecessor_blob(root, manifest.predecessor.runtime_commit, item.path)
-            if git_blob == item.git_blob:
-                continue
-            # Release archives intentionally omit .git. The closed predecessor
-            # tuple above is the artifact-safe provenance boundary in that case.
-            pinned = _PINNED_PREDECESSORS.get(manifest.predecessor.runtime_commit)
-            if not (root / ".git").exists() and pinned == declared:
-                continue
-            raise ManifestError(f"predecessor blob mismatch for {item.path}: expected {item.git_blob}, got {actual}")
+    if (root / ".git").exists():
+        _verify_predecessor_tuple_with_git(manifest, root)
+    else:
+        _verify_predecessor_tuple_pinned(manifest)
+    _verify_predecessor_bundle(manifest, _predecessor_bundle_dir(root))
 
 
 def verify_migration_files(manifest: Manifest, repository_root: str | Path) -> None:

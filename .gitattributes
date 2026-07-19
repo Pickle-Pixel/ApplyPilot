@@ -9,3 +9,10 @@ tests/fixtures/canonical-brain/*.json text eol=lf
 src/applypilot/fleet/migrations/*.json text eol=lf
 src/applypilot/fleet/migrations/*.sql text eol=lf
 src/applypilot/brain/schema_*.sql text eol=lf
+# The predecessor byte bundle is exact, content-addressed Git blob bytes. Never
+# normalize (CRLF/LF) -- that would change the blob id and break the pin.
+src/applypilot/fleet/migrations/predecessor/[0-9a-f]* -text
+Dockerfile.authority-migrator text eol=lf
+railway.toml text eol=lf
+scripts/run-private-authority-migrator.py text eol=lf
+deploy/authority-migrator/package-manifest.json text eol=lf

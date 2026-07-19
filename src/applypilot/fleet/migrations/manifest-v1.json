@@ -39,19 +39,20 @@
   "predecessor": {
     "files": [
       {
-        "git_blob": "0741a6e675d2ea42a3bb0d785fd4c0c444e96b3d",
-        "path": "src/applypilot/fleet/schema_v3.sql"
-      },
-      {
         "git_blob": "6eb4a84dcc05568233ee32551b28c75f13b0a17f",
         "path": "src/applypilot/apply/fleet_schema.sql"
       },
       {
         "git_blob": "5637001b6457f9fc8f0c22f4220fe2e1249ff9c0",
         "path": "src/applypilot/fleet/schema.py"
+      },
+      {
+        "git_blob": "0741a6e675d2ea42a3bb0d785fd4c0c444e96b3d",
+        "path": "src/applypilot/fleet/schema_v3.sql"
       }
     ],
-    "runtime_commit": "2b3a7c83118df840dda60c9b728f29e3dc0c1b9d"
+    "runtime_commit": "2b3a7c83118df840dda60c9b728f29e3dc0c1b9d",
+    "runtime_tree": "b160cec1ef3c2bd35989bf7127ca0554269b45a0"
   },
   "schema_version": 1
 }
