@@ -21,6 +21,7 @@ _SCHEMA_V4_SQL = Path(__file__).with_name("schema_v4.sql")
 _SCHEMA_V5_SQL = Path(__file__).with_name("schema_v5.sql")
 _SCHEMA_V6_SQL = Path(__file__).with_name("schema_v6.sql")
 _SCHEMA_V7_SQL = Path(__file__).with_name("schema_v7.sql")
+_SCHEMA_V8_SQL = Path(__file__).with_name("schema_v8.sql")
 _SCHEMA_LOCK_KEY = "applypilot:brain:schema:v1"
 _MIGRATION_NAME = "brain schema v1"
 _MIGRATION_V2_NAME = "brain schema v2 lifecycle principals"
@@ -29,10 +30,12 @@ _MIGRATION_V4_NAME = "brain schema v4 scoped candidate authority"
 _MIGRATION_V5_NAME = "brain schema v5 durable factual graph authority"
 _MIGRATION_V6_NAME = "brain schema v6 immutable artifact authority"
 _MIGRATION_V7_NAME = "brain schema v7 replay-safe artifact authority"
+_MIGRATION_V8_NAME = "brain schema v8 incarnation and retention authority"
 _EXPECTED_V4_CHECKSUM = "51c61d0035cd7e503a7824539b56a505727bce8496f70e48f9d8e2576f1267d7"
 _EXPECTED_V5_CHECKSUM = "52d1726bb13df54591fcd6343884ec8f6f7d18ab7fbf74b4dc33ba509cb0e559"
 _EXPECTED_V6_CHECKSUM = "74503db87872670bb7db61498fe0f870f0de13928286dc58c6049d57f8dd2955"
 _EXPECTED_V7_CHECKSUM = "d76b037dee1bfd285026ab2503b16be2a39b0c6726eac80a099e3f825ccdfc9f"
+_EXPECTED_V8_CHECKSUM = "356da6cd401091111a91e18af99924ed7d7f3b30b17fc9efec967e3507471239"
 _LEGACY_V1_CHECKSUMS = frozenset({
     # Canonical V1 ledger value emitted before the PG18 catalog fingerprint
     # pin correction. The deep catalog verifier below remains mandatory.
@@ -49,6 +52,7 @@ _PG_CATALOG_HASHES = MappingProxyType({
         "current_v5": "903d96ec8c9f0da427771ceae78a5c4d4b39fb38bb72a39bd8894e75b3b05bb1",
         "v6": "413fdaacc60793dab624b7d12def0362d9539521be055d716bc9320450362329",
         "v7": "b8bcc3e3fedea82fe0149d3dd0372332e24b94579c692e949d9b9c3dce8a0ee5",
+        "v8": "3a7912fcd9dd47b3869ff9a8644a3d33e0dc668a60b59c795d45e78f2dd50b01",
     })
 })
 _PG18_CATALOG_SHAPES = MappingProxyType({
@@ -133,6 +137,16 @@ _V5_RELATIONS = {
     "brain_v5_candidate_publication_events",
 }
 _V7_RELATIONS = {"brain_v7_topology_contract"}
+_V8_RELATIONS = {"applypilot_database_identity", "brain_artifact_retention_attestations"}
+# The exact 16 canonical projection keys emitted by
+# applypilot.brain.parity_adapters.compute_import_parity, in emission order.
+_V8_PARITY_DEFINITION_VERSION = 2
+_V8_PARITY_CHECK_KEYS = (
+    "jobs", "aliases", "observations", "applications", "application_events",
+    "email_events", "email_event_reviews", "reviewed_outcomes", "research_labels",
+    "research_label_confidence", "research_pairwise_labels", "research_kg_artifacts",
+    "research_kg_runs", "research_scores", "decision_policy_versions", "job_decisions",
+)
 _V5_CATALOG_RELATIONS = _V5_RELATIONS | {
     "brain_factual_contradiction_state",
     "brain_graph_approval_consumptions",
@@ -655,6 +669,22 @@ def _assert_schema_v7_bytes_immutable() -> None:
             f"immutable schema v7 file checksum mismatch: expected {_EXPECTED_V7_CHECKSUM}, got {actual_checksum}"
         )
 
+
+def _schema_v8_bytes() -> bytes:
+    return _SCHEMA_V8_SQL.read_bytes()
+
+
+def _schema_v8_checksum() -> str:
+    return hashlib.sha256(_schema_v8_bytes()).hexdigest()
+
+
+def _assert_schema_v8_bytes_immutable() -> None:
+    actual_checksum = _schema_v8_checksum()
+    if actual_checksum != _EXPECTED_V8_CHECKSUM:
+        raise RuntimeError(
+            f"immutable schema v8 file checksum mismatch: expected {_EXPECTED_V8_CHECKSUM}, got {actual_checksum}"
+        )
+
 def _assert_current_schema_v6_bytes_immutable() -> None:
     actual_checksum = _schema_v6_checksum()
     if actual_checksum != _CURRENT_V6_CHECKSUM:
@@ -1061,7 +1091,10 @@ def _version_rows(cur):
     if not rows:
         raise RuntimeError("brain schema version ledger exists but is empty")
     versions = [row["version"] for row in rows]
-    if versions not in ([1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6, 7]):
+    if versions not in (
+        [1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6],
+        [1, 2, 3, 4, 5, 6, 7], [1, 2, 3, 4, 5, 6, 7, 8],
+    ):
         raise RuntimeError(
             "unsupported or non-contiguous brain schema version ledger: "
             + ", ".join(str(version) for version in versions)
@@ -1084,12 +1117,18 @@ def _version_rows(cur):
         or rows[5]["applied_by"] != _MIGRATION_ROLE
     ):
         raise RuntimeError("unsupported or non-contiguous brain schema version ledger: invalid version 6 contract")
-    if len(rows) == 7 and (
+    if len(rows) >= 7 and (
         rows[6]["migration_name"] != _MIGRATION_V7_NAME
         or rows[6]["migration_checksum"] != _EXPECTED_V7_CHECKSUM
         or rows[6]["applied_by"] != _MIGRATION_ROLE
     ):
         raise RuntimeError("unsupported or non-contiguous brain schema version ledger: invalid version 7 contract")
+    if len(rows) == 8 and (
+        rows[7]["migration_name"] != _MIGRATION_V8_NAME
+        or rows[7]["migration_checksum"] != _EXPECTED_V8_CHECKSUM
+        or rows[7]["applied_by"] != _MIGRATION_ROLE
+    ):
+        raise RuntimeError("unsupported or non-contiguous brain schema version ledger: invalid version 8 contract")
     return rows
 
 
@@ -1288,13 +1327,18 @@ def _catalog_contract_hash(
     *,
     include_v5: bool = False,
     include_v7: bool = False,
+    include_v8: bool = False,
 ) -> str:
     # pg_get_* output is search_path-sensitive; pin it so the immutable catalog
     # fingerprint reflects catalog state rather than a prior helper's session setting.
     cur.execute("SELECT current_setting('search_path') AS current_search_path")
     prior_search_path = cur.fetchone()["current_search_path"]
     cur.execute("SET LOCAL search_path=pg_catalog, public")
-    relations = list(_RELATIONS) + (sorted(_V7_RELATIONS) if include_v7 else [])
+    relations = (
+        list(_RELATIONS)
+        + (sorted(_V7_RELATIONS) if include_v7 else [])
+        + (sorted(_V8_RELATIONS) if include_v8 else [])
+    )
     cur.execute(
         "SELECT n.nspname AS schema_name,c.relname,a.attnum,a.attname,"
         "format_type(a.atttypid,a.atttypmod) AS data_type,a.attnotnull,a.attidentity,a.attgenerated,"
@@ -3139,9 +3183,9 @@ def ensure_brain_schema_v5(
             ensure_brain_schema_v5_in_transaction(cur, lock_timeout_seconds=lock_timeout_seconds)
 
 
-def _verify_v6_contract(cur, *, upgraded_to_v7: bool = False) -> None:
+def _verify_v6_contract(cur, *, upgraded_to_v7: bool = False, upgraded_to_v8: bool = False) -> None:
     versions = _version_rows(cur)
-    expected_count = 7 if upgraded_to_v7 else 6
+    expected_count = 8 if upgraded_to_v8 else (7 if upgraded_to_v7 else 6)
     if len(versions) != expected_count:
         raise RuntimeError("brain schema v6 verification requires the expected contiguous ledger")
     cur.execute(
@@ -3248,7 +3292,7 @@ def _verify_v6_contract(cur, *, upgraded_to_v7: bool = False) -> None:
         ],),
     )
     bodies = {row["proname"]: _raw_function_body_fingerprint(row["prosrc"]) for row in cur.fetchall()}
-    if not upgraded_to_v7 and bodies != {
+    if not (upgraded_to_v7 or upgraded_to_v8) and bodies != {
         name: _v6_function_body_fingerprint(name)
         for name in (
             "brain_register_authoritative_artifact_manifest",
@@ -3666,6 +3710,13 @@ def _verify_v7_acl_contract(cur) -> None:
             row["grantee"] == "brain_artifact_authority_owner"
             and (row["relname"], row["privilege_type"]) in authority_dependencies
         )
+        # V8: the retention ledger is owned by the migrator but read and appended
+        # by the SECURITY DEFINER artifact-authority owner.
+        allowed = allowed or (
+            row["relname"] == "brain_artifact_retention_attestations"
+            and row["grantee"] == "brain_artifact_authority_owner"
+            and row["privilege_type"] in ("SELECT", "INSERT")
+        )
         if not allowed:
             invalid_relation_acls.append(
                 f"{row['relname']}->{row['grantee']}:{row['privilege_type']}"
@@ -3701,6 +3752,10 @@ def _verify_v7_acl_contract(cur) -> None:
             )
             or (
                 row["proname"] == "brain_register_authoritative_artifact_manifest"
+                and row["grantee"] == "brain_artifact_authority_writer"
+            )
+            or (
+                row["proname"] == "brain_attest_artifact_retention"
                 and row["grantee"] == "brain_artifact_authority_writer"
             )
             or (row["proname"] in migration_functions and row["grantee"] == _MIGRATION_ROLE)
@@ -3968,16 +4023,17 @@ def _verify_v7_inherited_contracts(cur) -> None:
             f"brain schema v7 inherited relation ownership mismatch: {invalid_owners!r}"
         )
 
-def _verify_v7_contract(cur) -> None:
-    actual_catalog_hash = _catalog_contract_hash(cur, include_v5=True, include_v7=True)
-    expected_catalog_hash = _pg18_catalog_hash("v7")
-    if actual_catalog_hash != expected_catalog_hash:
-        raise RuntimeError(
-            "brain schema v7 catalog contract hash mismatch: "
-            f"expected {expected_catalog_hash}, got {actual_catalog_hash}"
-        )
+def _verify_v7_contract(cur, *, check_catalog_hash: bool = True, expected_version_count: int = 7) -> None:
+    if check_catalog_hash:
+        actual_catalog_hash = _catalog_contract_hash(cur, include_v5=True, include_v7=True)
+        expected_catalog_hash = _pg18_catalog_hash("v7")
+        if actual_catalog_hash != expected_catalog_hash:
+            raise RuntimeError(
+                "brain schema v7 catalog contract hash mismatch: "
+                f"expected {expected_catalog_hash}, got {actual_catalog_hash}"
+            )
     versions = _version_rows(cur)
-    if len(versions) != 7:
+    if len(versions) != expected_version_count:
         raise RuntimeError("brain schema v7 verification requires a contiguous V1-V7 ledger")
     version = versions[6]
     if (
@@ -4234,6 +4290,311 @@ def ensure_brain_schema_v7(
             )
 
 
+def _verify_v8_inherited_contracts(cur) -> None:
+    _verify_v7_membership_contract(cur)
+    _verify_v7_controller_membership_contract(cur)
+    _verify_v5_contract(cur)
+    _verify_v6_contract(cur, upgraded_to_v8=True)
+    _verify_v7_acl_contract(cur)
+    # Re-run the V7 structural contract (registration functions, snapshot support,
+    # authority relations) but skip its catalog hash: V8 adds objects that would
+    # legitimately change the V7-scoped fingerprint.
+    _verify_v7_contract(cur, check_catalog_hash=False, expected_version_count=8)
+    cur.execute(
+        "SELECT c.relname,owner.rolname AS owner_name FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "JOIN pg_roles owner ON owner.oid=c.relowner "
+        "WHERE n.nspname='public' AND c.relname=ANY(%s)",
+        (list(_RELATIONS) + sorted(_V7_RELATIONS) + sorted(_V8_RELATIONS),),
+    )
+    inherited_owners = {row["relname"]: row["owner_name"] for row in cur.fetchall()}
+    invalid_owners = {
+        name: inherited_owners.get(name)
+        for name in [*list(_RELATIONS), *sorted(_V7_RELATIONS), *sorted(_V8_RELATIONS)]
+        if inherited_owners.get(name) != _MIGRATION_ROLE
+    }
+    if invalid_owners:
+        raise RuntimeError(
+            f"brain schema v8 inherited relation ownership mismatch: {invalid_owners!r}"
+        )
+
+
+def _verify_v8_contract(cur) -> None:
+    actual_catalog_hash = _catalog_contract_hash(
+        cur, include_v5=True, include_v7=True, include_v8=True
+    )
+    expected_catalog_hash = _pg18_catalog_hash("v8")
+    if actual_catalog_hash != expected_catalog_hash:
+        raise RuntimeError(
+            "brain schema v8 catalog contract hash mismatch: "
+            f"expected {expected_catalog_hash}, got {actual_catalog_hash}"
+        )
+    versions = _version_rows(cur)
+    if len(versions) != 8:
+        raise RuntimeError("brain schema v8 verification requires a contiguous V1-V8 ledger")
+    version = versions[7]
+    if (
+        version["version"] != 8 or version["migration_name"] != _MIGRATION_V8_NAME
+        or version["migration_checksum"] != _EXPECTED_V8_CHECKSUM
+        or version["applied_by"] != _MIGRATION_ROLE
+    ):
+        raise RuntimeError("brain schema v8 ledger contract mismatch")
+    # The early V1-V3 ledger checksums are not pinned by _version_rows; the deep V8
+    # verifier reconciles them against the committed migration bytes (accepting the
+    # published legacy V1 variant) so a historical checksum substituted over this
+    # catalog is still rejected.
+    accepted_early = {
+        1: {_schema_checksum(), *_LEGACY_V1_CHECKSUMS},
+        2: {_schema_v2_checksum()},
+        3: {_schema_v3_checksum()},
+    }
+    for early_version, accepted in accepted_early.items():
+        recorded = versions[early_version - 1]["migration_checksum"]
+        if recorded not in accepted:
+            raise RuntimeError(
+                f"brain schema v8 ledger records an unrecognized version {early_version} checksum: {recorded}"
+            )
+
+    # Durable database incarnation: singleton, server-generated, append-only.
+    cur.execute(
+        "SELECT c.relkind,owner.rolname AS owner_name FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles owner ON owner.oid=c.relowner "
+        "WHERE n.nspname='public' AND c.relname='applypilot_database_identity'"
+    )
+    identity_relation = cur.fetchone()
+    if identity_relation != {"relkind": "r", "owner_name": _MIGRATION_ROLE}:
+        raise RuntimeError(f"brain schema v8 identity relation mismatch: {identity_relation!r}")
+    cur.execute(
+        "SELECT a.attname,format_type(a.atttypid,a.atttypmod) AS data_type,a.attnotnull "
+        "FROM pg_attribute a WHERE a.attrelid='public.applypilot_database_identity'::regclass "
+        "AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum"
+    )
+    if [
+        (row["attname"], row["data_type"], bool(row["attnotnull"])) for row in cur.fetchall()
+    ] != [
+        ("singleton_id", "smallint", True),
+        ("database_incarnation_id", "uuid", True),
+        ("initialized_at", "timestamp with time zone", True),
+    ]:
+        raise RuntimeError("brain schema v8 identity column contract mismatch")
+    cur.execute(
+        "SELECT database_incarnation_id FROM public.applypilot_database_identity "
+        "WHERE singleton_id=1"
+    )
+    identity_rows = cur.fetchall()
+    if len(identity_rows) != 1 or identity_rows[0]["database_incarnation_id"] is None:
+        raise RuntimeError("brain schema v8 database incarnation is not a non-null singleton")
+    cur.execute("SELECT count(*) AS count FROM public.applypilot_database_identity")
+    if cur.fetchone()["count"] != 1:
+        raise RuntimeError("brain schema v8 database incarnation must be a single row")
+    cur.execute(
+        "SELECT t.tgname,t.tgtype,p.proname AS function_name FROM pg_trigger t "
+        "JOIN pg_proc p ON p.oid=t.tgfoid "
+        "WHERE t.tgrelid='public.applypilot_database_identity'::regclass "
+        "AND NOT t.tgisinternal ORDER BY t.tgname"
+    )
+    if [
+        (row["tgname"], row["tgtype"], row["function_name"]) for row in cur.fetchall()
+    ] != [
+        ("applypilot_database_identity_append_only", 27, "brain_reject_mutation"),
+        ("applypilot_database_identity_append_only_truncate", 34, "brain_reject_mutation"),
+    ]:
+        raise RuntimeError("brain schema v8 identity append-only trigger contract mismatch")
+    cur.execute(
+        "SELECT COALESCE(grantee.rolname,'PUBLIC') AS grantee,acl.privilege_type "
+        "FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) acl "
+        "LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE c.oid='public.applypilot_database_identity'::regclass "
+        "AND acl.grantee<>c.relowner ORDER BY grantee,acl.privilege_type"
+    )
+    if [
+        (row["grantee"], row["privilege_type"]) for row in cur.fetchall()
+    ] != [
+        ("brain_artifact_authority_owner", "SELECT"),
+        (_VERIFIER_ROLE, "SELECT"),
+    ]:
+        raise RuntimeError("brain schema v8 identity ACL contract mismatch")
+
+    # Append-only storage-retention attestations.
+    cur.execute(
+        "SELECT c.relkind,owner.rolname AS owner_name FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles owner ON owner.oid=c.relowner "
+        "WHERE n.nspname='public' AND c.relname='brain_artifact_retention_attestations'"
+    )
+    retention_relation = cur.fetchone()
+    if retention_relation != {"relkind": "r", "owner_name": _MIGRATION_ROLE}:
+        raise RuntimeError(f"brain schema v8 retention relation mismatch: {retention_relation!r}")
+    cur.execute(
+        "SELECT con.contype,count(*) AS count FROM pg_constraint con "
+        "WHERE con.conrelid='public.brain_artifact_retention_attestations'::regclass "
+        "GROUP BY con.contype ORDER BY con.contype"
+    )
+    retention_constraints = {row["contype"]: row["count"] for row in cur.fetchall()}
+    if retention_constraints.get("f", 0) != 1 or retention_constraints.get("u", 0) != 1 \
+       or retention_constraints.get("p", 0) != 1 or retention_constraints.get("c", 0) < 5:
+        raise RuntimeError(
+            f"brain schema v8 retention constraint contract mismatch: {retention_constraints!r}"
+        )
+    cur.execute(
+        "SELECT t.tgname,t.tgtype,p.proname AS function_name FROM pg_trigger t "
+        "JOIN pg_proc p ON p.oid=t.tgfoid "
+        "WHERE t.tgrelid='public.brain_artifact_retention_attestations'::regclass "
+        "AND NOT t.tgisinternal ORDER BY t.tgname"
+    )
+    if [
+        (row["tgname"], row["tgtype"], row["function_name"]) for row in cur.fetchall()
+    ] != [
+        ("brain_artifact_retention_attestations_append_only", 27, "brain_reject_mutation"),
+        ("brain_artifact_retention_attestations_append_only_truncate", 34, "brain_reject_mutation"),
+        ("brain_artifact_retention_attestations_validate", 7, "brain_check_retention_attestation"),
+    ]:
+        raise RuntimeError("brain schema v8 retention trigger contract mismatch")
+    cur.execute(
+        "SELECT COALESCE(grantee.rolname,'PUBLIC') AS grantee,acl.privilege_type "
+        "FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) acl "
+        "LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE c.oid='public.brain_artifact_retention_attestations'::regclass "
+        "AND acl.grantee<>c.relowner ORDER BY grantee,acl.privilege_type"
+    )
+    if [
+        (row["grantee"], row["privilege_type"]) for row in cur.fetchall()
+    ] != [
+        ("brain_artifact_authority_owner", "INSERT"),
+        ("brain_artifact_authority_owner", "SELECT"),
+        (_VERIFIER_ROLE, "SELECT"),
+    ]:
+        raise RuntimeError("brain schema v8 retention ACL contract mismatch")
+
+    # Authority predicate now requires an exact still-current retention attestation
+    # bound to the current incarnation, and the retention writer is a locked-down
+    # SECURITY DEFINER granted only to the artifact-authority writer.
+    cur.execute(
+        "SELECT p.proname,owner.rolname AS owner_name,p.prosecdef,p.proconfig,p.prosrc "
+        "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+        "JOIN pg_roles owner ON owner.oid=p.proowner "
+        "WHERE n.nspname='public' AND p.proname=ANY(%s)",
+        (["brain_artifact_is_authoritative", "brain_attest_artifact_retention",
+          "brain_check_retention_attestation"],),
+    )
+    v8_functions = {row["proname"]: row for row in cur.fetchall()}
+    predicate = v8_functions.get("brain_artifact_is_authoritative")
+    if (
+        predicate is None
+        or predicate["owner_name"] != "brain_artifact_authority_owner"
+        or not predicate["prosecdef"]
+        or predicate["proconfig"] != ["search_path=pg_catalog, public"]
+        or "brain_artifact_retention_attestations" not in predicate["prosrc"]
+        or "applypilot_database_identity" not in predicate["prosrc"]
+        or "retain_until" not in predicate["prosrc"]
+        or "now()" not in predicate["prosrc"]
+    ):
+        raise RuntimeError("brain schema v8 authority predicate contract mismatch")
+    attest = v8_functions.get("brain_attest_artifact_retention")
+    if (
+        attest is None
+        or attest["owner_name"] != "brain_artifact_authority_owner"
+        or not attest["prosecdef"]
+        or attest["proconfig"] != ["search_path=pg_catalog, public"]
+    ):
+        raise RuntimeError("brain schema v8 retention writer contract mismatch")
+    validator = v8_functions.get("brain_check_retention_attestation")
+    if validator is None or validator["owner_name"] != _MIGRATION_ROLE:
+        raise RuntimeError("brain schema v8 retention validator contract mismatch")
+    cur.execute(
+        "SELECT p.proname,COALESCE(grantee.rolname,'PUBLIC') AS grantee,acl.privilege_type "
+        "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+        "CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl "
+        "LEFT JOIN pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE n.nspname='public' AND p.proname='brain_attest_artifact_retention' "
+        "AND acl.grantee<>p.proowner"
+    )
+    if {(row["grantee"], row["privilege_type"]) for row in cur.fetchall()} != {
+        ("brain_artifact_authority_writer", "EXECUTE")
+    }:
+        raise RuntimeError("brain schema v8 retention writer ACL mismatch")
+
+    # Parity definition version 2 contains exactly the 16 canonical projection keys.
+    cur.execute(
+        "SELECT check_key FROM public.brain_parity_definitions WHERE definition_version=%s "
+        "ORDER BY check_key",
+        (_V8_PARITY_DEFINITION_VERSION,),
+    )
+    actual_keys = tuple(row["check_key"] for row in cur.fetchall())
+    if actual_keys != tuple(sorted(_V8_PARITY_CHECK_KEYS)):
+        raise RuntimeError(
+            "brain schema v8 parity definition version 2 key contract mismatch: "
+            f"{actual_keys!r}"
+        )
+
+
+def verify_brain_schema_v8_in_transaction(cur) -> None:
+    require_pg18_authority_catalog(cur)
+    _assert_current_schema_v6_bytes_immutable()
+    _assert_schema_v7_bytes_immutable()
+    _assert_schema_v8_bytes_immutable()
+    _verify_v8_inherited_contracts(cur)
+    _verify_v8_contract(cur)
+
+
+def verify_brain_schema_v8(conn) -> None:
+    _require_idle(conn)
+    with conn.transaction():
+        with conn.cursor() as cur:
+            verify_brain_schema_v8_in_transaction(cur)
+
+
+def ensure_brain_schema_v8_in_transaction(
+    cur,
+    *,
+    lock_timeout_seconds: float = _LOCK_TIMEOUT_SECONDS,
+    expected_controller_role: str | None = None,
+) -> None:
+    require_pg18_authority_catalog(cur)
+    _assert_current_schema_v6_bytes_immutable()
+    _assert_schema_v7_bytes_immutable()
+    _assert_schema_v8_bytes_immutable()
+    versions = _version_rows(cur)
+    if len(versions) == 8:
+        verify_brain_schema_v8_in_transaction(cur)
+        return
+    if len(versions) < 7:
+        ensure_brain_schema_v7_in_transaction(
+            cur,
+            lock_timeout_seconds=lock_timeout_seconds,
+            expected_controller_role=expected_controller_role,
+        )
+    migration_identity = _activate_migration_identity(cur)
+    _acquire_xact_lock(cur, lock_timeout_seconds)
+    versions = _version_rows(cur)
+    if len(versions) != 7:
+        raise RuntimeError("brain schema v8 requires a contiguous V1-V7 ledger")
+    cur.execute("GRANT CREATE ON SCHEMA public TO brain_artifact_authority_owner")
+    cur.execute(_schema_v8_bytes().decode("utf-8"))
+    cur.execute("REVOKE CREATE ON SCHEMA public FROM brain_artifact_authority_owner")
+    cur.execute(
+        "INSERT INTO public.brain_schema_versions "
+        "(version,migration_name,migration_checksum,applied_by) VALUES (8,%s,%s,%s)",
+        (_MIGRATION_V8_NAME, _EXPECTED_V8_CHECKSUM, migration_identity),
+    )
+    verify_brain_schema_v8_in_transaction(cur)
+
+
+def ensure_brain_schema_v8(
+    conn,
+    *,
+    lock_timeout_seconds: float = _LOCK_TIMEOUT_SECONDS,
+    expected_controller_role: str | None = None,
+) -> None:
+    _require_idle(conn)
+    with conn.transaction():
+        with conn.cursor() as cur:
+            ensure_brain_schema_v8_in_transaction(
+                cur,
+                lock_timeout_seconds=lock_timeout_seconds,
+                expected_controller_role=expected_controller_role,
+            )
+
+
 ensure_schema_v4 = ensure_brain_schema_v4
 verify_schema_v4 = verify_brain_schema_v4
 ensure_schema_v5 = ensure_brain_schema_v5
@@ -4242,3 +4603,5 @@ ensure_schema_v6 = ensure_brain_schema_v6
 verify_schema_v6 = verify_brain_schema_v6
 ensure_schema_v7 = ensure_brain_schema_v7
 verify_schema_v7 = verify_brain_schema_v7
+ensure_schema_v8 = ensure_brain_schema_v8
+verify_schema_v8 = verify_brain_schema_v8

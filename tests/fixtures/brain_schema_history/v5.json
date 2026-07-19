@@ -1,0 +1,18 @@
+{
+  "version": 5,
+  "migration_name": "brain schema v5 durable factual graph authority",
+  "applied_by": "brain_schema_migrator",
+  "current_committed": {
+    "sha256": "52d1726bb13df54591fcd6343884ec8f6f7d18ab7fbf74b4dc33ba509cb0e559"
+  },
+  "historical_variants": [
+    {
+      "label": "prior",
+      "sha256_prefix": "39fd21da"
+    },
+    {
+      "label": "initial",
+      "sha256_prefix": "744167e2"
+    }
+  ]
+}

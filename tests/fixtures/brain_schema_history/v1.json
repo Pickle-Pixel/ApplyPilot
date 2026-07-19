@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "migration_name": "brain schema v1",
+  "applied_by": "brain_schema_migrator",
+  "current_committed": {
+    "sha256": "292194ebbd753a451900b457386e612096db44cb56b609a852059851cf9b37c9"
+  },
+  "historical_variants": [
+    {
+      "label": "initial",
+      "sha256_prefix": "ca3324b1"
+    },
+    {
+      "label": "supported_live_legacy",
+      "sha256": "1976fdc4dbeac4cf853ce6e445efb071651696ae47ee67b61e58aab98ff4e2a5",
+      "ledger_accepted": true
+    }
+  ]
+}

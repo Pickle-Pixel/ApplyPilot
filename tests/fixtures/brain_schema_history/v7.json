@@ -1,0 +1,18 @@
+{
+  "version": 7,
+  "migration_name": "brain schema v7 replay-safe artifact authority",
+  "applied_by": "brain_schema_migrator",
+  "current_committed": {
+    "sha256": "d76b037dee1bfd285026ab2503b16be2a39b0c6726eac80a099e3f825ccdfc9f"
+  },
+  "historical_variants": [
+    {
+      "label": "prior",
+      "sha256": "c1b8143bb676201d62dd4ed6da74a70034c9b83af3c40cea27c0e93e2b28026a"
+    },
+    {
+      "label": "initial",
+      "sha256_prefix": "f6b84e13"
+    }
+  ]
+}

@@ -1842,6 +1842,7 @@ def test_pg18_catalog_pins_match_authoritative_fresh_fixtures() -> None:
         "current_v5": "903d96ec8c9f0da427771ceae78a5c4d4b39fb38bb72a39bd8894e75b3b05bb1",
         "v6": "413fdaacc60793dab624b7d12def0362d9539521be055d716bc9320450362329",
         "v7": "b8bcc3e3fedea82fe0149d3dd0372332e24b94579c692e949d9b9c3dce8a0ee5",
+        "v8": "3a7912fcd9dd47b3869ff9a8644a3d33e0dc668a60b59c795d45e78f2dd50b01",
     }
 
 
@@ -4403,3 +4404,292 @@ def test_verifier_has_public_usage_and_only_enumerated_brain_reads(brain_pg):
         assert verifier.execute("SELECT count(*) AS count FROM brain_jobs").fetchone()["count"] == 0
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             verifier.execute("SELECT count(*) FROM fleet_config")
+
+
+# --- Runtime Packet S/H: V8 incarnation and retention authority ---------------
+
+_SCHEMA_HISTORY_DIR = Path(__file__).parent / "fixtures" / "brain_schema_history"
+
+
+def _load_schema_history() -> dict[int, dict]:
+    history: dict[int, dict] = {}
+    for path in sorted(_SCHEMA_HISTORY_DIR.glob("v*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        history[record["version"]] = record
+    return history
+
+
+def _append_v8(connection) -> None:
+    """Append V8 over an installed V1-V7 authority, managing schema ownership."""
+    with connection.transaction():
+        connection.execute("ALTER SCHEMA public OWNER TO brain_schema_migrator")
+        with connection.cursor() as cursor:
+            schema.ensure_brain_schema_v8_in_transaction(
+                cursor, expected_controller_role="brain_controller_test_login"
+            )
+        connection.execute("RESET ROLE")
+        connection.execute("ALTER SCHEMA public OWNER TO pg_database_owner")
+
+
+def _install_v8_authority(connection) -> None:
+    _install_v7_authority(connection)
+    _append_v8(connection)
+
+
+def _register_v8_artifact(connection, *, request_id: str, digest: str, artifact_hash: str):
+    params = _v7_registration_params(
+        connection, request_id=request_id, digest=digest, artifact_hash=artifact_hash
+    )
+    connection.execute("SET ROLE brain_artifact_authority_writer")
+    connection.execute(_V7_REGISTER_SQL, params)
+    connection.execute("RESET ROLE")
+    connection.commit()
+    return {
+        "backend": "s3",
+        "bucket_or_container": "immutable",
+        "object_key": f"sha256/{artifact_hash}",
+        "provider_version_id": f"version-{artifact_hash[:8]}",
+        "provider_checksum": f"checksum-{artifact_hash[:8]}",
+    }
+
+
+def test_v8_database_incarnation_is_stable_singleton_resistant_to_guc_spoofing(brain_pg) -> None:
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        connection.commit()
+        incarnation = connection.execute(
+            "SELECT database_incarnation_id::text AS id "
+            "FROM public.applypilot_database_identity WHERE singleton_id=1"
+        ).fetchone()["id"]
+        assert incarnation is not None
+        connection.commit()
+
+        # Stable across an independent connection.
+        with psycopg.connect(brain_pg, row_factory=dict_row) as other:
+            assert other.execute(
+                "SELECT database_incarnation_id::text AS id "
+                "FROM public.applypilot_database_identity WHERE singleton_id=1"
+            ).fetchone()["id"] == incarnation
+
+        # A spoofed custom GUC cannot change the authoritative incarnation.
+        connection.execute(
+            "SELECT set_config('applypilot.database_incarnation_id', %s, false)", ("deadbeef-spoof",)
+        )
+        assert connection.execute(
+            "SELECT database_incarnation_id::text AS id "
+            "FROM public.applypilot_database_identity WHERE singleton_id=1"
+        ).fetchone()["id"] == incarnation
+        connection.commit()
+
+        # Ordinary update/delete/truncate are denied (append-only).
+        for statement in (
+            "UPDATE public.applypilot_database_identity SET database_incarnation_id=gen_random_uuid()",
+            "DELETE FROM public.applypilot_database_identity",
+            "TRUNCATE public.applypilot_database_identity",
+        ):
+            with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="append-only"):
+                with connection.transaction():
+                    connection.execute(statement)
+
+        # A second singleton row is rejected.
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            with connection.transaction():
+                connection.execute(
+                    "INSERT INTO public.applypilot_database_identity (singleton_id) VALUES (1)"
+                )
+        assert connection.execute(
+            "SELECT database_incarnation_id::text AS id "
+            "FROM public.applypilot_database_identity WHERE singleton_id=1"
+        ).fetchone()["id"] == incarnation
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_authority_requires_current_retention_attestation_lifecycle(brain_pg) -> None:
+    artifact_hash = "2" * 64
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        location = _register_v8_artifact(
+            connection,
+            request_id="81111111-1111-1111-1111-111111111111",
+            digest="1" * 64,
+            artifact_hash=artifact_hash,
+        )
+
+        # An old registration with no V8 retention attestation is non-authoritative.
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is False
+        connection.commit()
+
+        attest_sql = (
+            "SELECT brain_attest_artifact_retention("
+            "%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz) AS id"
+        )
+        window = connection.execute(
+            "SELECT (clock_timestamp()-interval '1 second') AS verified_at,"
+            "(clock_timestamp()+interval '1 second') AS retain_until,"
+            "(clock_timestamp()+interval '1 hour') AS lease_expires"
+        ).fetchone()
+        connection.commit()
+        attest_args = (
+            artifact_hash, location["backend"], location["bucket_or_container"],
+            location["object_key"], location["provider_version_id"], location["provider_checksum"],
+            window["retain_until"], window["verified_at"], "lease-token-1", window["lease_expires"],
+        )
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        first_id = connection.execute(attest_sql, attest_args).fetchone()["id"]
+        # Replay of an identical attestation cannot move the deadline.
+        assert connection.execute(attest_sql, attest_args).fetchone()["id"] == first_id
+        connection.execute("RESET ROLE")
+        connection.commit()
+
+        # A matching future COMPLIANCE attestation makes the artifact authoritative.
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is True
+        connection.commit()
+
+        # It becomes false once retain-until passes.
+        connection.execute("SELECT pg_sleep(1.5)")
+        connection.commit()
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is False
+        connection.commit()
+
+        # Extension requires a NEW append-only attestation (a new row, not a mutation).
+        extended = connection.execute(
+            "SELECT (clock_timestamp()-interval '1 second') AS verified_at,"
+            "(clock_timestamp()+interval '1 hour') AS retain_until,"
+            "(clock_timestamp()+interval '2 hours') AS lease_expires"
+        ).fetchone()
+        connection.commit()
+        extend_args = (
+            artifact_hash, location["backend"], location["bucket_or_container"],
+            location["object_key"], location["provider_version_id"], location["provider_checksum"],
+            extended["retain_until"], extended["verified_at"], "lease-token-2", extended["lease_expires"],
+        )
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        extended_id = connection.execute(attest_sql, extend_args).fetchone()["id"]
+        connection.execute("RESET ROLE")
+        connection.commit()
+        assert extended_id != first_id
+        assert connection.execute(
+            "SELECT count(*) AS count FROM public.brain_artifact_retention_attestations "
+            "WHERE artifact_hash=%s",
+            (artifact_hash,),
+        ).fetchone()["count"] == 2
+        assert connection.execute(
+            "SELECT brain_artifact_is_authoritative(%s) AS authoritative", (artifact_hash,)
+        ).fetchone()["authoritative"] is True
+        connection.commit()
+
+        # No guessed backfill: an attestation for an unregistered artifact is rejected.
+        connection.execute("SET ROLE brain_artifact_authority_writer")
+        with pytest.raises(psycopg.errors.CheckViolation, match="verified registered artifact"):
+            with connection.transaction():
+                connection.execute(
+                    attest_sql,
+                    ("f" * 64, "s3", "immutable", "sha256/" + "f" * 64,
+                     "version-ffffffff", "checksum-ffffffff",
+                     extended["retain_until"], extended["verified_at"], "lease-x", extended["lease_expires"]),
+                )
+        connection.execute("RESET ROLE")
+        connection.commit()
+
+        # Retention rows are append-only.
+        for statement in (
+            "UPDATE public.brain_artifact_retention_attestations SET retain_until=now()+interval '10 years'",
+            "DELETE FROM public.brain_artifact_retention_attestations",
+        ):
+            with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="append-only"):
+                with connection.transaction():
+                    connection.execute(statement)
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_upgrade_appends_without_rewriting_historical_ledger(brain_pg) -> None:
+    history = _load_schema_history()
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v7_authority(connection)
+        before = {
+            row["version"]: row
+            for row in connection.execute(
+                "SELECT version,migration_name,migration_checksum,applied_by "
+                "FROM public.brain_schema_versions ORDER BY version"
+            ).fetchall()
+        }
+        connection.commit()
+        # The installed committed byte variants match the immutable history fixtures.
+        for version in (1, 2, 5, 7):
+            assert before[version]["migration_checksum"] == history[version]["current_committed"]["sha256"]
+            assert before[version]["migration_name"] == history[version]["migration_name"]
+
+        _append_v8(connection)
+
+        after = {
+            row["version"]: row
+            for row in connection.execute(
+                "SELECT version,migration_name,migration_checksum,applied_by "
+                "FROM public.brain_schema_versions ORDER BY version"
+            ).fetchall()
+        }
+        connection.commit()
+        # Every historical V1-V7 ledger row is byte-for-byte unchanged.
+        for version in (1, 2, 3, 4, 5, 6, 7):
+            assert after[version] == before[version]
+        assert after[8]["migration_checksum"] == schema._EXPECTED_V8_CHECKSUM
+        assert after[8]["migration_name"] == schema._MIGRATION_V8_NAME
+        assert after[8]["applied_by"] == "brain_schema_migrator"
+        schema.verify_brain_schema_v8(connection)
+
+
+def test_v8_rejects_known_historical_checksum_over_the_wrong_catalog(brain_pg) -> None:
+    history = _load_schema_history()
+    with psycopg.connect(brain_pg, row_factory=dict_row) as connection:
+        _install_v8_authority(connection)
+        connection.commit()
+        schema.verify_brain_schema_v8(connection)
+
+        # The published V7 prior variant substituted over the current catalog is rejected.
+        v7_prior = next(
+            variant["sha256"]
+            for variant in history[7]["historical_variants"]
+            if variant["label"] == "prior"
+        )
+        substitutions = (
+            (7, v7_prior, "invalid version 7 contract"),
+            (5, "9" * 64, "invalid version 5 contract"),
+            (2, "8" * 64, "unrecognized version 2 checksum"),
+            (1, "7" * 64, "unrecognized version 1 checksum"),
+        )
+        for version, wrong_checksum, message in substitutions:
+            with pytest.raises(RuntimeError, match=message):
+                with connection.transaction():
+                    connection.execute("SET LOCAL session_replication_role=replica")
+                    connection.execute(
+                        "UPDATE public.brain_schema_versions SET migration_checksum=%s WHERE version=%s",
+                        (wrong_checksum, version),
+                    )
+                    with connection.cursor() as cursor:
+                        schema.verify_brain_schema_v8_in_transaction(cursor)
+            connection.rollback()
+
+        # The published legacy V1 variant, by contrast, remains an accepted ledger value.
+        legacy_v1 = next(
+            variant["sha256"]
+            for variant in history[1]["historical_variants"]
+            if variant.get("ledger_accepted")
+        )
+        with connection.transaction():
+            connection.execute("SET LOCAL session_replication_role=replica")
+            connection.execute(
+                "UPDATE public.brain_schema_versions SET migration_checksum=%s WHERE version=1",
+                (legacy_v1,),
+            )
+            with connection.cursor() as cursor:
+                schema.verify_brain_schema_v8_in_transaction(cursor)
+        connection.rollback()
+        schema.verify_brain_schema_v8(connection)

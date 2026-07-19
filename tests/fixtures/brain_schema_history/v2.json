@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "migration_name": "brain schema v2 lifecycle principals",
+  "applied_by": "brain_schema_migrator",
+  "current_committed": {
+    "sha256": "0d4f29cf873e7e6c5051851be3a1ecf9701fdd8d0570af6f9503e83bb783577a"
+  },
+  "historical_variants": [
+    {
+      "label": "prior",
+      "sha256_prefix": "cff6d6a4"
+    }
+  ]
+}
