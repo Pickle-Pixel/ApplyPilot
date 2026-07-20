@@ -4,12 +4,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 
-def test_otp_responder_launcher_quotes_dsn_and_logs() -> None:
+def test_otp_responder_launcher_keeps_dsn_out_of_argv_and_logs() -> None:
     script = (REPO / "run-otp-responder.ps1").read_text(encoding="utf-8")
 
     assert "applypilot-fleet-otp-home.exe" in script
-    assert '--dsn `"$Dsn`"' in script
-    assert "-ArgumentList $ArgumentList" in script
+    assert "$env:FLEET_PG_DSN = $Dsn" in script
+    assert '-ArgumentList @("--machine-owner", $MachineOwner)' in script
+    assert "--dsn" not in script.lower()
     assert "-RedirectStandardOutput $OutLog" in script
     assert "-RedirectStandardError $ErrLog" in script
     assert "-WindowStyle Hidden" in script

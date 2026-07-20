@@ -58,7 +58,11 @@ def test_home_task_registration_includes_otp_responder():
 
     assert "${TaskPrefix}OtpResponder" in script
     assert "run-otp-responder.ps1" in script
-    assert "& '$otpLauncher' -Dsn `$env:FLEET_PG_DSN -Supervise" in script
+    wrapper_invocation = next(
+        line for line in script.splitlines() if "& '$otpLauncher'" in line
+    )
+    assert wrapper_invocation.strip() == "& '$otpLauncher' -Supervise"
+    assert "-Dsn" not in wrapper_invocation
 
 
 def test_apply_cycle_does_not_stage_advisory_research_scores():

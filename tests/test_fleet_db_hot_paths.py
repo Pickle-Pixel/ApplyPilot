@@ -95,12 +95,11 @@ def test_blackout_poll_preserves_ok_role_with_one_character_password(monkeypatch
     assert captured.err == ""
 
 
-@pytest.mark.parametrize("variable", ["FLEET_PG_DSN", "APPLYPILOT_FLEET_DSN"])
-def test_blackout_poll_accepts_each_fleet_dsn(variable, monkeypatch, capsys):
+def test_blackout_poll_accepts_explicit_fleet_pg_dsn(monkeypatch, capsys):
     conn = _ReadOnlyConnection()
     monkeypatch.delenv("FLEET_PG_DSN", raising=False)
     monkeypatch.delenv("APPLYPILOT_FLEET_DSN", raising=False)
-    monkeypatch.setenv(variable, "fleet-test-dsn")
+    monkeypatch.setenv("FLEET_PG_DSN", "fleet-test-dsn")
     monkeypatch.setattr(pgqueue, "connect", lambda dsn: conn if dsn == "fleet-test-dsn" else None)
     monkeypatch.setattr(
         machine_blackout,
@@ -112,6 +111,25 @@ def test_blackout_poll_accepts_each_fleet_dsn(variable, monkeypatch, capsys):
     runpy.run_path(str(ROOT / "fleet-blackout-query.py"), run_name="__main__")
 
     assert capsys.readouterr().out.strip() == "OK|m4|compute|||"
+
+
+def test_blackout_poll_rejects_legacy_fleet_dsn_as_only_source(monkeypatch, capsys):
+    monkeypatch.delenv("FLEET_PG_DSN", raising=False)
+    monkeypatch.setenv("APPLYPILOT_FLEET_DSN", "legacy-fleet-test-dsn")
+    monkeypatch.setattr(
+        pgqueue,
+        "connect",
+        lambda *_args, **_kwargs: pytest.fail("legacy DSN reached the fleet connector"),
+    )
+    monkeypatch.setattr(sys, "argv", ["fleet-blackout-query.py", "m4", "compute"])
+
+    runpy.run_path(str(ROOT / "fleet-blackout-query.py"), run_name="__main__")
+
+    captured = capsys.readouterr()
+    assert captured.out.strip().startswith("BLOCKED|m4|compute|blackout-query-error||")
+    assert "No fleet Postgres DSN: set FLEET_PG_DSN" in captured.err
+    assert "legacy-fleet-test-dsn" not in captured.out
+    assert "legacy-fleet-test-dsn" not in captured.err
 
 
 def test_blackout_poll_rejects_database_url_without_fleet_dsn(monkeypatch, capsys):
