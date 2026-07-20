@@ -333,7 +333,9 @@ def test_pg18_migration_owner_reconciles_exact_backup_defaults_before_future_obj
     migration_path.write_text(
         "CREATE TABLE public.migration_backup_future("
         "id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,payload text NOT NULL);\n"
-        "INSERT INTO public.migration_backup_future(payload) VALUES ('readable');\n",
+        "INSERT INTO public.migration_backup_future(payload) VALUES ('readable');\n"
+        "CREATE FUNCTION public.migration_backup_future_probe() RETURNS text "
+        "LANGUAGE sql AS $$ SELECT 'must-not-execute'::text $$;\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -382,6 +384,7 @@ def test_pg18_migration_owner_reconciles_exact_backup_defaults_before_future_obj
             result = migrator.apply_manifest(conn, manifest, tmp_path)
             assert result.applied == (migration["id"],)
             assert migrator._backup_default_acl_entries(conn) == migrator._BACKUP_DEFAULT_ACLS
+            assert migrator._public_function_default_execute_state(conn) == (True, ())
 
         backup_params = conninfo_to_dict(migration_pg)
         backup_params.update(user=migrator._BACKUP_ROLE, password=backup_password)
@@ -400,8 +403,12 @@ def test_pg18_migration_owner_reconciles_exact_backup_defaults_before_future_obj
                     "INSERT INTO public.migration_backup_future(payload) VALUES ('denied')"
                 )
             backup.rollback()
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                backup.execute("SELECT public.migration_backup_future_probe()")
+            backup.rollback()
     finally:
         with psycopg.connect(migration_pg, autocommit=True, row_factory=dict_row) as provider:
+            provider.execute("DROP FUNCTION IF EXISTS public.migration_backup_future_probe()")
             provider.execute("DROP TABLE IF EXISTS public.migration_backup_future CASCADE")
             if provider.execute(
                 "SELECT 1 FROM pg_roles WHERE rolname=%s",
@@ -413,6 +420,149 @@ def test_pg18_migration_owner_reconciles_exact_backup_defaults_before_future_obj
                 provider.execute(
                     sql.SQL("DROP ROLE {}").format(sql.Identifier(migrator._BACKUP_ROLE))
                 )
+
+
+def test_pg18_backup_first_then_migration_owner_closes_future_function_execute(
+    fleet_pg,
+    tmp_path,
+):
+    migration = _migration(tmp_path, "20260715_001_backup_first", None, None)
+    migration_path = tmp_path / str(migration["path"])
+    migration_path.write_text(
+        "CREATE FUNCTION public.migration_backup_first_probe() RETURNS text "
+        "LANGUAGE sql AS $$ SELECT 'must-not-execute'::text $$;\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    migration["sha256"] = hashlib.sha256(migration_path.read_bytes()).hexdigest()
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, [migration]))
+    backup_password = "applypilot-disposable-backup-first"
+    database_name = conninfo_to_dict(fleet_pg)["dbname"]
+
+    with psycopg.connect(fleet_pg, autocommit=True, row_factory=dict_row) as provider:
+        assert provider.info.server_version >= 180000
+        for role_name in (migrator._BACKUP_ROLE, migrator._MIGRATION_ROLE):
+            assert provider.execute(
+                "SELECT 1 FROM pg_roles WHERE rolname=%s",
+                (role_name,),
+            ).fetchone() is None
+        provider.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE),
+                sql.Literal(backup_password),
+            )
+        )
+        provider.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(database_name),
+                sql.Identifier(migrator._BACKUP_ROLE),
+            )
+        )
+        provider.execute(
+            sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE)
+            )
+        )
+        # This ordering is the inverse of role bootstrap: the backup login is
+        # already live before the fixed fleet migration owner is introduced.
+        provider.execute(
+            sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(migrator._MIGRATION_ROLE))
+        )
+        provider.execute(
+            sql.SQL("GRANT USAGE,CREATE ON SCHEMA public TO {}").format(
+                sql.Identifier(migrator._MIGRATION_ROLE)
+            )
+        )
+
+    try:
+        with psycopg.connect(fleet_pg, row_factory=dict_row) as conn:
+            conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(migrator._MIGRATION_ROLE)))
+            result = migrator.apply_manifest(conn, manifest, tmp_path)
+            assert result.applied == (migration["id"],)
+            assert migrator._public_function_default_execute_state(conn) == (True, ())
+
+        backup_params = conninfo_to_dict(fleet_pg)
+        backup_params.update(user=migrator._BACKUP_ROLE, password=backup_password)
+        with psycopg.connect(make_conninfo(**backup_params), row_factory=dict_row) as backup:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                backup.execute("SELECT public.migration_backup_first_probe()")
+    finally:
+        with psycopg.connect(fleet_pg, autocommit=True, row_factory=dict_row) as provider:
+            provider.execute("DROP FUNCTION IF EXISTS public.migration_backup_first_probe()")
+            provider.execute("DROP TABLE IF EXISTS public.applypilot_fleet_schema_migrations CASCADE")
+            provider.execute("DROP FUNCTION IF EXISTS public.applypilot_reject_migration_ledger_mutation() CASCADE")
+            for role_name in (migrator._BACKUP_ROLE, migrator._MIGRATION_ROLE):
+                if provider.execute(
+                    "SELECT 1 FROM pg_roles WHERE rolname=%s",
+                    (role_name,),
+                ).fetchone() is not None:
+                    provider.execute(sql.SQL("DROP OWNED BY {} CASCADE").format(sql.Identifier(role_name)))
+                    provider.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role_name)))
+
+
+def test_pg18_topology_reconciliation_closes_both_migration_owner_function_defaults(
+    migration_pg,
+):
+    topology_migrator = "brain_migrator_function_default_probe"
+    backup_password = "applypilot-disposable-topology-function-default"
+    with psycopg.connect(migration_pg, row_factory=dict_row) as provider:
+        assert provider.info.server_version >= 180000
+        provider.execute(
+            sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(topology_migrator))
+        )
+        provider.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE),
+                sql.Literal(backup_password),
+            )
+        )
+        provider.execute(
+            sql.SQL("GRANT USAGE,CREATE ON SCHEMA public TO {}").format(
+                sql.Identifier(topology_migrator)
+            )
+        )
+        provider.execute(
+            sql.SQL("REVOKE CONNECT,CREATE,TEMPORARY ON DATABASE {} FROM PUBLIC").format(
+                sql.Identifier(conninfo_to_dict(migration_pg)["dbname"])
+            )
+        )
+        topology = pg_roles.BootstrapTopology(
+            database_owner_role="unused_function_default_owner",
+            controller_role="unused_function_default_controller",
+            verifier_role="unused_function_default_verifier",
+            migrator_role=topology_migrator,
+            retired_admin_roles=(),
+        )
+        pg_roles._reconcile_backup_role_boundary(
+            provider.cursor(),
+            topology=topology,
+        )
+        for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
+            assert pg_roles._public_function_default_execute_state(
+                provider.cursor(),
+                owner_role=owner_role,
+            ) == (True, ())
+            function_name = f"{owner_role}_future_function_probe"
+            provider.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(owner_role)))
+            provider.execute(
+                sql.SQL("CREATE FUNCTION public.{}() RETURNS text LANGUAGE sql AS $$ SELECT 'closed'::text $$").format(
+                    sql.Identifier(function_name)
+                )
+            )
+            provider.execute("RESET ROLE")
+            assert provider.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE') AS allowed",
+                (migrator._BACKUP_ROLE, f"public.{function_name}()"),
+            ).fetchone()["allowed"] is False
+        boundary = pg_roles._validate_backup_role_boundary(
+            provider.cursor(),
+            topology=topology,
+        )
+        assert boundary["public_function_default_execute_closed"] == (
+            topology_migrator,
+            migrator._MIGRATION_ROLE,
+        )
+        provider.rollback()
 
 
 def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idempotent(
@@ -484,13 +634,32 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
                 'ALTER DEFAULT PRIVILEGES FOR ROLE "applypilot_fleet_migrator" '
                 'REVOKE SELECT ON SEQUENCES FROM "fleet_backup";'
             ) in generated
+            for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
+                assert (
+                    f'ALTER DEFAULT PRIVILEGES FOR ROLE "{owner_role}" '
+                    "GRANT EXECUTE ON FUNCTIONS TO PUBLIC;"
+                ) in generated
 
+        for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
+            pg_roles._reconcile_public_function_default_execute(
+                provider.cursor(),
+                owner_role=owner_role,
+            )
+            pg_roles._validate_public_function_default_execute_closed(
+                provider.cursor(),
+                owner_role=owner_role,
+            )
         provider.execute(rollback_sql)
         provider.execute(rollback_sql)
         assert provider.execute(
             "SELECT 1 FROM pg_roles WHERE rolname=%s",
             (migrator._BACKUP_ROLE,),
         ).fetchone() is None
+        for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
+            assert pg_roles._public_function_default_execute_state(
+                provider.cursor(),
+                owner_role=owner_role,
+            ) == (False, ())
         provider.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(topology_migrator)))
         provider.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(topology_migrator)))
 

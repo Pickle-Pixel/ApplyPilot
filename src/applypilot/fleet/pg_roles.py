@@ -3802,6 +3802,46 @@ def _conditional_backup_default_acl_revoke_sql(
     )
 
 
+def _public_function_default_execute_rollback_sql(
+    cur,
+    *,
+    owner_role: str,
+) -> str:
+    """Restore only the PUBLIC function-default behavior changed by reconciliation."""
+    if not _role_exists(cur, owner_role):
+        return ""
+    global_row_present, entries = _public_function_default_execute_state(
+        cur,
+        owner_role=owner_role,
+    )
+    restore: list[str] = []
+    if not global_row_present:
+        restore.append(
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT EXECUTE ON FUNCTIONS TO PUBLIC;")
+            .format(sql.Identifier(owner_role))
+            .as_string(cur.connection)
+        )
+    for schema_name, is_grantable in entries:
+        statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(
+            sql.Identifier(owner_role)
+        )
+        if schema_name != "*":
+            statement += sql.SQL("IN SCHEMA {} ").format(sql.Identifier(schema_name))
+        statement += sql.SQL("GRANT EXECUTE ON FUNCTIONS TO PUBLIC")
+        if is_grantable:
+            statement += sql.SQL(" WITH GRANT OPTION")
+        restore.append((statement + sql.SQL(";")).as_string(cur.connection))
+    if not restore:
+        return ""
+    return (
+        "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
+        + sql.Literal(owner_role).as_string(cur.connection)
+        + ") THEN\n"
+        + "\n".join(restore)
+        + "\nEND IF;"
+    )
+
+
 def _forward_v7_containment_sql(
     cur,
     *,
@@ -3884,6 +3924,13 @@ def _forward_v7_containment_sql(
             backup_role=topology.backup_role,
         ),
     )
+    for owner_role in dict.fromkeys((topology.migrator_role, FLEET_MIGRATION_ROLE)):
+        public_execute_restore = _public_function_default_execute_rollback_sql(
+            cur,
+            owner_role=owner_role,
+        )
+        if public_execute_restore:
+            backup_cleanup.insert(-2, public_execute_restore)
     statements.append(
         "DO $applypilot_backup_rollback$ BEGIN\n"
         + "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
@@ -3950,6 +3997,13 @@ def _backup_role_rollback_sql(
             backup_role=topology.backup_role,
         ),
     )
+    for owner_role in dict.fromkeys((topology.migrator_role, FLEET_MIGRATION_ROLE)):
+        public_execute_restore = _public_function_default_execute_rollback_sql(
+            cur,
+            owner_role=owner_role,
+        )
+        if public_execute_restore:
+            cleanup.insert(-2, public_execute_restore)
     return (
         "DO $applypilot_backup_rollback$ BEGIN\n"
         "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
@@ -4830,6 +4884,72 @@ def _backup_default_acl_entries(
     )
 
 
+def _public_function_default_execute_state(
+    cur,
+    *,
+    owner_role: str,
+) -> tuple[bool, tuple[tuple[str, bool], ...]]:
+    """Return whether the global ACL is materialized and every PUBLIC EXECUTE edge."""
+    cur.execute(
+        "SELECT EXISTS("
+        "SELECT 1 FROM pg_catalog.pg_default_acl defaults "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
+        "WHERE owner.rolname=%s AND defaults.defaclnamespace=0 "
+        "AND defaults.defaclobjtype='f') AS present",
+        (owner_role,),
+    )
+    global_row_present = bool(_row_value(cur.fetchone(), "present"))
+    cur.execute(
+        "SELECT COALESCE(namespace.nspname,'*') AS schema_name,acl.is_grantable "
+        "FROM pg_catalog.pg_default_acl defaults "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
+        "LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl "
+        "WHERE owner.rolname=%s AND defaults.defaclobjtype='f' AND acl.grantee=0 "
+        "AND acl.privilege_type='EXECUTE' "
+        "ORDER BY schema_name,acl.is_grantable",
+        (owner_role,),
+    )
+    entries = tuple(
+        (str(_row_value(row, "schema_name")), bool(_row_value(row, "is_grantable", 1)))
+        for row in cur.fetchall()
+    )
+    return global_row_present, entries
+
+
+def _validate_public_function_default_execute_closed(cur, *, owner_role: str) -> None:
+    global_row_present, entries = _public_function_default_execute_state(
+        cur,
+        owner_role=owner_role,
+    )
+    if not global_row_present or entries:
+        raise RuntimeError(
+            f"{owner_role} PUBLIC function default EXECUTE is not closed: "
+            f"global_row_present={global_row_present!r}, entries={entries!r}"
+        )
+
+
+def _reconcile_public_function_default_execute(cur, *, owner_role: str) -> None:
+    """Remove implicit and explicit PUBLIC EXECUTE from one owner's future functions."""
+    _, entries = _public_function_default_execute_state(cur, owner_role=owner_role)
+    for schema_name, _is_grantable in entries:
+        statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(
+            sql.Identifier(owner_role)
+        )
+        if schema_name != "*":
+            statement += sql.SQL("IN SCHEMA {} ").format(sql.Identifier(schema_name))
+        statement += sql.SQL("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
+        cur.execute(statement)
+    # No global pg_default_acl row means the built-in PostgreSQL default, which
+    # grants EXECUTE to PUBLIC. This unconditional revoke materializes closure.
+    cur.execute(
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC").format(
+            sql.Identifier(owner_role)
+        )
+    )
+    _validate_public_function_default_execute_closed(cur, owner_role=owner_role)
+
+
 def _reconcile_exact_backup_default_acls(
     cur,
     *,
@@ -4922,17 +5042,20 @@ def _reconcile_backup_role_boundary(cur, *, topology: BootstrapTopology) -> None
         owner_role=topology.migrator_role,
         backup_role=topology.backup_role,
     )
+    _reconcile_public_function_default_execute(
+        cur,
+        owner_role=topology.migrator_role,
+    )
     if FLEET_MIGRATION_ROLE != topology.migrator_role and _role_exists(cur, FLEET_MIGRATION_ROLE):
         _reconcile_exact_backup_default_acls(
             cur,
             owner_role=FLEET_MIGRATION_ROLE,
             backup_role=topology.backup_role,
         )
-    cur.execute(
-        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC").format(
-            sql.Identifier(topology.migrator_role)
+        _reconcile_public_function_default_execute(
+            cur,
+            owner_role=FLEET_MIGRATION_ROLE,
         )
-    )
 
 
 def _validate_backup_role_boundary(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
@@ -5052,6 +5175,10 @@ def _validate_backup_role_boundary(cur, *, topology: BootstrapTopology) -> dict[
             "fleet_backup default ACL mismatch for "
             f"{topology.migrator_role}: expected={_BACKUP_DEFAULT_ACL_EXPECTED!r}, actual={defaults!r}"
         )
+    _validate_public_function_default_execute_closed(
+        cur,
+        owner_role=topology.migrator_role,
+    )
     fleet_migration_role_present = (
         FLEET_MIGRATION_ROLE == topology.migrator_role
         or _role_exists(cur, FLEET_MIGRATION_ROLE)
@@ -5074,6 +5201,11 @@ def _validate_backup_role_boundary(cur, *, topology: BootstrapTopology) -> dict[
             "fleet_backup default ACL mismatch for "
             f"{FLEET_MIGRATION_ROLE}: expected={_BACKUP_DEFAULT_ACL_EXPECTED!r}, "
             f"actual={fleet_migration_defaults!r}"
+        )
+    if fleet_migration_defaults is not None and FLEET_MIGRATION_ROLE != topology.migrator_role:
+        _validate_public_function_default_execute_closed(
+            cur,
+            owner_role=FLEET_MIGRATION_ROLE,
         )
     cur.execute(
         "SELECT setting FROM pg_db_role_setting setting "
@@ -5098,10 +5230,15 @@ def _validate_backup_role_boundary(cur, *, topology: BootstrapTopology) -> dict[
         "pg_control_system_execute": True,
         "role_settings": settings,
         "default_acl_entries": defaults,
+        "public_function_default_execute_closed": (topology.migrator_role,),
     }
     if fleet_migration_defaults is not None and FLEET_MIGRATION_ROLE != topology.migrator_role:
         boundary["fleet_migration_owner"] = FLEET_MIGRATION_ROLE
         boundary["fleet_migration_default_acl_entries"] = fleet_migration_defaults
+        boundary["public_function_default_execute_closed"] = (
+            topology.migrator_role,
+            FLEET_MIGRATION_ROLE,
+        )
     return boundary
 
 

@@ -877,6 +877,38 @@ def test_manifest_is_required_before_database_wide_acl_changes(fleet_db):
         )
 
 
+@pytest.mark.parametrize("scope", ["global", "schema"])
+def test_backup_boundary_rejects_public_function_default_execute_drift(
+    fleet_db,
+    scope: str,
+):
+    topology = pg_roles.BootstrapTopology(
+        database_owner_role=DATABASE_OWNER_ROLE,
+        controller_role=CONTROLLER_ROLE,
+        verifier_role=VERIFIER_ROLE,
+        migrator_role=MIGRATOR_ROLE,
+        retired_admin_roles=(RETIRED_ADMIN_ROLE,),
+    )
+    with pgqueue.connect(fleet_db) as conn:
+        assert pg_roles._public_function_default_execute_state(
+            conn.cursor(),
+            owner_role=MIGRATOR_ROLE,
+        ) == (True, ())
+        statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(
+            sql.Identifier(MIGRATOR_ROLE)
+        )
+        if scope == "schema":
+            statement += sql.SQL("IN SCHEMA public ")
+        statement += sql.SQL("GRANT EXECUTE ON FUNCTIONS TO PUBLIC")
+        conn.execute(statement)
+        with pytest.raises(RuntimeError, match="PUBLIC function default EXECUTE is not closed"):
+            pg_roles._validate_backup_role_boundary(
+                conn.cursor(),
+                topology=topology,
+            )
+        conn.rollback()
+
+
 @pytest.mark.parametrize("backup_drift", ["missing", "attributes"])
 def test_worker_reconciliation_requires_completed_backup_rollout_before_evidence_or_mutation(
     fleet_db,

@@ -459,6 +459,60 @@ def _backup_default_acl_entries(conn) -> tuple[tuple[str, str, str, bool], ...]:
     )
 
 
+def _public_function_default_execute_state(
+    conn,
+) -> tuple[bool, tuple[tuple[str, bool], ...]]:
+    global_row = conn.execute(
+        "SELECT EXISTS("
+        "SELECT 1 FROM pg_catalog.pg_default_acl defaults "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
+        "WHERE owner.rolname=%s AND defaults.defaclnamespace=0 "
+        "AND defaults.defaclobjtype='f') AS present",
+        (_MIGRATION_ROLE,),
+    ).fetchone()
+    rows = conn.execute(
+        "SELECT COALESCE(namespace.nspname,'*') AS schema_name,acl.is_grantable "
+        "FROM pg_catalog.pg_default_acl defaults "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
+        "LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl "
+        "WHERE owner.rolname=%s AND defaults.defaclobjtype='f' AND acl.grantee=0 "
+        "AND acl.privilege_type='EXECUTE' "
+        "ORDER BY schema_name,acl.is_grantable",
+        (_MIGRATION_ROLE,),
+    ).fetchall()
+    return bool(_row_value(global_row, "present")), tuple(
+        (str(_row_value(row, "schema_name")), bool(_row_value(row, "is_grantable", 1)))
+        for row in rows
+    )
+
+
+def _reconcile_and_verify_public_function_default_execute(conn) -> None:
+    """Remove both implicit and explicit future-function EXECUTE for PUBLIC."""
+    _, entries = _public_function_default_execute_state(conn)
+    for schema_name, _is_grantable in entries:
+        statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(
+            sql.Identifier(_MIGRATION_ROLE)
+        )
+        if schema_name != "*":
+            statement += sql.SQL("IN SCHEMA {} ").format(sql.Identifier(schema_name))
+        statement += sql.SQL("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
+        conn.execute(statement)
+    # An absent global pg_default_acl row means PostgreSQL's implicit default,
+    # which grants function EXECUTE to PUBLIC. Always issuing this global revoke
+    # both materializes the closed default and handles that implicit state.
+    conn.execute(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE applypilot_fleet_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+    )
+    global_row_present, remaining = _public_function_default_execute_state(conn)
+    if not global_row_present or remaining:
+        raise MigrationError(
+            "applypilot_fleet_migrator PUBLIC function default EXECUTE is not closed: "
+            f"global_row_present={global_row_present!r}, entries={remaining!r}"
+        )
+
+
 def _reconcile_and_verify_backup_defaults(conn) -> tuple[tuple[str, str, str, bool], ...] | None:
     """Keep future fleet-migration objects readable by the fixed backup login.
 
@@ -474,6 +528,7 @@ def _reconcile_and_verify_backup_defaults(conn) -> tuple[tuple[str, str, str, bo
     if not bool(_row_value(present, "present")):
         return None
 
+    _reconcile_and_verify_public_function_default_execute(conn)
     scopes = conn.execute(
         "SELECT DISTINCT namespace.nspname AS schema_name,defaults.defaclobjtype "
         "FROM pg_catalog.pg_default_acl defaults "
