@@ -681,6 +681,11 @@ def test_powershell_generated_systemd_unit_fails_closed(tmp_path):
         "dest='/etc/systemd/system/demo.service'\necho '[Service]' > \"$dest\"\n",
         "dest='$ROOT/demo.service'\ncp unit.service \"$dest\"\n",
         "cp unit.service \"$UNRESOLVED_DESTINATION\"\n",
+        (
+            "src='unit.service'\n"
+            "dest=$UNRESOLVED_DESTINATION\n"
+            "cp \"$src\" \"$dest\"\n"
+        ),
         "echo '[Service]' \\\n  > /etc/systemd/system/demo.service\n",
         "/bin/cp unit.service /etc/systemd/system/demo.service\n",
     ],
@@ -714,6 +719,13 @@ def test_powershell_variable_destination_systemd_unit_fails_closed(tmp_path):
     [
         "Add-Content -Path '/etc/systemd/system/demo.service' -Value $unit",
         "sc -Path '/etc/systemd/system/demo.service' -Value $unit",
+        "Copy-Item unit.service /etc/systemd/system/demo.service",
+        "Move-Item unit.service /etc/systemd/system/demo.service",
+        (
+            "Set-Content `\n"
+            "  -Path /etc/systemd/system/demo.service `\n"
+            "  -Value $unit"
+        ),
         "Set-Content -Path $unknownDestination -Value $unit",
         "$unit | Out-File -FilePath $unknownDestination",
         "$unit > $unknownDestination",

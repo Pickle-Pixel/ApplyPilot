@@ -1011,6 +1011,7 @@ def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
             for name, value in assignments.items()
             if re.search(r"(?i)\[(?:Service|Timer)\]", value)
         }
+        unit_path_variables: set[str] = set()
         for name, value in assignments.items():
             try:
                 resolved = _static_shell_value(
@@ -1018,6 +1019,8 @@ def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
                 )
             except AuthorityError:
                 resolved = value
+            if re.search(r"(?i)\.(?:service|timer)\b", resolved):
+                unit_path_variables.add(name)
             if systemd_destination.search(resolved):
                 systemd_destination_variables.add(name)
             elif "$" in resolved and re.search(r"(?i)\.(?:service|timer)\b", resolved):
@@ -1043,7 +1046,7 @@ def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
             )
             unit_bearing_write = bool(
                 re.search(r"(?i)(?:\.(?:service|timer)\b|\[(?:Service|Timer)\])", stripped)
-                or referenced_variables & unit_content_variables
+                or referenced_variables & (unit_content_variables | unit_path_variables)
             )
             unresolved_variables = referenced_variables - set(assignments)
             if (
@@ -1060,7 +1063,8 @@ def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
                 )
 
     powershell_writer = re.compile(
-        r"(?i)\b(?:Set-Content|Add-Content|Out-File|WriteAllText|Write-Output|echo|sc|ac)\b"
+        r"(?i)\b(?:Set-Content|Add-Content|Copy-Item|Move-Item|Out-File|WriteAllText|"
+        r"Write-Output|echo|sc|ac|cp|copy|cpi|mv|move|mi)\b"
     )
     powershell_assignment = re.compile(
         r"(?im)(?:^|[;\r\n])\s*\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*=\s*"
@@ -1091,7 +1095,7 @@ def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
             for name, values in assignment_candidates.items()
             if any(re.search(r"(?i)\[(?:Service|Timer)\]", value) for value in values)
         }
-        for line in text.splitlines():
+        for line in _powershell_logical_lines(text):
             stripped = line.strip()
             is_writer = bool(
                 powershell_writer.search(stripped)
@@ -1136,6 +1140,24 @@ def _shell_logical_lines(text: str) -> list[str]:
         stripped = candidate.rstrip()
         trailing_backslashes = len(stripped) - len(stripped.rstrip("\\"))
         if trailing_backslashes % 2 == 1:
+            pending = stripped[:-1] + " "
+            continue
+        logical.append(candidate)
+        pending = ""
+    if pending:
+        logical.append(pending)
+    return logical
+
+
+def _powershell_logical_lines(text: str) -> list[str]:
+    """Join PowerShell backtick continuations before service-writer scanning."""
+    logical: list[str] = []
+    pending = ""
+    for physical in text.splitlines():
+        candidate = pending + physical
+        stripped = candidate.rstrip()
+        trailing_backticks = len(stripped) - len(stripped.rstrip("`"))
+        if trailing_backticks % 2 == 1:
             pending = stripped[:-1] + " "
             continue
         logical.append(candidate)
