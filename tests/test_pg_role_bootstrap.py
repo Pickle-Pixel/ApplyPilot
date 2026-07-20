@@ -100,6 +100,24 @@ def _authority_migrator_script_module():
     return module
 
 
+def _target_pinned_receipt(conn, *, infrastructure_superuser_roles=("postgres",)) -> dict:
+    identity = conn.execute(
+        "SELECT pg_catalog.current_database() AS database_name,"
+        "(pg_catalog.pg_control_system()).system_identifier::pg_catalog.text "
+        "AS system_identifier,"
+        "(SELECT database.oid FROM pg_catalog.pg_database database "
+        "WHERE database.datname=pg_catalog.current_database()) AS database_oid"
+    ).fetchone()
+    return {
+        "database_name": identity["database_name"],
+        "inventory": {
+            "system_identifier": identity["system_identifier"],
+            "database_oid": identity["database_oid"],
+            "infrastructure_superuser_roles": list(infrastructure_superuser_roles),
+        },
+    }
+
+
 @pytest.mark.parametrize(
     ("option", "value"),
     (("--verifier-role", "custom_verifier"), ("--migrator-role", "custom_migrator")),
@@ -325,6 +343,8 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(
         inventory = {
             "prepared_at": "2001-02-03T04:05:06+00:00",
             "database_name": "postgres",
+            "system_identifier": "123456789",
+            "database_oid": 12345,
             "atomic_bootstrap": True,
             "automatic_rollback_supported": False,
             "commit_outcome_on_interruption": "unknown",
@@ -552,7 +572,11 @@ def test_database_rollback_commits_before_hba_restore(tmp_path: Path, monkeypatc
         def transaction(self):
             return FakeTransaction()
 
-    fake_receipt = {"topology": {"infrastructure_superuser_roles": ["postgres"]}}
+    fake_receipt = {
+        "database_name": "postgres",
+        "inventory": {"system_identifier": "123456789", "database_oid": 12345},
+        "topology": {"infrastructure_superuser_roles": ["postgres"]},
+    }
     (tmp_path / "receipt.json").write_text(json.dumps(fake_receipt), encoding="utf-8")
     monkeypatch.setattr(
         module,
@@ -1596,8 +1620,9 @@ def test_hba_restore_observer_sees_real_rollback_commit(
     marker = "applypilot_real_rollback_commit_probe"
     with psycopg.connect(fleet_db, row_factory=dict_row, autocommit=True) as cleanup:
         cleanup.execute(sql.SQL("DROP TABLE IF EXISTS public.{} CASCADE").format(sql.Identifier(marker)))
+        fake_receipt = _target_pinned_receipt(cleanup)
 
-    fake_receipt = {"topology": {"infrastructure_superuser_roles": ["postgres"]}}
+    fake_receipt["topology"] = {"infrastructure_superuser_roles": ["postgres"]}
     (tmp_path / "receipt.json").write_text(json.dumps(fake_receipt), encoding="utf-8")
     monkeypatch.setattr(
         module,
@@ -1801,7 +1826,12 @@ def test_real_pg18_session_fence_and_alternate_breakglass_retry(fleet_db: str) -
         f'REVOKE CONNECT ON DATABASE "{identity["database_name"]}" FROM "{provider}";'
     )
     receipt = {
-        "inventory": {"infrastructure_superuser_roles": ["postgres", alternate]},
+        "database_name": identity["database_name"],
+        "inventory": {
+            "system_identifier": identity["system_identifier"],
+            "database_oid": identity["database_oid"],
+            "infrastructure_superuser_roles": ["postgres", alternate],
+        },
         "receipt_authentication": {"digest": "f" * 64},
     }
     postgres_identity = {**identity, "session_user": "postgres"}
@@ -2048,9 +2078,7 @@ def test_pg18_legacy_containment_marker_upgrades_and_resumes_phase_two(fleet_db:
             "source_receipt_digest text NOT NULL,committed_at timestamptz NOT NULL "
             "DEFAULT pg_catalog.clock_timestamp())"
         )
-        target = module._validated_target_identity(conn, {
-            "inventory": {"infrastructure_superuser_roles": ["postgres"]},
-        })
+        target = module._validated_target_identity(conn, _target_pinned_receipt(conn))
         marker = module._containment_marker(
             {"receipt_authentication": {"digest": "a" * 64}}, "SELECT 1", target
         )
@@ -2095,9 +2123,7 @@ def test_pg18_marker_creation_revokes_inherited_default_acl(fleet_db: str) -> No
             )
         )
         conn.commit()
-        target = module._validated_target_identity(conn, {
-            "inventory": {"infrastructure_superuser_roles": ["postgres"]},
-        })
+        target = module._validated_target_identity(conn, _target_pinned_receipt(conn))
         marker = module._containment_marker(
             {"receipt_authentication": {"digest": "b" * 64}}, "SELECT 1", target
         )
@@ -2137,9 +2163,7 @@ def test_pg18_wrong_marker_shape_fails_before_schema_mutation(fleet_db: str) -> 
             "source_receipt_digest text NOT NULL,committed_at timestamptz NOT NULL,hostile text)"
         )
         conn.commit()
-        target = module._validated_target_identity(conn, {
-            "inventory": {"infrastructure_superuser_roles": ["postgres"]},
-        })
+        target = module._validated_target_identity(conn, _target_pinned_receipt(conn))
         marker = module._containment_marker(
             {"receipt_authentication": {"digest": "c" * 64}}, "SELECT 1", target
         )
@@ -2212,7 +2236,12 @@ def test_partial_evidence_failure_removes_created_rollback(tmp_path: Path, monke
     with pytest.raises(OSError, match="receipt write failure"):
         pg_roles._write_preparation_evidence(
             paths,
-            inventory={"prepared_at": "now", "database_name": "postgres"},
+            inventory={
+                "prepared_at": "now",
+                "database_name": "postgres",
+                "system_identifier": "123456789",
+                "database_oid": 12345,
+            },
             rollback_sql="SELECT 1;\n",
         )
     assert not paths.rollback_sql_path.exists()
