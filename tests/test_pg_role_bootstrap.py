@@ -1455,8 +1455,8 @@ def test_posix_hba_exchange_restores_same_inode_write_injected_at_mutation_bound
 
 def test_hba_target_descriptor_stays_open_through_replace(tmp_path: Path, monkeypatch) -> None:
     module = _rollback_script_module()
-    if module.os.name == "nt":
-        pytest.skip("descriptor-held replacement is exercised on supported POSIX HBA hosts")
+    if not module._hba_restore_supported():
+        pytest.skip("descriptor-held replacement is unsupported on this platform")
     if not hasattr(module.os, "fchmod"):
         monkeypatch.setattr(module.os, "fchmod", lambda *_args: None, raising=False)
     live = tmp_path / "pg_hba.conf"
@@ -1465,12 +1465,9 @@ def test_hba_target_descriptor_stays_open_through_replace(tmp_path: Path, monkey
     live.write_bytes(authenticated)
     before = live.stat()
     real_open = module.os.open
-    if real_open not in module.os.supports_dir_fd:
-        pytest.skip("os.open does not support descriptor-relative paths on this platform")
-    real_close = module.os.close
+    real_fstat = module.os.fstat
     real_exchange = module._rename_exchange
     target_descriptor = -1
-    closed_descriptors: set[int] = set()
 
     def tracking_open(file, flags, *args, **kwargs):
         nonlocal target_descriptor
@@ -1479,13 +1476,10 @@ def test_hba_target_descriptor_stays_open_through_replace(tmp_path: Path, monkey
             target_descriptor = descriptor
         return descriptor
 
-    def tracking_close(descriptor):
-        closed_descriptors.add(descriptor)
-        return real_close(descriptor)
-
     def tracking_exchange(*args, **kwargs):
         assert target_descriptor >= 0
-        assert target_descriptor not in closed_descriptors
+        opened_target = real_fstat(target_descriptor)
+        assert (opened_target.st_dev, opened_target.st_ino) == (before.st_dev, before.st_ino)
         return real_exchange(*args, **kwargs)
 
     supports_dir_fd = set(module.os.supports_dir_fd)
@@ -1493,7 +1487,6 @@ def test_hba_target_descriptor_stays_open_through_replace(tmp_path: Path, monkey
     supports_dir_fd.add(tracking_open)
     monkeypatch.setattr(module.os, "supports_dir_fd", supports_dir_fd)
     monkeypatch.setattr(module.os, "open", tracking_open)
-    monkeypatch.setattr(module.os, "close", tracking_close)
     monkeypatch.setattr(module, "_rename_exchange", tracking_exchange)
     module._replace_atomic(
         live,
