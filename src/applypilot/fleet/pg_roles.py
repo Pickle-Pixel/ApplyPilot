@@ -321,6 +321,8 @@ def _write_preparation_evidence(
         "status": "prepared_before_database_mutation",
         "prepared_at": inventory["prepared_at"],
         "database_name": inventory["database_name"],
+        "system_identifier": inventory["system_identifier"],
+        "database_oid": inventory["database_oid"],
         "inventory": inventory,
         "rollback_sql_path": str(evidence_paths.rollback_sql_path),
         "rollback_sql_sha256": hashlib.sha256(rollback_bytes).hexdigest(),
@@ -831,7 +833,8 @@ def _database_inventory(cur, *, role_name: str, manifest: RegrantManifest) -> di
         raise RuntimeError("break-glass roles must be disjoint from managed topology roles")
     cur.execute(
         "SELECT session_user AS session_name,current_user AS current_name,current_database() AS database_name,"
-        "owner.rolname AS owner_name "
+        "owner.rolname AS owner_name,d.oid AS database_oid,"
+        "(pg_catalog.pg_control_system()).system_identifier::pg_catalog.text AS system_identifier "
         "FROM pg_database d JOIN pg_roles owner ON owner.oid=d.datdba "
         "WHERE d.datname=current_database()"
     )
@@ -975,6 +978,8 @@ def _database_inventory(cur, *, role_name: str, manifest: RegrantManifest) -> di
     return {
         "connect_allowlist": connect_allowlist,
         "database_name": _row_value(database_row, "database_name", 1),
+        "database_oid": int(_row_value(database_row, "database_oid", 4)),
+        "system_identifier": _row_value(database_row, "system_identifier", 5),
         "database_owner_before": prior_owner,
         "database_owner_after": manifest.database_owner_role,
         "retired_admin_roles": retired_admin_roles,
@@ -6432,6 +6437,7 @@ def ensure_fleet_worker_role(
             prepared_at = datetime.now(timezone.utc).isoformat()
             evidence_inventory = {
                 **inventory,
+                "rollback_mode": "topology_exact",
                 "target_role": role,
                 "target_role_existed": role_exists,
                 "target_role_snapshot": target_snapshot,

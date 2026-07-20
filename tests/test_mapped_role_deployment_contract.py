@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -47,10 +48,10 @@ def test_database_hardening_script_requires_identity_manifest_and_receipts() -> 
         "Assert-ApplyPilotHbaEffectiveOrder",
         "Assert-ApplyPilotOutputPaths",
         'data.pop("rollback_sql")',
-        '"escalation_required": True',
-        '"in_doubt": True',
-        '"deployment_committed"',
-        "Write-ApplyPilotDurableAtomicJson",
+        "escalation_required=True",
+        "in_doubt=True",
+        'status="deployment_committed"',
+        "Write-ApplyPilotDurableAtomicBytes",
         "[IO.FileOptions]::WriteThrough",
         "$stream.Flush($true)",
         "Get-Acl -LiteralPath $fullPath",
@@ -64,6 +65,49 @@ def test_database_hardening_script_requires_identity_manifest_and_receipts() -> 
     assert "user=postgres" not in script
     assert "user=fleet_worker" not in script
     assert "regrant_sql=tuple(raw.get(" not in script
+
+
+def test_database_hardening_uses_break_glass_and_authenticated_evidence_contract() -> None:
+    script = _script("setup-fleet-pg-tailscale.ps1")
+
+    for required in (
+        "APPLYPILOT_ADMIN_PG_DSN",
+        "APPLYPILOT_ROLLBACK_HMAC_KEY_HEX",
+        "APPLYPILOT_ROLLBACK_HMAC_KEY_ID",
+        "DurableEvidencePaths",
+        "evidence_paths=evidence_paths",
+        "authenticate_evidence_receipt",
+        "verify_evidence_receipt",
+        '"rollback_mode"',
+        '"system_identifier"',
+        '"database_oid"',
+    ):
+        assert required in script
+
+    assert "APPLYPILOT_CONTROLLER_PG_DSN" not in script
+    assert "evidence_writer=" not in script
+
+
+def test_database_hardening_embedded_python_parses_and_keeps_secrets_out_of_argv_and_logs() -> None:
+    script = _script("setup-fleet-pg-tailscale.ps1")
+    embedded = re.findall(r"(?ms)^\s*\$[A-Za-z][A-Za-z0-9]*\s*=\s*@'\n(.*?)\n'@\s*$", script)
+
+    assert len(embedded) >= 5
+    for index, source in enumerate(embedded):
+        compile(source, f"setup-fleet-pg-tailscale.ps1:embedded-{index}", "exec")
+
+    python_invocations = [line.strip() for line in script.splitlines() if "& $Python -c" in line]
+    assert python_invocations
+    assert all("$env:" not in line for line in python_invocations)
+    output_lines = [line for line in script.splitlines() if "Write-Host" in line]
+    assert all(
+        secret not in "\n".join(output_lines)
+        for secret in (
+            "APPLYPILOT_ADMIN_PG_DSN",
+            "APPLYPILOT_PG_ROLE_PW",
+            "APPLYPILOT_ROLLBACK_HMAC_KEY_HEX",
+        )
+    )
 
 
 def test_rollback_executor_verifies_hash_and_enforces_atomic_break_glass_order(tmp_path: Path) -> None:
@@ -391,9 +435,10 @@ def test_abrupt_committed_receipt_finalization_leaves_prior_in_doubt_receipt_int
     env = os.environ.copy()
     env["AP_TEST_RECEIPT"] = str(receipt)
     result = _run_hba_function(
-        "$committed=[pscustomobject]@{status='deployment_committed';"
-        "escalation_required=$false;in_doubt=$false}; "
-        "Write-ApplyPilotDurableAtomicJson -Path $env:AP_TEST_RECEIPT -Value $committed "
+        "$payload=[Text.UTF8Encoding]::new($false).GetBytes("
+        "'{\"status\":\"deployment_committed\",\"escalation_required\":false,\"in_doubt\":false}'+"
+        "[Environment]::NewLine); "
+        "Write-ApplyPilotDurableAtomicBytes -Path $env:AP_TEST_RECEIPT -Payload $payload "
         "-BeforeReplace { Stop-Process -Id $PID -Force }; exit 9",
         env=env,
     )
@@ -418,9 +463,10 @@ def test_abrupt_committed_receipt_finalization_leaves_prior_in_doubt_receipt_int
         "$beforeAccess=@($before.Access | ForEach-Object { "
         "'{0}|{1}|{2}|{3}|{4}' -f $_.IdentityReference,$_.FileSystemRights,"
         "$_.AccessControlType,$_.InheritanceFlags,$_.PropagationFlags } | Sort-Object); "
-        "$committed=[pscustomobject]@{status='deployment_committed';"
-        "escalation_required=$false;in_doubt=$false}; "
-        "Write-ApplyPilotDurableAtomicJson -Path $env:AP_TEST_RECEIPT -Value $committed; "
+        "$payload=[Text.UTF8Encoding]::new($false).GetBytes("
+        "'{\"status\":\"deployment_committed\",\"escalation_required\":false,\"in_doubt\":false}'+"
+        "[Environment]::NewLine); "
+        "Write-ApplyPilotDurableAtomicBytes -Path $env:AP_TEST_RECEIPT -Payload $payload; "
         "$after=Get-Acl -LiteralPath $env:AP_TEST_RECEIPT; "
         "$afterAccess=@($after.Access | ForEach-Object { "
         "'{0}|{1}|{2}|{3}|{4}' -f $_.IdentityReference,$_.FileSystemRights,"

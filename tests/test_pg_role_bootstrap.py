@@ -1136,6 +1136,18 @@ def test_forward_v7_target_rejects_same_name_recreated_database_oid() -> None:
         module._validated_target_identity(FakeConnection(), receipt)
 
 
+def test_topology_exact_rollback_requires_exact_target_identity_pins() -> None:
+    module = _rollback_script_module()
+    receipt = {
+        "rollback_mode": "topology_exact",
+        "database_name": "applypilot_fleet",
+        "inventory": {"infrastructure_superuser_roles": ["postgres"]},
+    }
+
+    with pytest.raises(SystemExit, match="exact target identity pins"):
+        module._expected_target_identity(receipt)
+
+
 def test_target_identity_rejects_hostile_public_catalog_oid_shadow(fleet_db: str) -> None:
     module = _rollback_script_module()
     with pgqueue.connect(fleet_db) as root:
@@ -4636,6 +4648,7 @@ def test_live_bootstrap_hands_off_to_non_superuser_controller_and_reconciles(fle
                 ).fetchone()
                 assert not any(retired.values())
 
+            worker_evidence_paths = _test_evidence_paths()
             worker_receipt = pg_roles.ensure_fleet_worker_role(
                 root,
                 WORKER_PASSWORD,
@@ -4651,9 +4664,37 @@ def test_live_bootstrap_hands_off_to_non_superuser_controller_and_reconciles(fle
                     infrastructure_superuser_roles=("postgres",),
                     expected_service_roles=(),
                 ),
-                evidence_paths=_test_evidence_paths(),
+                evidence_paths=worker_evidence_paths,
             )
             assert worker_receipt.contract == "compute"
+            assert worker_receipt.inventory["rollback_mode"] == "topology_exact"
+            assert worker_receipt.inventory["system_identifier"].isdigit()
+            assert worker_receipt.inventory["database_oid"] > 0
+            prepared_worker_receipt = json.loads(
+                worker_evidence_paths.preparation_receipt_path.read_text(encoding="utf-8")
+            )
+            pg_roles.verify_evidence_receipt(
+                prepared_worker_receipt,
+                authentication_key=_EVIDENCE_KEY,
+                expected_key_id=_EVIDENCE_KEY_ID,
+            )
+            assert prepared_worker_receipt["rollback_mode"] == "topology_exact"
+            assert prepared_worker_receipt["system_identifier"] == worker_receipt.inventory[
+                "system_identifier"
+            ]
+            assert prepared_worker_receipt["database_oid"] == worker_receipt.inventory[
+                "database_oid"
+            ]
+            verified_worker_receipt, verified_worker_rollback = (
+                _rollback_script_module()._verified_inputs(
+                    worker_evidence_paths.preparation_receipt_path,
+                    worker_evidence_paths.rollback_sql_path,
+                    authentication_key=_EVIDENCE_KEY,
+                    expected_key_id=_EVIDENCE_KEY_ID,
+                )
+            )
+            assert verified_worker_receipt == prepared_worker_receipt
+            assert verified_worker_rollback == worker_receipt.rollback_sql
             worker_dsn = _dsn(fleet_db, user=WORKER_ROLE, password=WORKER_PASSWORD)
             with psycopg.connect(worker_dsn, row_factory=dict_row) as worker:
                 identity = worker.execute(

@@ -146,11 +146,11 @@ def _expected_target_identity(receipt: dict) -> tuple[str | None, str | None, in
     expected_database = receipt.get("database_name") or inventory.get("database_name")
     expected_system_identifier = receipt.get("system_identifier") or inventory.get("system_identifier")
     expected_database_oid = receipt.get("database_oid") or inventory.get("database_oid")
-    if receipt.get("rollback_mode") == "forward_v7_containment" and (
+    if (
         not expected_database or not str(expected_system_identifier or "").isdigit()
         or type(expected_database_oid) is not int or expected_database_oid <= 0
     ):
-        raise SystemExit("forward V7 rollback receipt is missing exact target identity pins")
+        raise SystemExit("rollback receipt is missing exact target identity pins")
     return (
         expected_database,
         str(expected_system_identifier) if expected_system_identifier is not None else None,

@@ -14,10 +14,15 @@ LinkedIn NEVER runs on this machine (lane B stays on the home IP).
    ```powershell
    git push private applypilot-hardening-and-brainstorm-integration
    ```
-3. **Harden PG for the tailnet** (elevated PowerShell, repo root). Prompts for the NEW
-   `fleet_worker` password — save it for step C:
+3. **Harden PG for the tailnet** (elevated PowerShell, repo root). Follow the
+   authenticated mapped-role onboarding command in
+   `docs/railway-canonical-worker-deployment.md`: use the offline break-glass DSN,
+   operator-held rollback HMAC key, reviewed regrant manifest, enrolled node ID,
+   and a unique mapped login role. The setup prompts securely for that role's NEW
+   SCRAM password — save it for step C. Never use the shared `fleet_worker` role:
    ```powershell
-   .\setup-fleet-pg-tailscale.ps1
+   .\setup-fleet-pg-tailscale.ps1 -NodeId mac-0 -Contract apply `
+     -Role mac_0_apply -RegrantManifest .\evidence\reviewed-regrant-manifest.json
    ```
    It prints the Home Tailscale IP + DSN + pgpass line the Mac setup will ask for.
 4. **Push profile + resume into the fleet_assets table** (so the Mac hydrates them from

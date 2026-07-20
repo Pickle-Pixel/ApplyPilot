@@ -94,6 +94,8 @@ $env:APPLYPILOT_ADMIN_PG_DSN = '<provider-admin-url>'
 $env:APPLYPILOT_CONTROLLER_PG_PASSWORD = '<new-scram-secret>'
 $env:APPLYPILOT_BACKUP_PG_PASSWORD = '<independent-backup-scram-secret>'
 $env:APPLYPILOT_DATABASE_OWNER_PG_PASSWORD = '<independent-canonical-import-scram-secret>'
+$env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX = '<operator-held-key-as-at-least-64-hex-characters>'
+$env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID = '<operator-key-id>'
 python scripts/bootstrap-fleet-pg-roles.py `
   --database-owner-role applypilot_database_owner `
   --controller-role applypilot_deployment_controller `
@@ -103,7 +105,7 @@ python scripts/bootstrap-fleet-pg-roles.py `
   --infrastructure-superuser-role postgres `
   --receipt-path .\evidence\bootstrap-receipt.json `
   --rollback-sql .\evidence\bootstrap-rollback.sql
-Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD, Env:APPLYPILOT_BACKUP_PG_PASSWORD, Env:APPLYPILOT_DATABASE_OWNER_PG_PASSWORD
+Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD, Env:APPLYPILOT_BACKUP_PG_PASSWORD, Env:APPLYPILOT_DATABASE_OWNER_PG_PASSWORD, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID
 ```
 
 Worker reconciliation has a strict rollout prerequisite. First complete either
@@ -157,11 +159,32 @@ roles. Final validation enumerates every direct and effective grantee, including
 database-owner and superuser behavior, proves that reconnect-capable roles are
 exactly the explicitly allowlisted LOGIN roles, and checks the complete
 function-only worker privilege boundary after SCRAM rotation. The normal
-controller remains NOSUPERUSER and operational after the bootstrap credential
-is removed from the environment.
+controller remains NOSUPERUSER and operational, but it cannot perform this
+offline role/cluster reconciliation. For each setup or rotation, inject the
+explicitly allowlisted break-glass `APPLYPILOT_ADMIN_PG_DSN` and the operator-held
+receipt HMAC key into the operator shell only; remove them immediately afterward.
+Neither value may be passed in argv, written to a receipt, or installed in a
+worker service:
 
-The command writes a secret-free JSON receipt and rollback SQL before changing
-`pg_hba.conf`. The receipt records the principal/service/default-ACL inventory,
+```powershell
+$env:APPLYPILOT_ADMIN_PG_DSN = '<offline-break-glass-url>'
+$env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX = '<operator-held-key-as-at-least-64-hex-characters>'
+$env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID = '<operator-key-id>'
+& scripts/setup-fleet-pg-tailscale.ps1 `
+  -NodeId '<enrolled-node-id>' `
+  -Contract apply `
+  -Role '<unique-mapped-login-role>' `
+  -RegrantManifest .\evidence\reviewed-regrant-manifest.json `
+  -ReceiptPath .\evidence\mapped-role-receipt.json `
+  -RollbackSql .\evidence\mapped-role-rollback.sql
+Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID
+```
+
+The command writes an operator-HMAC-authenticated, secret-free JSON receipt and
+rollback SQL before changing `pg_hba.conf`. Prepared, database-reconciled, and
+deployment-committed receipt states are authenticated separately. Every state is
+bound to the database name, PostgreSQL cluster system identifier, database OID,
+rollback mode, rollback path, and rollback SHA-256. The receipt records the principal/service/default-ACL inventory,
 allowlist, effective grantees, mapping, target-role attributes and memberships,
 direct database/schema/table/sequence/function/type ACLs, relevant default ACLs,
 PUBLIC database `CONNECT`, `CREATE`, and `TEMPORARY`, every structured regrant
@@ -209,13 +232,21 @@ Each containment phase is a separate fail-stop transaction equivalent to
 `psql --single-transaction --set=ON_ERROR_STOP=on`; never pipe or execute the
 generated statements independently. Use the executable workflow:
 
+On Windows, the rollback executor deliberately refuses `--restore-hba` because
+the required descriptor-relative atomic exchange is unavailable. Run the
+database rollback first, verify both containment phases and postconditions, then
+restore the authenticated HBA backup through the protected host procedure and
+reload PostgreSQL. On a supported Linux host only, append `--restore-hba` to the
+command after preflight confirms the receipt's signed `hba_restore` record.
+
 ```powershell
 $env:APPLYPILOT_ADMIN_PG_DSN = '<offline-break-glass-url>'
+$env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX = '<same-operator-held-key-as-setup>'
+$env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID = '<same-operator-key-id-as-setup>'
 python scripts/rollback-fleet-pg-role.py `
   --receipt .\deployment-receipts\fleet-role-receipt.json `
-  --rollback-sql .\deployment-receipts\fleet-role-rollback.sql `
-  --restore-hba
-Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN
+  --rollback-sql .\deployment-receipts\fleet-role-rollback.sql
+Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID
 ```
 
 The executor refuses a SHA-256 mismatch, a non-superuser or unreceipted session,

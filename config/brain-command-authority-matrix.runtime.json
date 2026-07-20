@@ -4950,7 +4950,7 @@
         "powershell -File scripts/setup-fleet-pg-tailscale.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/setup-fleet-pg-tailscale.ps1;sourceBlobSha256=579962eb83687d60412470c448ea5ce6e26d4766296b146257d7005451382500",
+      "canonicalTarget": "scripts/setup-fleet-pg-tailscale.ps1;sourceBlobSha256=cc493dd43aa808f0ba09b996b1bebb6f517792023b2ab354a6fb5e8af8f32ac6",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5670,7 +5670,7 @@
         "python scripts/rollback-fleet-pg-role.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/rollback-fleet-pg-role.py;sourceBlobSha256=64480ed6811254fbfbc53b642c883557fe2a2c130c74b60b47f03b2fc0e24ad1",
+      "canonicalTarget": "scripts/rollback-fleet-pg-role.py;sourceBlobSha256=dd42dca56c6226a6ad4e2922daff473aac6525137d6495e9e85c60742b239a4f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,

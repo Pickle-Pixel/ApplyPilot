@@ -1,7 +1,7 @@
 <#
-Controller-only mapped-role rotation and first-match-safe pg_hba reconciliation.
-The admin DSN exists only in this migration process and is never installed as
-worker runtime state.
+Offline break-glass mapped-role rotation and first-match-safe pg_hba reconciliation.
+The provider-admin DSN and evidence-authentication key exist only in this
+operator process and are never installed as worker runtime state.
 #>
 [CmdletBinding()]
 param(
@@ -156,10 +156,10 @@ function Assert-ApplyPilotOutputPaths {
     }
 }
 
-function Write-ApplyPilotDurableAtomicJson {
+function Write-ApplyPilotDurableAtomicBytes {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][byte[]]$Payload,
         [scriptblock]$BeforeReplace
     )
     $fullPath = [IO.Path]::GetFullPath($Path)
@@ -170,9 +170,6 @@ function Write-ApplyPilotDurableAtomicJson {
     )
     $replacementBackup = "$temporary.previous"
     $destinationAcl = Get-Acl -LiteralPath $fullPath
-    $payload = [Text.UTF8Encoding]::new($false).GetBytes(
-        (($Value | ConvertTo-Json -Depth 16) + [Environment]::NewLine)
-    )
     try {
         $stream = [IO.FileStream]::new(
             $temporary,
@@ -183,7 +180,7 @@ function Write-ApplyPilotDurableAtomicJson {
             [IO.FileOptions]::WriteThrough
         )
         try {
-            $stream.Write($payload, 0, $payload.Length)
+            $stream.Write($Payload, 0, $Payload.Length)
             $stream.Flush($true)
         }
         finally { $stream.Dispose() }
@@ -256,8 +253,8 @@ function Invoke-ApplyPilotHbaReplacement {
             try { & $ReloadOriginal }
             catch { $reloadFailure = $_ }
         }
-        [IO.File]::WriteAllBytes($ReceiptPath, $receiptOriginal)
-        [IO.File]::WriteAllBytes($RollbackSql, $rollbackOriginal)
+        Write-ApplyPilotDurableAtomicBytes -Path $ReceiptPath -Payload $receiptOriginal
+        Write-ApplyPilotDurableAtomicBytes -Path $RollbackSql -Payload $rollbackOriginal
         if ($reloadFailure) {
             throw "pg_hba restored but reload failed: $($reloadFailure.Exception.Message); original failure: $($failure.Exception.Message)"
         }
@@ -278,13 +275,15 @@ if ($Role -in @("postgres", "fleet_worker")) { throw "Role must be a unique per-
 if ($Role -notmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,62}$') { throw "Role contains unsupported characters" }
 if ($Database -notmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,62}$') { throw "Database contains unsupported characters" }
 if ($TailnetCidr -notmatch '^[0-9A-Fa-f:.]+/[0-9]{1,3}$') { throw "TailnetCidr must be an explicit CIDR" }
-if (-not $env:APPLYPILOT_CONTROLLER_PG_DSN) { throw "APPLYPILOT_CONTROLLER_PG_DSN is required for mapped-role reconciliation" }
+if (-not $env:APPLYPILOT_ADMIN_PG_DSN) { throw "APPLYPILOT_ADMIN_PG_DSN is required for offline mapped-role reconciliation" }
+if (-not $env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX) { throw "APPLYPILOT_ROLLBACK_HMAC_KEY_HEX is required for authenticated rollback evidence" }
+if (-not $env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID) { throw "APPLYPILOT_ROLLBACK_HMAC_KEY_ID is required for authenticated rollback evidence" }
 if (-not (Test-Path -LiteralPath $RegrantManifest -PathType Leaf)) { throw "RegrantManifest does not exist: $RegrantManifest" }
 
 $hbaInventory = @'
 import json, os, psycopg
 from psycopg.rows import dict_row
-with psycopg.connect(os.environ["APPLYPILOT_CONTROLLER_PG_DSN"], row_factory=dict_row) as conn:
+with psycopg.connect(os.environ["APPLYPILOT_ADMIN_PG_DSN"], row_factory=dict_row) as conn:
     rows = conn.execute(
         "SELECT line_number,type,database,user_name,address,auth_method,error "
         "FROM pg_hba_file_rules ORDER BY line_number"
@@ -332,11 +331,19 @@ $env:APPLYPILOT_RECEIPT_PATH = $receiptFull
 $env:APPLYPILOT_ROLLBACK_SQL = $rollbackFull
 
 $roleReconcile = @'
-import hashlib, json, os, tempfile
+import base64, hashlib, json, os
 from dataclasses import asdict
+from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
-from applypilot.fleet.pg_roles import AclRegrant, RegrantManifest, ensure_fleet_worker_role
+from applypilot.fleet.pg_roles import (
+    AclRegrant,
+    DurableEvidencePaths,
+    RegrantManifest,
+    authenticate_evidence_receipt,
+    ensure_fleet_worker_role,
+    verify_evidence_receipt,
+)
 
 with open(os.environ["APPLYPILOT_REGRANT_MANIFEST"], encoding="utf-8") as stream:
     raw = json.load(stream)
@@ -365,74 +372,142 @@ manifest = RegrantManifest(
 if len(manifest.regrants) != len(raw.get("regrants", ())):
     raise SystemExit("structured regrant contains unsupported fields")
 
-def fsync_parent(path):
-    if os.name == "nt":
-        return
-    descriptor = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+try:
+    authentication_key = bytes.fromhex(os.environ["APPLYPILOT_ROLLBACK_HMAC_KEY_HEX"])
+except (KeyError, ValueError):
+    authentication_key = b""
+authentication_key_id = os.environ.get("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "")
+if len(authentication_key) < 32 or not authentication_key_id:
+    raise SystemExit("trusted rollback HMAC key and key id are required")
+receipt_path = Path(os.environ["APPLYPILOT_RECEIPT_PATH"]).resolve()
+rollback_path = Path(os.environ["APPLYPILOT_ROLLBACK_SQL"]).resolve()
+evidence_paths = DurableEvidencePaths(
+    preparation_receipt_path=receipt_path,
+    rollback_sql_path=rollback_path,
+    authentication_key=authentication_key,
+    authentication_key_id=authentication_key_id,
+)
 
-def write_exclusive_durable(path, payload):
-    with open(path, "xb") as stream:
-        stream.write(payload)
-        stream.flush()
-        os.fsync(stream.fileno())
-    fsync_parent(path)
-
-def replace_durable(path, payload):
-    directory = os.path.dirname(path) or "."
-    descriptor, temporary = tempfile.mkstemp(prefix=".applypilot-receipt-", dir=directory)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        fsync_parent(path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-def write_precommit_evidence(inventory, rollback):
-    encoded = rollback.encode("utf-8")
-    prepared = {
-        "status": "prepared_before_database_mutation",
-        "inventory": inventory,
-        "rollback_sql_sha256": hashlib.sha256(encoded).hexdigest(),
-        "rollback_sql_path": os.environ["APPLYPILOT_ROLLBACK_SQL"],
-        "escalation_required": True,
-        "in_doubt": True,
-    }
-    write_exclusive_durable(os.environ["APPLYPILOT_ROLLBACK_SQL"], encoded)
-    write_exclusive_durable(
-        os.environ["APPLYPILOT_RECEIPT_PATH"],
-        (json.dumps(prepared, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-    )
-
-with psycopg.connect(os.environ["APPLYPILOT_CONTROLLER_PG_DSN"], row_factory=dict_row) as conn:
+with psycopg.connect(os.environ["APPLYPILOT_ADMIN_PG_DSN"], row_factory=dict_row) as conn:
     receipt = ensure_fleet_worker_role(
         conn, os.environ["APPLYPILOT_PG_ROLE_PW"], role=os.environ["APPLYPILOT_PG_ROLE"],
         worker_id=os.environ["APPLYPILOT_PG_NODE"], contract=os.environ["APPLYPILOT_PG_CONTRACT"],
-        regrant_manifest=manifest, evidence_writer=write_precommit_evidence,
+        regrant_manifest=manifest, evidence_paths=evidence_paths,
     )
+
+with receipt_path.open(encoding="utf-8-sig") as stream:
+    prepared = json.load(stream)
+verify_evidence_receipt(
+    prepared,
+    authentication_key=authentication_key,
+    expected_key_id=authentication_key_id,
+)
+rollback_bytes = rollback_path.read_bytes()
+inventory = dict(receipt.inventory)
+target_identity = {
+    "database_name": inventory.get("database_name"),
+    "system_identifier": inventory.get("system_identifier"),
+    "database_oid": inventory.get("database_oid"),
+}
+if (
+    prepared.get("status") != "prepared_before_database_mutation"
+    or prepared.get("rollback_mode") != "topology_exact"
+    or Path(prepared.get("rollback_sql_path", "")).resolve(strict=True) != rollback_path
+    or prepared.get("rollback_sql_sha256") != hashlib.sha256(rollback_bytes).hexdigest()
+    or any(prepared.get(name) != value for name, value in target_identity.items())
+):
+    raise SystemExit("prepared rollback evidence is not bound to the reconciled database target")
 data = asdict(receipt)
 rollback = data.pop("rollback_sql")
 encoded = rollback.encode("utf-8")
-data["rollback_sql_sha256"] = hashlib.sha256(encoded).hexdigest()
-data["rollback_sql_path"] = os.environ["APPLYPILOT_ROLLBACK_SQL"]
-data["status"] = "database_reconciled"
-data["escalation_required"] = True
-data["in_doubt"] = True
-replace_durable(
-    os.environ["APPLYPILOT_RECEIPT_PATH"],
-    (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+if encoded != rollback_bytes:
+    raise SystemExit("returned rollback SQL differs from durable prepared rollback SQL")
+data.update(
+    target_identity,
+    rollback_mode="topology_exact",
+    rollback_sql_sha256=hashlib.sha256(encoded).hexdigest(),
+    rollback_sql_path=str(rollback_path),
+    status="database_reconciled",
+    escalation_required=True,
+    in_doubt=True,
 )
+data = authenticate_evidence_receipt(
+    data,
+    authentication_key=authentication_key,
+    authentication_key_id=authentication_key_id,
+)
+verify_evidence_receipt(
+    data,
+    authentication_key=authentication_key,
+    expected_key_id=authentication_key_id,
+)
+payload = (json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+print(base64.b64encode(payload).decode("ascii"))
+'@
+$verifyReceipt = @'
+import hashlib, json, os
+from pathlib import Path
+from applypilot.fleet.pg_roles import verify_evidence_receipt
+
+try:
+    authentication_key = bytes.fromhex(os.environ["APPLYPILOT_ROLLBACK_HMAC_KEY_HEX"])
+except (KeyError, ValueError):
+    authentication_key = b""
+authentication_key_id = os.environ.get("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "")
+if len(authentication_key) < 32 or not authentication_key_id:
+    raise SystemExit("trusted rollback HMAC key and key id are required")
+receipt_path = Path(os.environ["APPLYPILOT_RECEIPT_PATH"]).resolve(strict=True)
+rollback_path = Path(os.environ["APPLYPILOT_ROLLBACK_SQL"]).resolve(strict=True)
+with receipt_path.open(encoding="utf-8-sig") as stream:
+    receipt = json.load(stream)
+verify_evidence_receipt(
+    receipt,
+    authentication_key=authentication_key,
+    expected_key_id=authentication_key_id,
+)
+expected_status = os.environ["APPLYPILOT_EXPECTED_RECEIPT_STATUS"]
+expected_flags = {
+    "database_reconciled": (True, True),
+    "deployment_committed": (False, False),
+}
+if expected_status not in expected_flags or receipt.get("status") != expected_status:
+    raise SystemExit("authenticated receipt status does not match the expected deployment stage")
+if (receipt.get("escalation_required"), receipt.get("in_doubt")) != expected_flags[expected_status]:
+    raise SystemExit("authenticated receipt uncertainty flags do not match the deployment stage")
+inventory = receipt.get("inventory")
+if not isinstance(inventory, dict) or receipt.get("rollback_mode") != "topology_exact":
+    raise SystemExit("authenticated receipt does not identify topology-exact rollback")
+for name in ("database_name", "system_identifier", "database_oid"):
+    if receipt.get(name) != inventory.get(name):
+        raise SystemExit("authenticated receipt target identity pins are incomplete or inconsistent")
+if (
+    not receipt.get("database_name")
+    or not str(receipt.get("system_identifier", "")).isdigit()
+    or type(receipt.get("database_oid")) is not int
+    or receipt["database_oid"] <= 0
+):
+    raise SystemExit("authenticated receipt is missing exact target identity pins")
+signed_rollback_path = Path(receipt.get("rollback_sql_path", ""))
+if not signed_rollback_path.is_absolute() or signed_rollback_path.resolve(strict=True) != rollback_path:
+    raise SystemExit("rollback SQL path does not match the authenticated receipt")
+if receipt.get("rollback_sql_sha256") != hashlib.sha256(rollback_path.read_bytes()).hexdigest():
+    raise SystemExit("rollback SQL SHA-256 does not match the authenticated receipt")
 '@
 try {
-    & $Python -c $roleReconcile
+    $reconciledPayload = & $Python -c $roleReconcile
     if ($LASTEXITCODE -ne 0) { throw "role reconciliation failed" }
+    $reconciledBytes = [Convert]::FromBase64String(($reconciledPayload -join ""))
+    $preparedBytes = [IO.File]::ReadAllBytes($receiptFull)
+    try {
+        Write-ApplyPilotDurableAtomicBytes -Path $receiptFull -Payload $reconciledBytes
+        $env:APPLYPILOT_EXPECTED_RECEIPT_STATUS = "database_reconciled"
+        & $Python -c $verifyReceipt
+        if ($LASTEXITCODE -ne 0) { throw "authenticated database reconciliation receipt verification failed" }
+    }
+    catch {
+        Write-ApplyPilotDurableAtomicBytes -Path $receiptFull -Payload $preparedBytes
+        throw
+    }
 }
 finally { $env:APPLYPILOT_PG_ROLE_PW = "" }
 
@@ -440,7 +515,7 @@ $validateAndReload = {
     $code = @'
 import os, psycopg
 from psycopg.rows import dict_row
-with psycopg.connect(os.environ["APPLYPILOT_CONTROLLER_PG_DSN"], row_factory=dict_row) as conn:
+with psycopg.connect(os.environ["APPLYPILOT_ADMIN_PG_DSN"], row_factory=dict_row) as conn:
     errors = conn.execute("SELECT line_number,error FROM pg_hba_file_rules WHERE error IS NOT NULL ORDER BY line_number").fetchall()
     if errors: raise SystemExit(f"candidate pg_hba invalid: {errors}")
     if not conn.execute("SELECT pg_reload_conf() AS reloaded").fetchone()["reloaded"]:
@@ -450,32 +525,95 @@ with psycopg.connect(os.environ["APPLYPILOT_CONTROLLER_PG_DSN"], row_factory=dic
     if ($LASTEXITCODE -ne 0) { throw "pg_hba validation or reload failed" }
 }
 $reloadOriginal = {
-    & $Python -c "import os,psycopg; c=psycopg.connect(os.environ['APPLYPILOT_CONTROLLER_PG_DSN']); c.execute('SELECT pg_reload_conf()'); c.close()"
+    & $Python -c "import os,psycopg; c=psycopg.connect(os.environ['APPLYPILOT_ADMIN_PG_DSN']); c.execute('SELECT pg_reload_conf()'); c.close()"
     if ($LASTEXITCODE -ne 0) { throw "restored pg_hba reload failed" }
 }
 $finalizeOutput = {
-    $receipt = Get-Content -LiteralPath $receiptFull -Raw | ConvertFrom-Json
-    $receipt | Add-Member -NotePropertyName hba_rules -NotePropertyValue $inventory.rules
-    $receipt | Add-Member -NotePropertyName hba_path -NotePropertyValue $HbaPath
-    $receipt | Add-Member -NotePropertyName hba_backup -NotePropertyValue $preflightBackup
-    $receipt | Add-Member -NotePropertyName backup_hba_policy -NotePropertyValue ([ordered]@{
+    $env:APPLYPILOT_HBA_PATH = $HbaPath
+    $env:APPLYPILOT_HBA_BACKUP_PATH = $preflightBackup
+    $env:APPLYPILOT_HBA_RULES_JSON = ($inventory.rules | ConvertTo-Json -Depth 16 -Compress)
+    $env:APPLYPILOT_HBA_BACKUP_POLICY_JSON = ([ordered]@{
         role = "fleet_backup"
         allowed_sources = @("127.0.0.1/32", "::1/128")
         authentication = "scram-sha-256"
         all_other_ipv4 = "reject"
         all_other_ipv6 = "reject"
-    })
-    $receipt | Add-Member -NotePropertyName rollback_sql_path -NotePropertyValue $rollbackFull
-    $receipt | Add-Member -Force -NotePropertyName status -NotePropertyValue "deployment_committed"
-    $receipt | Add-Member -Force -NotePropertyName escalation_required -NotePropertyValue $false
-    $receipt | Add-Member -Force -NotePropertyName in_doubt -NotePropertyValue $false
-    Write-ApplyPilotDurableAtomicJson -Path $receiptFull -Value $receipt
-    $verified = Get-Content -LiteralPath $receiptFull -Raw | ConvertFrom-Json
-    if ($verified.hba_path -ne $HbaPath -or $verified.hba_backup -ne $preflightBackup -or
-        $verified.backup_hba_policy.role -ne "fleet_backup" -or
-        $verified.status -ne "deployment_committed" -or $verified.escalation_required -or $verified.in_doubt) {
-        throw "deployment receipt verification failed"
-    }
+    } | ConvertTo-Json -Depth 8 -Compress)
+    $code = @'
+import base64, hashlib, json, os, stat
+from pathlib import Path
+from applypilot.fleet.pg_roles import authenticate_evidence_receipt, verify_evidence_receipt
+
+try:
+    authentication_key = bytes.fromhex(os.environ["APPLYPILOT_ROLLBACK_HMAC_KEY_HEX"])
+except (KeyError, ValueError):
+    authentication_key = b""
+authentication_key_id = os.environ.get("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "")
+if len(authentication_key) < 32 or not authentication_key_id:
+    raise SystemExit("trusted rollback HMAC key and key id are required")
+receipt_path = Path(os.environ["APPLYPILOT_RECEIPT_PATH"]).resolve(strict=True)
+with receipt_path.open(encoding="utf-8-sig") as stream:
+    receipt = json.load(stream)
+verify_evidence_receipt(
+    receipt,
+    authentication_key=authentication_key,
+    expected_key_id=authentication_key_id,
+)
+if receipt.get("status") != "database_reconciled" or not receipt.get("in_doubt"):
+    raise SystemExit("HBA finalization requires an authenticated database-reconciled receipt")
+live_hba = Path(os.environ["APPLYPILOT_HBA_PATH"]).resolve(strict=True)
+backup_hba = Path(os.environ["APPLYPILOT_HBA_BACKUP_PATH"]).resolve(strict=True)
+if live_hba == backup_hba or live_hba.parent != backup_hba.parent:
+    raise SystemExit("HBA backup must be a distinct file in the live HBA directory")
+for label, path in (("live HBA", live_hba), ("HBA backup", backup_hba)):
+    metadata = path.lstat()
+    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular non-symlink file")
+live_bytes = live_hba.read_bytes()
+backup_bytes = backup_hba.read_bytes()
+live_stat = live_hba.stat()
+backup_stat = backup_hba.stat()
+if (live_stat.st_uid, live_stat.st_gid) != (backup_stat.st_uid, backup_stat.st_gid):
+    raise SystemExit("HBA backup ownership differs from live HBA")
+receipt.update(
+    hba_rules=json.loads(os.environ["APPLYPILOT_HBA_RULES_JSON"]),
+    hba_path=str(live_hba),
+    hba_backup=str(backup_hba),
+    backup_hba_policy=json.loads(os.environ["APPLYPILOT_HBA_BACKUP_POLICY_JSON"]),
+    hba_restore={
+        "format": "applypilot-hba-restore-v2",
+        "live_hba_path": str(live_hba),
+        "backup_path": str(backup_hba),
+        "expected_target_sha256": hashlib.sha256(live_bytes).hexdigest(),
+        "backup_sha256": hashlib.sha256(backup_bytes).hexdigest(),
+        "backup_size": len(backup_bytes),
+        "backup_mode": stat.S_IMODE(backup_stat.st_mode),
+        "owner": {"uid": live_stat.st_uid, "gid": live_stat.st_gid},
+    },
+    status="deployment_committed",
+    escalation_required=False,
+    in_doubt=False,
+)
+receipt = authenticate_evidence_receipt(
+    receipt,
+    authentication_key=authentication_key,
+    authentication_key_id=authentication_key_id,
+)
+verify_evidence_receipt(
+    receipt,
+    authentication_key=authentication_key,
+    expected_key_id=authentication_key_id,
+)
+payload = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+print(base64.b64encode(payload).decode("ascii"))
+'@
+    $committedPayload = & $Python -c $code
+    if ($LASTEXITCODE -ne 0) { throw "authenticated HBA receipt finalization failed" }
+    $committedBytes = [Convert]::FromBase64String(($committedPayload -join ""))
+    Write-ApplyPilotDurableAtomicBytes -Path $receiptFull -Payload $committedBytes
+    $env:APPLYPILOT_EXPECTED_RECEIPT_STATUS = "deployment_committed"
+    & $Python -c $verifyReceipt
+    if ($LASTEXITCODE -ne 0) { throw "authenticated deployment receipt verification failed" }
 }
 Invoke-ApplyPilotHbaReplacement -HbaPath $HbaPath -CandidateLines $candidateLines `
     -Database $Database -Role $Role -TailnetCidr $TailnetCidr -ReceiptPath $receiptFull `
