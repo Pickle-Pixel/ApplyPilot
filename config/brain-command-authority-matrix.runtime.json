@@ -3874,7 +3874,7 @@
         "powershell -File backup-fleet-pg.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1;sourceBlobSha256=801557d5630310b4ec3e4587cd6833cdf53e65bf183ea07ecdd3f49fa7ad38f8",
+      "canonicalTarget": "backup-fleet-pg.ps1;sourceBlobSha256=cfdf95d80257eaa548104f8bad35527403ddfce805fba1b94f8032e5ecbe1c9f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -6584,7 +6584,7 @@
         "scheduled-task-action:backup-fleet-pg.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:45e0e9aec87d2efb04a26c337887b2ed7913cf04f07be3576c1211c3584c00d8;sourceBlobSha256=801557d5630310b4ec3e4587cd6833cdf53e65bf183ea07ecdd3f49fa7ad38f8",
+      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-action:1;execute=\"powershell.exe\";argument=dynamic-sha256:45e0e9aec87d2efb04a26c337887b2ed7913cf04f07be3576c1211c3584c00d8;sourceBlobSha256=cfdf95d80257eaa548104f8bad35527403ddfce805fba1b94f8032e5ecbe1c9f",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
@@ -6848,7 +6848,7 @@
         "scheduled-task-identity:backup-fleet-pg.ps1:1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=801557d5630310b4ec3e4587cd6833cdf53e65bf183ea07ecdd3f49fa7ad38f8",
+      "canonicalTarget": "backup-fleet-pg.ps1#scheduled-task-identity:1;user=absent;principal=dynamic-sha256:65d4ca2cba4e23b3f54f62b897743106a9fa36636ee7a78de69b39347d4072bf;sourceBlobSha256=cfdf95d80257eaa548104f8bad35527403ddfce805fba1b94f8032e5ecbe1c9f",
       "capabilities": [],
       "directInvocation": false,
       "employerMutation": false,
