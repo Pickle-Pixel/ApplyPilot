@@ -2530,6 +2530,10 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
             assert default_acl_dependencies[0]["role_name"] == legacy_controller
             assert default_acl_dependencies[0]["database_name"] == database_name
             assert default_acl_dependencies[0]["objsubid"] == 0
+            assert pg_roles._public_function_default_execute_state(
+                root.cursor(),
+                owner_role=topology.migrator_role,
+            ) == (True, ())
 
             assert root.execute(
                 "SELECT array_agg(version ORDER BY version) AS versions FROM public.brain_schema_versions"
@@ -2797,6 +2801,10 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 for run in range(2):
                     root.execute(receipt.rollback_sql)
                     root.commit()
+                    assert pg_roles._public_function_default_execute_state(
+                        root.cursor(),
+                        owner_role=topology.migrator_role,
+                    ) == (True, ())
                     assert root.execute(
                         "SELECT count(*) AS count FROM pg_auth_members membership "
                         "JOIN pg_roles parent ON parent.oid=membership.roleid "
@@ -3587,15 +3595,28 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
                     ("*", "n", "USAGE", False),
                     ("*", "r", "SELECT", False),
                 ),
+                "public_function_default_execute_closed": ("brain_schema_migrator",),
             }
+            assert pg_roles._public_function_default_execute_state(
+                root.cursor(),
+                owner_role=topology.migrator_role,
+            ) == (True, ())
 
             root.execute("GRANT USAGE,CREATE ON SCHEMA public TO brain_schema_migrator")
             root.execute("SET ROLE brain_schema_migrator")
             root.execute("CREATE TABLE public.backup_future_acl_probe(id bigint)")
             root.execute("INSERT INTO public.backup_future_acl_probe VALUES (1)")
+            root.execute(
+                "CREATE FUNCTION public.backup_future_acl_probe_function() "
+                "RETURNS bigint LANGUAGE sql AS 'SELECT 1::bigint'"
+            )
             root.execute("RESET ROLE")
             root.execute("REVOKE USAGE,CREATE ON SCHEMA public FROM brain_schema_migrator")
             root.commit()
+            assert root.execute(
+                "SELECT has_function_privilege("
+                "'public','public.backup_future_acl_probe_function()','EXECUTE') AS allowed"
+            ).fetchone()["allowed"] is False
             backup_dsn = _dsn(fleet_db, user=pg_roles.FLEET_BACKUP_ROLE, password=BACKUP_PASSWORD)
             with psycopg.connect(backup_dsn, row_factory=dict_row) as backup:
                 assert backup.execute(
@@ -3668,9 +3689,26 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
             root.execute(receipt.rollback_sql)
             root.commit()
             assert _read_v5_rollback_preservation_rows(root, preserved_v5_rows) == preserved_v5_rows
+            assert pg_roles._public_function_default_execute_state(
+                root.cursor(),
+                owner_role=topology.migrator_role,
+            ) == (True, ())
             root.execute(receipt.rollback_sql)
             root.commit()
             assert _read_v5_rollback_preservation_rows(root, preserved_v5_rows) == preserved_v5_rows
+            root.execute("GRANT USAGE,CREATE ON SCHEMA public TO brain_schema_migrator")
+            root.execute("SET ROLE brain_schema_migrator")
+            root.execute(
+                "CREATE FUNCTION public.backup_post_rollback_function() "
+                "RETURNS bigint LANGUAGE sql AS 'SELECT 1::bigint'"
+            )
+            root.execute("RESET ROLE")
+            root.execute("REVOKE USAGE,CREATE ON SCHEMA public FROM brain_schema_migrator")
+            root.commit()
+            assert root.execute(
+                "SELECT has_function_privilege("
+                "'public','public.backup_post_rollback_function()','EXECUTE') AS allowed"
+            ).fetchone()["allowed"] is False
             assert root.execute(
                 "SELECT array_agg(version ORDER BY version) AS versions FROM public.brain_schema_versions"
             ).fetchone()["versions"] == [1, 2, 3, 4, 5, 6, 7]

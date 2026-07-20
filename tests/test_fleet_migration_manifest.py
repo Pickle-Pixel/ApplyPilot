@@ -651,11 +651,13 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
                 'ALTER DEFAULT PRIVILEGES FOR ROLE "applypilot_fleet_migrator" '
                 'REVOKE SELECT ON SEQUENCES FROM "fleet_backup";'
             ) in generated
-            for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
-                assert (
-                    f'ALTER DEFAULT PRIVILEGES FOR ROLE "{owner_role}" '
-                    "GRANT EXECUTE ON FUNCTIONS TO PUBLIC;"
-                ) in generated
+        for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
+            public_execute_restore = (
+                f'ALTER DEFAULT PRIVILEGES FOR ROLE "{owner_role}" '
+                "GRANT EXECUTE ON FUNCTIONS TO PUBLIC;"
+            )
+            assert public_execute_restore in rollback_sql
+            assert public_execute_restore not in forward_sql
 
         for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
             pg_roles._reconcile_public_function_default_execute(
@@ -666,6 +668,20 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
                 provider.cursor(),
                 owner_role=owner_role,
             )
+        provider.execute(forward_sql)
+        assert provider.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname=%s",
+            (migrator._BACKUP_ROLE,),
+        ).fetchone() is None
+        for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
+            assert pg_roles._public_function_default_execute_state(
+                provider.cursor(),
+                owner_role=owner_role,
+            ) == (True, ())
+
+        provider.execute(
+            sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(migrator._BACKUP_ROLE))
+        )
         provider.execute(rollback_sql)
         provider.execute(rollback_sql)
         assert provider.execute(

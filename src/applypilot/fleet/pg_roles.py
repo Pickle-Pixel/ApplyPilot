@@ -3938,13 +3938,10 @@ def _forward_v7_containment_sql(
             backup_role=topology.backup_role,
         ),
     )
-    for owner_role in dict.fromkeys((topology.migrator_role, FLEET_MIGRATION_ROLE)):
-        public_execute_restore = _public_function_default_execute_rollback_sql(
-            cur,
-            owner_role=owner_role,
-        )
-        if public_execute_restore:
-            backup_cleanup.insert(-2, public_execute_restore)
+    # Forward containment intentionally preserves the closed future-function
+    # boundary. Exact pre-transition restoration belongs to the topology-only
+    # rollback path below; reopening PUBLIC EXECUTE here would recreate the
+    # capability that this authenticated containment receipt removes.
     statements.append(
         "DO $applypilot_backup_rollback$ BEGIN\n"
         + "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
