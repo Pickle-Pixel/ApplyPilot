@@ -168,8 +168,8 @@ jobs:
           dsn = os.environ["APPLYPILOT_PGTEST_DSN"]
           nonce = os.environ["APPLYPILOT_PGTEST_CLUSTER_MARKER"]
           with psycopg.connect(dsn) as connection:
-              ssl_setting = connection.execute("SHOW ssl").fetchone()
-              if ssl_setting != ("on",):
+              ssl_setting = connection.execute("SHOW ssl").fetchone()[0]
+              if ssl_setting != "on":
                   raise RuntimeError("PostgreSQL service did not enable TLS")
               connection.execute(
                   "COMMENT ON DATABASE postgres IS 'applypilot:disposable-postgres-test-database:v1'"

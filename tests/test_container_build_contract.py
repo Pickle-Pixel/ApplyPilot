@@ -21,8 +21,9 @@ this test fails without needing a Docker daemon.
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
 import tomllib
+from pathlib import Path
 
 import yaml
 
@@ -66,6 +67,24 @@ def _container_job(doc: dict) -> dict:
     job = jobs[CONTAINER_JOB_NAME]
     assert isinstance(job, dict)
     return job
+
+
+def _executable_logical_lines(script: str) -> tuple[str, ...]:
+    """Return stripped, non-comment lines with shell continuations joined."""
+    logical_lines: list[str] = []
+    continued = ""
+    for raw_line in script.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        continued = f"{continued} {line}".strip()
+        if continued.endswith("\\"):
+            continued = continued[:-1].rstrip()
+            continue
+        logical_lines.append(continued)
+        continued = ""
+    assert not continued, "script ends with an unterminated line continuation"
+    return tuple(logical_lines)
 
 
 def test_workflow_yaml_parses() -> None:
@@ -158,32 +177,77 @@ def test_python_ci_marks_service_postgres_as_disposable_before_tests() -> None:
 
 def test_python_ci_enables_and_verifies_tls_on_service_postgres() -> None:
     job = _load_workflow()["jobs"]["test"]
+    assert job["services"]["postgres"]["image"] == "postgres:18"
+
     steps = {step["name"]: step for step in job["steps"]}
     tls_step = steps["Enable TLS on disposable PostgreSQL service"]
     assert tls_step["env"]["POSTGRES_SERVICE_ID"] == "${{ job.services.postgres.id }}"
 
-    tls_script = tls_step["run"]
-    for required in (
-        "docker exec -u 0",
-        "openssl req -x509",
-        "-days 1",
-        "-subj /CN=localhost",
-        '"$PGDATA/server.crt"',
-        '"$PGDATA/server.key"',
-        "chown postgres:postgres",
-        'chmod 600 "$PGDATA/server.key"',
-        "ssl=on",
-        "docker restart",
-        "for attempt in $(seq 1 30)",
-        "pg_isready",
-    ):
-        assert required in tls_script
+    tls_lines = _executable_logical_lines(tls_step["run"])
+    assert 'docker exec -u 0 "$POSTGRES_SERVICE_ID" bash -ceu \'' in tls_lines
+    assert any(
+        re.fullmatch(
+            r'openssl req -x509 -nodes -newkey rsa:2048 -days 1 '
+            r'-subj /CN=localhost -keyout "\$PGDATA/server\.key" '
+            r'-out "\$PGDATA/server\.crt"',
+            line,
+        )
+        for line in tls_lines
+    )
+    assert (
+        'chown postgres:postgres "$PGDATA/server.crt" "$PGDATA/server.key"'
+        in tls_lines
+    )
+    assert 'chmod 600 "$PGDATA/server.key"' in tls_lines
+    assert (
+        r'''printf "\nssl=on\nssl_cert_file='\''server.crt'\''\nssl_key_file='\''server.key'\''\n" >> "$PGDATA/postgresql.conf"'''
+        in tls_lines
+    )
+    assert 'docker restart "$POSTGRES_SERVICE_ID"' in tls_lines
+    attempt_loops = [
+        line
+        for line in tls_lines
+        if re.fullmatch(r"for attempt in \$\(seq 1 \d+\); do", line)
+    ]
+    assert attempt_loops == ["for attempt in $(seq 1 30); do"]
+    assert (
+        'if docker exec "$POSTGRES_SERVICE_ID" '
+        'pg_isready -U postgres -d postgres; then'
+        in tls_lines
+    )
+
+    docker_commands = [
+        line
+        for line in tls_lines
+        if re.search(r"\bdocker (?:exec|restart|logs)\b", line)
+    ]
+    assert docker_commands
+    for command in docker_commands:
+        verb = re.search(r"\bdocker (exec|restart|logs)\b", command)
+        assert verb is not None
+        if verb.group(1) == "exec":
+            assert re.search(
+                r'\bdocker exec(?: -u 0)? "\$POSTGRES_SERVICE_ID"(?: |$)',
+                command,
+            )
+        else:
+            assert re.search(
+                rf'\bdocker {verb.group(1)} "\$POSTGRES_SERVICE_ID"(?: |$)',
+                command,
+            )
 
     marker = steps["Mark disposable PostgreSQL service"]
     assert marker["env"]["APPLYPILOT_PGTEST_DSN"].endswith("?sslmode=require")
-    marker_script = marker["run"]
-    assert "SHOW ssl" in marker_script
-    assert "PostgreSQL service did not enable TLS" in marker_script
+    marker_lines = _executable_logical_lines(marker["run"])
+    assert (
+        'ssl_setting = connection.execute("SHOW ssl").fetchone()[0]'
+        in marker_lines
+    )
+    assert 'if ssl_setting != "on":' in marker_lines
+    assert (
+        'raise RuntimeError("PostgreSQL service did not enable TLS")'
+        in marker_lines
+    )
 
     test_environment = steps["Test"]["env"]
     assert test_environment["APPLYPILOT_PGTEST_DSN"].endswith("?sslmode=require")
