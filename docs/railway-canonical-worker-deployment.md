@@ -59,9 +59,15 @@ not claim to eliminate PostgreSQL's superuser bypass; it isolates the exception.
 Store that credential offline, do not set its DSN in controller or worker
 services, and use it only for bootstrap or execution of the prewritten rollback.
 
-Bootstrap creates the dedicated NOLOGIN database owner, LOGIN/NOSUPERUSER
-controller, NOLOGIN verifier, NOLOGIN migrator, and the fixed `fleet_backup`
-LOGIN topology. `fleet_backup` is `NOINHERIT NOSUPERUSER NOCREATEDB
+Bootstrap creates the dedicated `LOGIN NOINHERIT NOSUPERUSER` database owner
+(the canonical import login), LOGIN/NOSUPERUSER controller, NOLOGIN verifier,
+NOLOGIN migrator, and the fixed `fleet_backup` LOGIN topology. The database
+owner can activate only the exact migrator and verifier roles through OID-10-
+granted `SET`-only memberships; it receives no standing inherited authority.
+Its independent password is accepted only through
+`APPLYPILOT_DATABASE_OWNER_PG_PASSWORD`, converted client-side to a SCRAM-SHA-256
+verifier, and rotated in the same atomic transaction. `fleet_backup` is
+`NOINHERIT NOSUPERUSER NOCREATEDB
 NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1`; it has no inbound
 or outbound memberships and owns no object. It receives only database CONNECT,
 schema USAGE, table/view/materialized-view SELECT, sequence SELECT, and explicit
@@ -72,8 +78,9 @@ default ACLs for future schema USAGE and table/sequence SELECT. It strips LOGIN,
 SUPERUSER, BYPASSRLS, CREATEROLE, CREATEDB, and REPLICATION from separately
 named legacy roles in `retired_admin_roles`; the infrastructure break-glass role
 must never appear in that list. After bootstrap, delete
-`APPLYPILOT_ADMIN_PG_DSN`, `APPLYPILOT_CONTROLLER_PG_PASSWORD`, and
-`APPLYPILOT_BACKUP_PG_PASSWORD` from the
+`APPLYPILOT_ADMIN_PG_DSN`, `APPLYPILOT_CONTROLLER_PG_PASSWORD`,
+`APPLYPILOT_BACKUP_PG_PASSWORD`, and
+`APPLYPILOT_DATABASE_OWNER_PG_PASSWORD` from the
 shell. Set `APPLYPILOT_CONTROLLER_PG_DSN` only in the administrative migration
 job. Normal migration and reconciliation run as that non-superuser controller,
 which has no owner or `brain_schema_migrator` membership; authority changes use
@@ -86,6 +93,7 @@ Example one-time bootstrap:
 $env:APPLYPILOT_ADMIN_PG_DSN = '<provider-admin-url>'
 $env:APPLYPILOT_CONTROLLER_PG_PASSWORD = '<new-scram-secret>'
 $env:APPLYPILOT_BACKUP_PG_PASSWORD = '<independent-backup-scram-secret>'
+$env:APPLYPILOT_DATABASE_OWNER_PG_PASSWORD = '<independent-canonical-import-scram-secret>'
 python scripts/bootstrap-fleet-pg-roles.py `
   --database-owner-role applypilot_database_owner `
   --controller-role applypilot_deployment_controller `
@@ -95,7 +103,7 @@ python scripts/bootstrap-fleet-pg-roles.py `
   --infrastructure-superuser-role postgres `
   --receipt-path .\evidence\bootstrap-receipt.json `
   --rollback-sql .\evidence\bootstrap-rollback.sql
-Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD, Env:APPLYPILOT_BACKUP_PG_PASSWORD
+Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD, Env:APPLYPILOT_BACKUP_PG_PASSWORD, Env:APPLYPILOT_DATABASE_OWNER_PG_PASSWORD
 ```
 
 Worker reconciliation has a strict rollout prerequisite. First complete either

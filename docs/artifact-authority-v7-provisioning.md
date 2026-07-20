@@ -8,11 +8,16 @@ OID 10, and that role must still have `rolsuper = true`. The contract does not
 depend on the bootstrap role's cluster-specific name.
 
 When OID 10 owns the database, no provider membership is allowed. When a
-dedicated control-plane provider owns the database, one additional permanent
-membership is required: `brain_schema_migrator -> <current database owner>`,
-with the same three options and grantor OID 10. The provider is exactly LOGIN,
-NOSUPERUSER, NOCREATEROLE, and NOINHERIT, with no CREATEDB, REPLICATION, or
-BYPASSRLS authority and no other role memberships. Before V10, the writer role
+dedicated control-plane provider owns the database, exactly two additional
+permanent memberships are required:
+`brain_schema_migrator -> <current database owner>` for writes and
+`brain_schema_verifier -> <current database owner>` for the durable identity
+read, both with the same three options and grantor OID 10. The provider is
+exactly LOGIN, NOSUPERUSER, NOCREATEROLE, and NOINHERIT, with no CREATEDB,
+REPLICATION, or BYPASSRLS authority and no other role memberships. Bootstrap
+and existing-topology upgrade accept its independent authentication secret only
+through `APPLYPILOT_DATABASE_OWNER_PG_PASSWORD` and rotate a client-generated
+SCRAM-SHA-256 verifier in the same atomic transaction. Before V10, the writer role
 has no descendants; V10 replaces that legacy closure with the fixed,
 single-purpose login edges described below.
 

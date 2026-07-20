@@ -19,7 +19,7 @@ import re
 import stat
 from typing import Any
 
-from psycopg import sql
+from psycopg import ClientCursor, sql
 
 DEFAULT_ROLE = "fleet_worker"
 FLEET_BACKUP_ROLE = "fleet_backup"
@@ -2109,6 +2109,20 @@ def _client_scram_verifier(conn, *, role_name: str, password: str) -> str:
     if not verifier.startswith("SCRAM-SHA-256$"):
         raise RuntimeError("could not generate fleet worker password verifier")
     return verifier
+
+
+def _require_nonblank_database_owner_password(password: str) -> None:
+    if not isinstance(password, str) or not password.strip():
+        raise ValueError("database_owner_password must be non-blank")
+
+
+def _set_role_password_verifier(cur, *, role_name: str, password_verifier: str) -> None:
+    """Set a precomputed SCRAM verifier through a client-parameterized DDL cursor."""
+    with ClientCursor(cur.connection) as password_cur:
+        password_cur.execute(
+            sql.SQL("ALTER ROLE {} PASSWORD %s").format(sql.Identifier(role_name)),
+            (password_verifier,),
+        )
 
 
 def _validate_post_password_boundary(
@@ -5247,11 +5261,13 @@ def bootstrap_database_roles(
     controller_password: str,
     backup_password: str,
     *,
+    database_owner_password: str,
     topology: BootstrapTopology,
     evidence_paths: DurableEvidencePaths,
     install_brain_authority: bool = False,
 ) -> BootstrapReceipt:
     """Perform a fenced role handoff and optional fixed authority install."""
+    _require_nonblank_database_owner_password(database_owner_password)
     if conn.autocommit:
         raise RuntimeError("atomic bootstrap requires autocommit to be disabled")
     if conn.info.transaction_status.name != "IDLE":
@@ -5261,6 +5277,11 @@ def bootstrap_database_roles(
     _validate_evidence_paths(evidence_paths)
     verifier = _client_scram_verifier(conn, role_name=topology.controller_role, password=controller_password)
     backup_verifier = _client_scram_verifier(conn, role_name=topology.backup_role, password=backup_password)
+    database_owner_verifier = _client_scram_verifier(
+        conn,
+        role_name=topology.database_owner_role,
+        password=database_owner_password,
+    )
     fence_active = False
     preserve_fence_on_failure = False
     lock_acquired = False
@@ -5437,7 +5458,9 @@ def bootstrap_database_roles(
                 )
             )
             canonical_import_memberships = _reconcile_canonical_import_memberships(
-                cur, topology=topology
+                cur,
+                topology=topology,
+                password_verifier=database_owner_verifier,
             )
             cur.execute(sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM PUBLIC").format(database))
             for role_name in topology.retired_admin_roles:
@@ -5534,6 +5557,7 @@ def upgrade_brain_authority_existing_topology(
     conn,
     backup_password: str,
     *,
+    database_owner_password: str,
     topology: BootstrapTopology,
     evidence_paths: DurableEvidencePaths,
     expected_database_name: str,
@@ -5546,6 +5570,7 @@ def upgrade_brain_authority_existing_topology(
     ownership or admission ACLs.  It exists for databases that completed the
     earlier role handoff before the fixed authority schema was introduced.
     """
+    _require_nonblank_database_owner_password(database_owner_password)
     if conn.autocommit:
         raise RuntimeError("atomic authority upgrade requires autocommit to be disabled")
     if conn.info.transaction_status.name != "IDLE":
@@ -5553,6 +5578,11 @@ def upgrade_brain_authority_existing_topology(
     _validate_evidence_paths(evidence_paths)
     backup_verifier = _client_scram_verifier(
         conn, role_name=topology.backup_role, password=backup_password
+    )
+    database_owner_verifier = _client_scram_verifier(
+        conn,
+        role_name=topology.database_owner_role,
+        password=database_owner_password,
     )
     lock_acquired = False
     try:
@@ -5611,7 +5641,10 @@ def upgrade_brain_authority_existing_topology(
                 rollback_sql=rollback_sql,
             )
             _transition_existing_authority_topology(
-                cur, topology=topology, backup_password_verifier=backup_verifier
+                cur,
+                topology=topology,
+                backup_password_verifier=backup_verifier,
+                database_owner_password_verifier=database_owner_verifier,
             )
             _reconcile_backup_role_boundary(cur, topology=topology)
             candidate_roles = _install_brain_authority_in_transaction(cur, topology=topology)
@@ -6081,7 +6114,10 @@ def _require_exact_canonical_import_memberships(
 
 
 def _reconcile_canonical_import_memberships(
-    cur, *, topology: BootstrapTopology
+    cur,
+    *,
+    topology: BootstrapTopology,
+    password_verifier: str,
 ) -> tuple[dict[str, Any], ...]:
     """Bind the database-owner LOGIN to write and read roles only via SET ROLE."""
     cur.execute("SELECT rolname,rolsuper FROM pg_roles WHERE oid=10")
@@ -6094,6 +6130,11 @@ def _reconcile_canonical_import_memberships(
             "ALTER ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
             "NOREPLICATION NOBYPASSRLS"
         ).format(sql.Identifier(topology.database_owner_role))
+    )
+    _set_role_password_verifier(
+        cur,
+        role_name=topology.database_owner_role,
+        password_verifier=password_verifier,
     )
     _reconcile_role_memberships(cur, role_name=topology.migrator_role)
     _reconcile_role_memberships(cur, role_name=topology.verifier_role)
@@ -6162,6 +6203,7 @@ def _transition_existing_authority_topology(
     *,
     topology: BootstrapTopology,
     backup_password_verifier: str,
+    database_owner_password_verifier: str,
 ) -> None:
     # Close the known legacy admin graph first.  Forward rollback intentionally
     # never restores these memberships or elevated/login attributes.
@@ -6192,7 +6234,11 @@ def _transition_existing_authority_topology(
             "ALTER ROLE {} {} NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
         ).format(sql.Identifier(role_name), sql.SQL("LOGIN" if login else "NOLOGIN")))
     _reconcile_exact_controller_membership(cur, controller_role=topology.controller_role)
-    _reconcile_canonical_import_memberships(cur, topology=topology)
+    _reconcile_canonical_import_memberships(
+        cur,
+        topology=topology,
+        password_verifier=database_owner_password_verifier,
+    )
 
 
 def ensure_fleet_worker_role(

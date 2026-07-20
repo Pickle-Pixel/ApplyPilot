@@ -124,6 +124,15 @@ identity read. Their authenticated receipt records both exact edges. Set
 `BRAIN_IMPORT_DSN` to that database-owner login; do not use a separate ambient
 login, add direct table grants, or enable standing inherited authority:
 
+Both supported topology commands require the canonical login's independent
+password through `APPLYPILOT_DATABASE_OWNER_PG_PASSWORD`. They remove it from
+their process environment, build a SCRAM-SHA-256 verifier client-side, and rotate
+the login inside the same atomic transaction as its exact memberships. Never put
+this secret in an argument, receipt, rollback artifact, log, or raw `ALTER ROLE`
+command. Remove it from the caller's environment immediately after the bootstrap
+or existing-topology upgrade, then supply the resulting database-owner DSN only
+through the approved `BRAIN_IMPORT_DSN` secret channel.
+
 ```sql
 SELECT parent.rolname AS parent_role, member.rolname AS canonical_import_role,
        membership.admin_option, membership.inherit_option, membership.set_option,

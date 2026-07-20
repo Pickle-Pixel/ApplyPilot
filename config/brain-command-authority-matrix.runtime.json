@@ -5525,7 +5525,7 @@
         "python scripts/bootstrap-fleet-pg-roles.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py;sourceBlobSha256=2af68b26a4e5987fa6c2c1123c250558fa38edf9459ad7d9a18f8848842686df",
+      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py;sourceBlobSha256=a3dea794d5bdf3fd66373ea11f8cbb4281fb7bb5f73fa1096a799129672e4858",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5759,7 +5759,7 @@
         "python scripts/upgrade-brain-authority-existing-topology.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py;sourceBlobSha256=f21524b163e9275360b7410e569d0b563ad8350569a2bea7d6d45216cd2e01c0",
+      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py;sourceBlobSha256=a0424ef431f84e72c2193be47dc567662225acb31583a397e95056656a52e245",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,

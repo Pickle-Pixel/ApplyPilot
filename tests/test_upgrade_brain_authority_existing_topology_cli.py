@@ -7,6 +7,7 @@ import sys
 
 import importlib.util
 import json
+import pytest
 
 from applypilot.fleet import pg_roles
 
@@ -38,7 +39,67 @@ def test_cli_pins_candidate_source_before_stale_editable(tmp_path: Path) -> None
     assert "--expected-system-identifier" in result.stdout
 
 
-def test_committed_receipt_uses_forward_v7_containment(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("database_owner_password", [None, "", "   "])
+def test_upgrade_cli_requires_nonblank_database_owner_password(
+    tmp_path: Path,
+    monkeypatch,
+    database_owner_password: str | None,
+) -> None:
+    spec = importlib.util.spec_from_file_location("authority_upgrade_cli", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("APPLYPILOT_ADMIN_PG_DSN", "postgresql://unused")
+    monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "backup-password")
+    monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", (b"x" * 32).hex())
+    monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "test-key")
+    if database_owner_password is None:
+        monkeypatch.delenv("APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", raising=False)
+    else:
+        monkeypatch.setenv(
+            "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", database_owner_password
+        )
+    monkeypatch.setattr(
+        module.psycopg,
+        "connect",
+        lambda *_args, **_kwargs: pytest.fail(
+            "missing database-owner secret reached PostgreSQL"
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--database-owner-role",
+            "owner",
+            "--controller-role",
+            "controller",
+            "--verifier-role",
+            "brain_schema_verifier",
+            "--migrator-role",
+            "brain_schema_migrator",
+            "--retired-admin-role",
+            "retired",
+            "--infrastructure-superuser-role",
+            "postgres",
+            "--expected-database-name",
+            "postgres",
+            "--expected-system-identifier",
+            "1",
+            "--receipt-path",
+            str(tmp_path / "receipt.json"),
+            "--rollback-sql",
+            str(tmp_path / "rollback.sql"),
+        ],
+    )
+    with pytest.raises(SystemExit, match="APPLYPILOT_DATABASE_OWNER_PG_PASSWORD"):
+        module.main()
+
+
+def test_committed_receipt_uses_forward_v7_containment(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
     spec = importlib.util.spec_from_file_location("authority_upgrade_cli", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -57,7 +118,8 @@ def test_committed_receipt_uses_forward_v7_containment(tmp_path: Path, monkeypat
         escalation_required=False, bootstrapped_at="2001-01-01T00:00:00+00:00",
     )
     monkeypatch.setattr(module.psycopg, "connect", lambda *_args, **_kwargs: FakeConnection())
-    def fake_upgrade(*_args, evidence_paths, **_kwargs):
+    def fake_upgrade(*_args, database_owner_password, evidence_paths, **_kwargs):
+        assert database_owner_password == "secret-database-owner-password"
         evidence_paths.rollback_sql_path.write_text(rollback_sql, encoding="utf-8")
         return receipt
 
@@ -65,6 +127,9 @@ def test_committed_receipt_uses_forward_v7_containment(tmp_path: Path, monkeypat
     monkeypatch.setattr(module, "_replace_durable", lambda path, payload: path.write_bytes(payload))
     monkeypatch.setenv("APPLYPILOT_ADMIN_PG_DSN", "postgresql://unused")
     monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "disposable-test-only")
+    monkeypatch.setenv(
+        "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", "secret-database-owner-password"
+    )
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", (b"x" * 32).hex())
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "test-key")
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--database-owner-role", "owner",
@@ -75,3 +140,14 @@ def test_committed_receipt_uses_forward_v7_containment(tmp_path: Path, monkeypat
         "--rollback-sql", str(rollback_path)])
     assert module.main() == 0
     assert json.loads(receipt_path.read_text())["rollback_mode"] == "forward_v7_containment"
+    captured = capsys.readouterr()
+    artifacts_and_logs = "\n".join(
+        (
+            receipt_path.read_text(encoding="utf-8"),
+            rollback_path.read_text(encoding="utf-8"),
+            captured.out,
+            captured.err,
+        )
+    )
+    assert "secret-database-owner-password" not in artifacts_and_logs
+    assert "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD" not in os.environ

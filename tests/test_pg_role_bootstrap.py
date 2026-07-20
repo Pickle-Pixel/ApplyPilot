@@ -31,6 +31,7 @@ OWNER = "bootstrap_database_owner_test"
 CONTROLLER = "bootstrap_controller_test"
 CONTROLLER_PASSWORD = "bootstrap-controller-password"
 BACKUP_PASSWORD = "bootstrap-backup-password"
+DATABASE_OWNER_PASSWORD = "bootstrap-database-owner-password"
 VERIFIER = "bootstrap_verifier_test"
 MIGRATOR = "bootstrap_migrator_test"
 WORKER_ROLE = "bootstrap_worker_test"
@@ -106,6 +107,58 @@ def test_atomic_bootstrap_cli_rejects_schema_incompatible_role_names(tmp_path: P
         module._parser().parse_args(arguments)
 
 
+@pytest.mark.parametrize("database_owner_password", [None, "", "   "])
+def test_atomic_bootstrap_cli_requires_nonblank_database_owner_password(
+    tmp_path: Path,
+    monkeypatch,
+    database_owner_password: str | None,
+) -> None:
+    module = _bootstrap_script_module()
+    monkeypatch.setenv("APPLYPILOT_ADMIN_PG_DSN", "postgresql://unused")
+    monkeypatch.setenv("APPLYPILOT_CONTROLLER_PG_PASSWORD", "controller-password")
+    monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "backup-password")
+    monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", _EVIDENCE_KEY.hex())
+    monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", _EVIDENCE_KEY_ID)
+    if database_owner_password is None:
+        monkeypatch.delenv("APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", raising=False)
+    else:
+        monkeypatch.setenv(
+            "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", database_owner_password
+        )
+    monkeypatch.setattr(
+        module.psycopg,
+        "connect",
+        lambda *_args, **_kwargs: pytest.fail(
+            "missing database-owner secret reached PostgreSQL"
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bootstrap-fleet-pg-roles.py",
+            "--database-owner-role",
+            "owner",
+            "--controller-role",
+            "controller",
+            "--verifier-role",
+            "brain_schema_verifier",
+            "--migrator-role",
+            "brain_schema_migrator",
+            "--retired-admin-role",
+            "retired",
+            "--infrastructure-superuser-role",
+            "postgres",
+            "--receipt-path",
+            str(tmp_path / "receipt.json"),
+            "--rollback-sql",
+            str(tmp_path / "rollback.sql"),
+        ],
+    )
+    with pytest.raises(SystemExit, match="APPLYPILOT_DATABASE_OWNER_PG_PASSWORD"):
+        module.main()
+
+
 def test_bootstrap_api_has_no_caller_supplied_sql_callback() -> None:
     bootstrap_parameters = inspect.signature(pg_roles.bootstrap_database_roles).parameters
     worker_parameters = inspect.signature(pg_roles.ensure_fleet_worker_role).parameters
@@ -113,6 +166,40 @@ def test_bootstrap_api_has_no_caller_supplied_sql_callback() -> None:
     assert "evidence_writer" not in bootstrap_parameters
     assert "evidence_writer" not in worker_parameters
     assert "install_brain_authority" in bootstrap_parameters
+    assert "database_owner_password" in bootstrap_parameters
+
+
+@pytest.mark.parametrize("database_owner_password", ["", "   "])
+def test_authority_apis_reject_blank_database_owner_password_before_database_access(
+    database_owner_password: str,
+) -> None:
+    topology = pg_roles.BootstrapTopology(
+        database_owner_role="owner",
+        controller_role="controller",
+        verifier_role="brain_schema_verifier",
+        migrator_role="brain_schema_migrator",
+        retired_admin_roles=("retired",),
+        infrastructure_superuser_roles=("postgres",),
+    )
+    with pytest.raises(ValueError, match="database_owner_password must be non-blank"):
+        pg_roles.bootstrap_database_roles(
+            object(),
+            "controller-password",
+            "backup-password",
+            database_owner_password=database_owner_password,
+            topology=topology,
+            evidence_paths=object(),
+        )
+    with pytest.raises(ValueError, match="database_owner_password must be non-blank"):
+        pg_roles.upgrade_brain_authority_existing_topology(
+            object(),
+            "backup-password",
+            database_owner_password=database_owner_password,
+            topology=topology,
+            evidence_paths=object(),
+            expected_database_name="postgres",
+            expected_system_identifier="1",
+        )
 
 
 def test_evidence_api_rejects_hostile_callable_without_invoking_it(monkeypatch) -> None:
@@ -152,6 +239,7 @@ def test_evidence_api_rejects_hostile_callable_without_invoking_it(monkeypatch) 
             connection,
             "password",
             "backup-password",
+            database_owner_password="database-owner-password",
             topology=pg_roles.BootstrapTopology(
                 database_owner_role="owner",
                 controller_role="controller",
@@ -178,7 +266,9 @@ def test_evidence_api_rejects_hostile_callable_without_invoking_it(monkeypatch) 
     assert connection.commit_calls == 0
 
 
-def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(tmp_path: Path, monkeypatch) -> None:
+def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
     module = _bootstrap_script_module()
     receipt_path = tmp_path / "receipt.json"
     rollback_path = tmp_path / "rollback.sql"
@@ -192,8 +282,18 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(tmp_path
         def __exit__(self, *_args):
             return False
 
-    def fake_bootstrap(_conn, _password, _backup_password, *, topology, evidence_paths, install_brain_authority):
+    def fake_bootstrap(
+        _conn,
+        _password,
+        _backup_password,
+        *,
+        database_owner_password,
+        topology,
+        evidence_paths,
+        install_brain_authority,
+    ):
         nonlocal authority_requested, committed
+        assert database_owner_password == "secret-database-owner-password"
         inventory = {
             "prepared_at": "2001-02-03T04:05:06+00:00",
             "database_name": "postgres",
@@ -230,6 +330,9 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(tmp_path
     monkeypatch.setenv("APPLYPILOT_ADMIN_PG_DSN", "secret-admin-dsn")
     monkeypatch.setenv("APPLYPILOT_CONTROLLER_PG_PASSWORD", "secret-controller-password")
     monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "secret-backup-password")
+    monkeypatch.setenv(
+        "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", "secret-database-owner-password"
+    )
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", _EVIDENCE_KEY.hex())
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", _EVIDENCE_KEY_ID)
     monkeypatch.setattr(
@@ -268,7 +371,17 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(tmp_path
     assert prepared["status"] == "prepared_before_database_mutation"
     assert prepared["escalation_required"] is True
     assert prepared["in_doubt"] is True
-    assert "secret" not in receipt_path.read_text(encoding="utf-8")
+    captured = capsys.readouterr()
+    artifacts_and_logs = "\n".join(
+        (
+            receipt_path.read_text(encoding="utf-8"),
+            rollback_path.read_text(encoding="utf-8"),
+            captured.out,
+            captured.err,
+        )
+    )
+    assert "secret-database-owner-password" not in artifacts_and_logs
+    assert "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD" not in os.environ
 
 
 def _signed_rollback_receipt(rollback_path: Path, rollback_bytes: bytes, **extra) -> dict:
@@ -2132,6 +2245,7 @@ def test_bootstrap_refuses_autocommit_before_database_mutation(fleet_db: str) ->
                 conn,
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -2351,6 +2465,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 pg_roles.upgrade_brain_authority_existing_topology(
                     root,
                     BACKUP_PASSWORD,
+                    database_owner_password=DATABASE_OWNER_PASSWORD,
                     topology=topology,
                     evidence_paths=blocked_evidence,
                     expected_database_name=database_name,
@@ -2367,7 +2482,13 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
             original_transition = pg_roles._transition_existing_authority_topology
             blocked_statements: list[str] = []
 
-            def transition_with_lock_probe(cur, *, topology, backup_password_verifier):
+            def transition_with_lock_probe(
+                cur,
+                *,
+                topology,
+                backup_password_verifier,
+                database_owner_password_verifier,
+            ):
                 probes = (
                     "UPDATE public.fleet_config SET paused=FALSE WHERE id=1",
                     "UPDATE public.apply_queue SET status=status WHERE FALSE",
@@ -2385,6 +2506,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                     cur,
                     topology=topology,
                     backup_password_verifier=backup_password_verifier,
+                    database_owner_password_verifier=database_owner_password_verifier,
                 )
 
             monkeypatch.setattr(
@@ -2396,6 +2518,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
             receipt = pg_roles.upgrade_brain_authority_existing_topology(
                 root,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
                 expected_database_name=database_name,
@@ -2441,11 +2564,42 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 "SELECT rolcanlogin,rolinherit,rolpassword IS NOT NULL AS has_password "
                 "FROM pg_authid WHERE rolname=%s",
                 (owner,),
-            ).fetchone() == {"rolcanlogin": True, "rolinherit": False, "has_password": False}
+            ).fetchone() == {"rolcanlogin": True, "rolinherit": False, "has_password": True}
             assert receipt.topology["canonical_import_role"] == owner
             assert receipt.inventory["canonical_import_memberships"] == (
                 _expected_canonical_import_memberships(topology)
             )
+            with psycopg.connect(
+                _dsn(
+                    fleet_db,
+                    user=owner,
+                    password=DATABASE_OWNER_PASSWORD,
+                ),
+                row_factory=dict_row,
+            ) as canonical_import:
+                assert canonical_import.execute(
+                    "SELECT session_user AS session_name,current_user AS current_name,"
+                    "has_table_privilege(current_user,'public.brain_schema_versions','SELECT') "
+                    "AS ambient_read,"
+                    "has_table_privilege(current_user,'public.brain_schema_versions','UPDATE') "
+                    "AS ambient_write"
+                ).fetchone() == {
+                    "session_name": owner,
+                    "current_name": owner,
+                    "ambient_read": False,
+                    "ambient_write": False,
+                }
+                canonical_import.execute("SET ROLE brain_schema_verifier")
+                assert canonical_import.execute(
+                    "SELECT count(*) AS count FROM public.brain_schema_versions"
+                ).fetchone()["count"] == 7
+                canonical_import.execute("RESET ROLE")
+                canonical_import.execute("SET ROLE brain_schema_migrator")
+                canonical_import.execute(
+                    "UPDATE public.brain_schema_versions SET migration_name=migration_name WHERE false"
+                )
+                canonical_import.execute("RESET ROLE")
+                canonical_import.rollback()
             assert (
                 f'GRANT "{owner}" TO "{legacy_controller}"' not in receipt.rollback_sql
             )
@@ -2950,6 +3104,7 @@ def test_pg18_bootstrap_validates_connection_then_database_then_evidence(monkeyp
             FakeConnection(),
             CONTROLLER_PASSWORD,
             BACKUP_PASSWORD,
+            database_owner_password=DATABASE_OWNER_PASSWORD,
             topology=_atomic_topology(),
             evidence_paths=object(),
             install_brain_authority=True,
@@ -3015,6 +3170,7 @@ def test_unsupported_major_pg16_bootstrap_rejects_before_lock_evidence_or_databa
                 connection,
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=_atomic_topology(),
                 evidence_paths=evidence,
                 install_brain_authority=True,
@@ -3297,6 +3453,7 @@ def test_fixed_atomic_authority_install_failure_rolls_back_everything(fleet_db: 
                     root,
                     CONTROLLER_PASSWORD,
                     BACKUP_PASSWORD,
+                    database_owner_password=DATABASE_OWNER_PASSWORD,
                     topology=topology,
                     evidence_paths=_test_evidence_paths(),
                     install_brain_authority=True,
@@ -3346,6 +3503,7 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
                 root,
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
                 install_brain_authority=True,
@@ -3372,6 +3530,45 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
                 root.cursor(), topology=topology
             ) == _expected_canonical_import_memberships(topology)
             root.rollback()
+            owner_dsn = _dsn(
+                fleet_db,
+                user=ATOMIC_OWNER,
+                password=DATABASE_OWNER_PASSWORD,
+            )
+            with pytest.raises(psycopg.OperationalError):
+                psycopg.connect(
+                    _dsn(
+                        fleet_db,
+                        user=ATOMIC_OWNER,
+                        password=DATABASE_OWNER_PASSWORD + "-wrong",
+                    ),
+                    row_factory=dict_row,
+                )
+            with psycopg.connect(owner_dsn, row_factory=dict_row) as canonical_import:
+                assert canonical_import.execute(
+                    "SELECT session_user AS session_name,current_user AS current_name,"
+                    "has_table_privilege(current_user,'public.brain_schema_versions','SELECT') "
+                    "AS ambient_read,"
+                    "has_table_privilege(current_user,'public.brain_schema_versions','UPDATE') "
+                    "AS ambient_write"
+                ).fetchone() == {
+                    "session_name": ATOMIC_OWNER,
+                    "current_name": ATOMIC_OWNER,
+                    "ambient_read": False,
+                    "ambient_write": False,
+                }
+                canonical_import.execute("SET ROLE brain_schema_verifier")
+                assert canonical_import.execute(
+                    "SELECT array_agg(version ORDER BY version) AS versions "
+                    "FROM public.brain_schema_versions"
+                ).fetchone()["versions"] == [1, 2, 3, 4, 5, 6, 7]
+                canonical_import.execute("RESET ROLE")
+                canonical_import.execute("SET ROLE brain_schema_migrator")
+                canonical_import.execute(
+                    "UPDATE public.brain_schema_versions SET migration_name=migration_name WHERE false"
+                )
+                canonical_import.execute("RESET ROLE")
+                canonical_import.rollback()
             assert receipt.inventory["backup_role_boundary"] == {
                 "role_name": pg_roles.FLEET_BACKUP_ROLE,
                 "connection_limit": 1,
@@ -3763,6 +3960,7 @@ def test_bootstrap_isolates_other_database_and_rollback_restores_public_connect(
                 root,
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -3963,6 +4161,7 @@ def test_bootstrap_terminates_active_nonbreakglass_session_on_other_database(fle
                 root,
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=topology,
                 evidence_paths=evidence_paths,
             )
@@ -4062,6 +4261,7 @@ def test_bootstrap_closes_and_rollback_restores_retired_admin_membership_edges(f
                 root,
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -4149,6 +4349,7 @@ def test_retired_membership_rollback_preserves_grantor_and_supported_options(fle
                 root,
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -4219,6 +4420,7 @@ def test_retired_membership_closure_fails_without_cascading_dependent_grants(fle
                     root,
                     CONTROLLER_PASSWORD,
                     BACKUP_PASSWORD,
+                    database_owner_password=DATABASE_OWNER_PASSWORD,
                     topology=topology,
                     evidence_paths=_test_evidence_paths(),
                 )
@@ -4291,6 +4493,7 @@ def test_live_bootstrap_hands_off_to_non_superuser_controller_and_reconciles(fle
                 root,
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
                 topology=pg_roles.BootstrapTopology(
                     database_owner_role=OWNER,
                     controller_role=CONTROLLER,

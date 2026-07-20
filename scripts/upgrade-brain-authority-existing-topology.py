@@ -133,16 +133,25 @@ def main() -> int:
 
     admin_dsn = os.environ.pop("APPLYPILOT_ADMIN_PG_DSN", "")
     backup_password = os.environ.pop("APPLYPILOT_BACKUP_PG_PASSWORD", "")
+    database_owner_password = os.environ.pop(
+        "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", ""
+    )
     authentication_key_hex = os.environ.pop("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", "")
     authentication_key_id = os.environ.pop("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "")
     try:
         authentication_key = bytes.fromhex(authentication_key_hex)
     except ValueError:
         authentication_key = b""
-    if not admin_dsn or not backup_password or len(authentication_key) < 32 or not authentication_key_id:
+    if (
+        not admin_dsn
+        or not backup_password
+        or not database_owner_password.strip()
+        or len(authentication_key) < 32
+        or not authentication_key_id
+    ):
         raise SystemExit(
             "authority upgrade requires APPLYPILOT_ADMIN_PG_DSN, "
-            "APPLYPILOT_BACKUP_PG_PASSWORD, "
+            "APPLYPILOT_BACKUP_PG_PASSWORD, APPLYPILOT_DATABASE_OWNER_PG_PASSWORD, "
             "APPLYPILOT_ROLLBACK_HMAC_KEY_HEX (at least 32 bytes), and "
             "APPLYPILOT_ROLLBACK_HMAC_KEY_ID"
         )
@@ -166,6 +175,7 @@ def main() -> int:
         receipt = upgrade_brain_authority_existing_topology(
             conn,
             backup_password,
+            database_owner_password=database_owner_password,
             topology=topology,
             evidence_paths=evidence_paths,
             expected_database_name=args.expected_database_name,
