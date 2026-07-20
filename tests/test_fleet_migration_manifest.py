@@ -349,9 +349,6 @@ def test_pg18_migration_owner_reconciles_exact_backup_defaults_before_future_obj
             "SELECT 1 FROM pg_roles WHERE rolname=%s",
             (migrator._BACKUP_ROLE,),
         ).fetchone() is None
-        assert provider.execute(
-            "SELECT to_regclass('backup_forward_late_schema.probe') AS relation"
-        ).fetchone()["relation"] is not None
         provider.execute(
             sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
                 sql.Identifier(migrator._BACKUP_ROLE),
@@ -646,6 +643,7 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
             assert "SELECT namespace.nspname FROM pg_catalog.pg_namespace" in generated
             assert "REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I" in generated
             assert "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I FROM %I" in generated
+            assert "REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA %I FROM %I" in generated
             assert (
                 'ALTER DEFAULT PRIVILEGES FOR ROLE "applypilot_fleet_migrator" '
                 'REVOKE USAGE ON SCHEMAS FROM "fleet_backup";'
@@ -684,7 +682,25 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
         provider.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(topology_migrator)))
         provider.execute("CREATE SCHEMA backup_forward_late_schema")
         provider.execute("CREATE TABLE backup_forward_late_schema.probe(id bigint)")
+        provider.execute(
+            "CREATE PROCEDURE backup_forward_late_schema.probe_procedure() "
+            "LANGUAGE sql AS $$ SELECT 1 $$"
+        )
+        provider.execute(
+            "CREATE AGGREGATE backup_forward_late_schema.probe_aggregate(integer) "
+            "(SFUNC=pg_catalog.int4pl,STYPE=integer,INITCOND='0')"
+        )
         provider.execute("RESET ROLE")
+        provider.execute(
+            sql.SQL("GRANT EXECUTE ON PROCEDURE backup_forward_late_schema.probe_procedure() TO {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE)
+            )
+        )
+        provider.execute(
+            sql.SQL("GRANT EXECUTE ON FUNCTION backup_forward_late_schema.probe_aggregate(integer) TO {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE)
+            )
+        )
         assert provider.execute(
             "SELECT has_schema_privilege(%s,'backup_forward_late_schema','USAGE') AS allowed",
             (migrator._BACKUP_ROLE,),
@@ -693,6 +709,15 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
             "SELECT has_table_privilege(%s,'backup_forward_late_schema.probe','SELECT') AS allowed",
             (migrator._BACKUP_ROLE,),
         ).fetchone()["allowed"] is True
+        for routine in (
+            "backup_forward_late_schema.probe_procedure()",
+            "backup_forward_late_schema.probe_aggregate(integer)",
+        ):
+            assert provider.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE') AS allowed",
+                (migrator._BACKUP_ROLE, routine),
+            ).fetchone()["allowed"] is True
+        provider.execute(forward_sql)
         provider.execute(forward_sql)
         assert provider.execute(
             "SELECT 1 FROM pg_roles WHERE rolname=%s",
@@ -701,6 +726,14 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
         assert provider.execute(
             "SELECT to_regclass('backup_forward_late_schema.probe') AS relation"
         ).fetchone()["relation"] is not None
+        for routine in (
+            "backup_forward_late_schema.probe_procedure()",
+            "backup_forward_late_schema.probe_aggregate(integer)",
+        ):
+            assert provider.execute(
+                "SELECT to_regprocedure(%s) AS routine",
+                (routine,),
+            ).fetchone()["routine"] is not None
         for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
             assert pg_roles._public_function_default_execute_state(
                 provider.cursor(),
@@ -722,7 +755,25 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
         provider.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(topology_migrator)))
         provider.execute("CREATE SCHEMA backup_rollback_late_schema")
         provider.execute("CREATE TABLE backup_rollback_late_schema.probe(id bigint)")
+        provider.execute(
+            "CREATE PROCEDURE backup_rollback_late_schema.probe_procedure() "
+            "LANGUAGE sql AS $$ SELECT 1 $$"
+        )
+        provider.execute(
+            "CREATE AGGREGATE backup_rollback_late_schema.probe_aggregate(integer) "
+            "(SFUNC=pg_catalog.int4pl,STYPE=integer,INITCOND='0')"
+        )
         provider.execute("RESET ROLE")
+        provider.execute(
+            sql.SQL("GRANT EXECUTE ON PROCEDURE backup_rollback_late_schema.probe_procedure() TO {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE)
+            )
+        )
+        provider.execute(
+            sql.SQL("GRANT EXECUTE ON FUNCTION backup_rollback_late_schema.probe_aggregate(integer) TO {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE)
+            )
+        )
         assert provider.execute(
             "SELECT has_schema_privilege(%s,'backup_rollback_late_schema','USAGE') AS allowed",
             (migrator._BACKUP_ROLE,),
@@ -731,6 +782,14 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
             "SELECT has_table_privilege(%s,'backup_rollback_late_schema.probe','SELECT') AS allowed",
             (migrator._BACKUP_ROLE,),
         ).fetchone()["allowed"] is True
+        for routine in (
+            "backup_rollback_late_schema.probe_procedure()",
+            "backup_rollback_late_schema.probe_aggregate(integer)",
+        ):
+            assert provider.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE') AS allowed",
+                (migrator._BACKUP_ROLE, routine),
+            ).fetchone()["allowed"] is True
         provider.execute(rollback_sql)
         provider.execute(rollback_sql)
         assert provider.execute(
@@ -745,6 +804,16 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
                 "SELECT to_regclass(%s) AS relation",
                 (relation,),
             ).fetchone()["relation"] is not None
+        for routine in (
+            "backup_forward_late_schema.probe_procedure()",
+            "backup_forward_late_schema.probe_aggregate(integer)",
+            "backup_rollback_late_schema.probe_procedure()",
+            "backup_rollback_late_schema.probe_aggregate(integer)",
+        ):
+            assert provider.execute(
+                "SELECT to_regprocedure(%s) AS routine",
+                (routine,),
+            ).fetchone()["routine"] is not None
         for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
             assert pg_roles._public_function_default_execute_state(
                 provider.cursor(),
@@ -766,6 +835,30 @@ def test_pg18_legal_star_schema_execute_defaults_close_and_roll_back_exactly(
             sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(migrator._BACKUP_ROLE))
         )
         provider.execute('CREATE SCHEMA "*"')
+        provider.execute(
+            'CREATE PROCEDURE "*".public_procedure_probe() '
+            "LANGUAGE sql AS $$ SELECT 1 $$"
+        )
+        provider.execute(
+            'CREATE AGGREGATE "*".public_aggregate_probe(integer) '
+            "(SFUNC=pg_catalog.int4pl,STYPE=integer,INITCOND='0')"
+        )
+        for routine, object_kind in (
+            ('"*".public_procedure_probe()', "PROCEDURE"),
+            ('"*".public_aggregate_probe(integer)', "FUNCTION"),
+        ):
+            provider.execute(
+                sql.SQL("GRANT EXECUTE ON {} {} TO {}").format(
+                    sql.SQL(object_kind),
+                    sql.SQL(routine),
+                    sql.Identifier(migrator._BACKUP_ROLE),
+                )
+            )
+            assert provider.execute(
+                "SELECT has_function_privilege('public',%s,'EXECUTE') AS public_allowed,"
+                "has_function_privilege(%s,%s,'EXECUTE') AS backup_allowed",
+                (routine, migrator._BACKUP_ROLE, routine),
+            ).fetchone() == {"public_allowed": True, "backup_allowed": True}
         provider.execute(
             sql.SQL("REVOKE CONNECT,CREATE,TEMPORARY ON DATABASE {} FROM PUBLIC").format(
                 sql.Identifier(conninfo_to_dict(migration_pg)["dbname"])
@@ -809,6 +902,15 @@ def test_pg18_legal_star_schema_execute_defaults_close_and_roll_back_exactly(
         pg_roles._reconcile_backup_role_boundary(provider.cursor(), topology=topology)
         boundary = pg_roles._validate_backup_role_boundary(provider.cursor(), topology=topology)
         assert boundary["public_function_default_execute_closed"] == owners
+        for routine in (
+            '"*".public_procedure_probe()',
+            '"*".public_aggregate_probe(integer)',
+        ):
+            assert provider.execute(
+                "SELECT has_function_privilege('public',%s,'EXECUTE') AS public_allowed,"
+                "has_function_privilege(%s,%s,'EXECUTE') AS backup_allowed",
+                (routine, migrator._BACKUP_ROLE, routine),
+            ).fetchone() == {"public_allowed": False, "backup_allowed": False}
         for owner_role in owners:
             assert pg_roles._public_function_default_execute_state(
                 provider.cursor(),

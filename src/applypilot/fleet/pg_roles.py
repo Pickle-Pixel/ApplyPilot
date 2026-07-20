@@ -1765,7 +1765,7 @@ def _revoke_legacy_privileges(cur, *, role: sql.Identifier, database: sql.Identi
         cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA {} FROM PUBLIC").format(schema))
         cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM {}").format(schema, role))
         cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM PUBLIC").format(schema))
-        cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {} FROM {}").format(schema, role))
+        cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA {} FROM {}").format(schema, role))
         cur.execute(
             "SELECT t.typname FROM pg_catalog.pg_type t "
             "JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace "
@@ -1780,9 +1780,9 @@ def _revoke_legacy_privileges(cur, *, role: sql.Identifier, database: sql.Identi
                     role,
                 )
             )
-        # Functions are executable by PUBLIC by default, which would make every
+        # Routines are executable by PUBLIC by default, which would make every
         # authority helper callable by fleet_worker regardless of its own ACL.
-        cur.execute(sql.SQL("REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA {} FROM PUBLIC").format(schema))
+        cur.execute(sql.SQL("REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA {} FROM PUBLIC").format(schema))
 
     cur.execute(
         "SELECT DISTINCT owner_name FROM ("
@@ -2432,7 +2432,7 @@ def ensure_brain_candidate_roles_in_transaction(
                     sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM {}").format(schema_name, identifier)
                 )
                 cur.execute(
-                    sql.SQL("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {} FROM {}").format(schema_name, identifier)
+                    sql.SQL("REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA {} FROM {}").format(schema_name, identifier)
                 )
                 cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {}").format(schema_name, identifier))
             for namespace, type_name in grantable_types:
@@ -3841,7 +3841,7 @@ def _dynamic_backup_object_acl_revoke_sql(
             "REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I",
             "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I FROM %I",
             "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I FROM %I",
-            "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA %I FROM %I",
+            "REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA %I FROM %I",
         )
     )
     return (
@@ -3957,7 +3957,7 @@ def _forward_v7_containment_sql(
             sql.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {};").format(schema, backup),
             sql.SQL("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA {} FROM {};").format(schema, backup),
             sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM {};").format(schema, backup),
-            sql.SQL("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {} FROM {};").format(schema, backup),
+            sql.SQL("REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA {} FROM {};").format(schema, backup),
         ):
             backup_cleanup.append(statement.as_string(cur.connection))
     for statement in (
@@ -4035,7 +4035,7 @@ def _backup_role_rollback_sql(
                 sql.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {};").format(schema, backup),
                 sql.SQL("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA {} FROM {};").format(schema, backup),
                 sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM {};").format(schema, backup),
-                sql.SQL("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {} FROM {};").format(schema, backup),
+                sql.SQL("REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA {} FROM {};").format(schema, backup),
             )
         )
     cleanup.extend(
@@ -5106,10 +5106,10 @@ def _reconcile_backup_role_boundary(cur, *, topology: BootstrapTopology) -> None
         cur.execute(sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO {}").format(schema, backup))
         cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} FROM {}").format(schema, backup))
         cur.execute(sql.SQL("GRANT SELECT ON ALL SEQUENCES IN SCHEMA {} TO {}").format(schema, backup))
-        cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {} FROM {}").format(schema, backup))
+        cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA {} FROM {}").format(schema, backup))
         # Schema USAGE plus PostgreSQL's default PUBLIC EXECUTE would otherwise
         # give the backup login an application-code execution path.
-        cur.execute(sql.SQL("REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA {} FROM PUBLIC").format(schema))
+        cur.execute(sql.SQL("REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA {} FROM PUBLIC").format(schema))
     _reconcile_exact_backup_default_acls(
         cur,
         owner_role=topology.migrator_role,
