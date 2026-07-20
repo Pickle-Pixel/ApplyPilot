@@ -80,12 +80,14 @@ named legacy roles in `retired_admin_roles`; the infrastructure break-glass role
 must never appear in that list. After bootstrap, delete
 `APPLYPILOT_ADMIN_PG_DSN`, `APPLYPILOT_CONTROLLER_PG_PASSWORD`,
 `APPLYPILOT_BACKUP_PG_PASSWORD`, and
-`APPLYPILOT_DATABASE_OWNER_PG_PASSWORD` from the
-shell. Set `APPLYPILOT_CONTROLLER_PG_DSN` only in the administrative migration
-job. Normal migration and reconciliation run as that non-superuser controller,
-which has no owner or `brain_schema_migrator` membership; authority changes use
-the bounded controller functions and the separately constrained owner-to-migrator
-`SET ROLE` edge. Never expose any admin or controller variable to a worker service.
+`APPLYPILOT_DATABASE_OWNER_PG_PASSWORD`, and
+`APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD` from the shell. Use
+`APPLYPILOT_CONTROLLER_PG_DSN` only for bounded controller operations. The
+one-shot authority migration has a separate authenticated boundary: its target
+DSN must log in as `applypilot_fleet_migrator_login`, which has one SET-only edge
+to the NOLOGIN `applypilot_fleet_migrator` capability. Never substitute the
+controller, database owner, provider admin, or another role in that DSN, and
+never expose any migration or controller credential to a worker service.
 
 Example one-time bootstrap:
 
@@ -94,6 +96,7 @@ $env:APPLYPILOT_ADMIN_PG_DSN = '<provider-admin-url>'
 $env:APPLYPILOT_CONTROLLER_PG_PASSWORD = '<new-scram-secret>'
 $env:APPLYPILOT_BACKUP_PG_PASSWORD = '<independent-backup-scram-secret>'
 $env:APPLYPILOT_DATABASE_OWNER_PG_PASSWORD = '<independent-canonical-import-scram-secret>'
+$env:APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD = '<independent-one-shot-migrator-scram-secret>'
 $env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX = '<operator-held-key-as-at-least-64-hex-characters>'
 $env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID = '<operator-key-id>'
 python scripts/bootstrap-fleet-pg-roles.py `
@@ -105,8 +108,46 @@ python scripts/bootstrap-fleet-pg-roles.py `
   --infrastructure-superuser-role postgres `
   --receipt-path .\evidence\bootstrap-receipt.json `
   --rollback-sql .\evidence\bootstrap-rollback.sql
-Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD, Env:APPLYPILOT_BACKUP_PG_PASSWORD, Env:APPLYPILOT_DATABASE_OWNER_PG_PASSWORD, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID
+Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD, Env:APPLYPILOT_BACKUP_PG_PASSWORD, Env:APPLYPILOT_DATABASE_OWNER_PG_PASSWORD, Env:APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_HEX, Env:APPLYPILOT_ROLLBACK_HMAC_KEY_ID
 ```
+
+After the authenticated bootstrap or existing-topology upgrade receipt passes
+all gates, configure the one-shot private authority migrator with these four
+service variables:
+
+```text
+AUTHORITY_MIGRATOR_TARGET_DSN=postgresql://applypilot_fleet_migrator_login:<separate-secret>@<exact-private-host>/<database>?sslmode=require
+AUTHORITY_MIGRATOR_EXPECTED_PRIVATE_HOST=<exact-private-host>
+AUTHORITY_MIGRATOR_EXPECTED_DB=<database>
+AUTHORITY_MIGRATOR_EXPECTED_SYSID=<pg_control-system-identifier>
+```
+
+`AUTHORITY_MIGRATOR_TARGET_DSN` is a secret and must stay in the service-variable
+channel; never pass it on argv or write it to evidence. The host must exactly
+match `AUTHORITY_MIGRATOR_EXPECTED_PRIVATE_HOST` and must be either a full
+`*.railway.internal` name or a full Tailscale MagicDNS `*.*.ts.net` name. The DSN
+must contain the fixed `applypilot_fleet_migrator_login` user, its explicit
+password, and an explicit TLS mode of `require`, `verify-ca`, or `verify-full`.
+It must not use `hostaddr`, libpq service/passfile indirection, connection
+`options`, multiple hosts, a public hostname, or ambient `PG*` connection
+variables.
+
+Railway executes the pinned `railway.toml` start command. For an equivalent
+operator-controlled one-shot invocation, keep the DSN in the environment and
+pass only the environment-variable name and non-secret identity pins:
+
+```powershell
+python scripts/run-private-authority-migrator.py `
+  --target-dsn-env AUTHORITY_MIGRATOR_TARGET_DSN `
+  --expected-private-host $env:AUTHORITY_MIGRATOR_EXPECTED_PRIVATE_HOST `
+  --expected-database-name $env:AUTHORITY_MIGRATOR_EXPECTED_DB `
+  --expected-system-identifier $env:AUTHORITY_MIGRATOR_EXPECTED_SYSID
+```
+
+The migrator validates `session_user` and `current_user` as the dedicated login
+before reading target identity, acquiring a migration lock, using `SET ROLE`, or
+executing DDL. Do not run it until the reviewed migration, rollback, and exact
+target gates are complete.
 
 Worker reconciliation has a strict rollout prerequisite. First complete either
 the new-topology role bootstrap above or the existing-topology authority upgrade.
