@@ -1,21 +1,14 @@
 """P0 unit tests for the cloud apply-fleet Postgres layer (pgqueue).
 
-Spins up a DISPOSABLE local Postgres (from the `applypilot-pgtest` conda env) on a temp
-cluster + free port, runs the real lease/reclaim/cap/sync SQL against it, and tears it down.
-No Docker, no system Postgres, no Railway. If the pg binaries aren't found the module skips.
+Reuses the canonical disposable PostgreSQL fixture, including its external-DSN safety proof,
+and runs the real lease/reclaim/cap/sync SQL against it. No live database is permitted.
 
 The lease/reclaim tests are the ones that matter most: a double-grab or a re-leased
 possibly-submitted job is a real-world double-application under Jonathan's name.
 """
 from __future__ import annotations
 
-import os
-import shutil
-import socket
-import subprocess
-import tempfile
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -51,76 +44,10 @@ def test_legacy_score_only_queue_apis_are_disabled(db):
 # Disposable local Postgres
 # ---------------------------------------------------------------------------
 
-def _find_pg_bin() -> Path | None:
-    """Locate the applypilot-pgtest env's Postgres bin dir (initdb/pg_ctl/postgres)."""
-    cands: list[Path] = []
-    if os.environ.get("APPLYPILOT_PGTEST_BIN"):
-        cands.append(Path(os.environ["APPLYPILOT_PGTEST_BIN"]))
-    conda = shutil.which("conda")
-    bases: list[Path] = []
-    if conda:
-        # .../Scripts/conda.exe or .../condabin/conda -> base is two up
-        bases.append(Path(conda).resolve().parent.parent)
-    bases.append(Path.home() / "anaconda3")
-    bases.append(Path.home() / "miniconda3")
-    for base in bases:
-        cands.append(base / "envs" / "applypilot-pgtest" / "Library" / "bin")  # win
-        cands.append(base / "envs" / "applypilot-pgtest" / "bin")              # nix
-    for c in cands:
-        exe = "initdb.exe" if os.name == "nt" else "initdb"
-        if (c / exe).exists():
-            return c
-    return None
-
-
-def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
 @pytest.fixture(scope="session")
-def pg_dsn():
-    binp = _find_pg_bin()
-    if binp is None:
-        pytest.skip("applypilot-pgtest Postgres env not found "
-                    "(conda create -n applypilot-pgtest -c conda-forge postgresql)")
-    ext = ".exe" if os.name == "nt" else ""
-    initdb, pg_ctl = binp / f"initdb{ext}", binp / f"pg_ctl{ext}"
-
-    datadir = Path(tempfile.mkdtemp(prefix="ap_pgtest_"))
-    logfile = datadir / "server.log"
-    port = _free_port()
-    try:
-        subprocess.run(
-            [str(initdb), "-D", str(datadir), "-U", "postgres", "-A", "trust", "-E", "UTF8"],
-            check=True, capture_output=True, text=True,
-        )
-        # NOTE: `pg_ctl start` launches a PERSISTENT postgres that inherits this process's
-        # stdout/stderr. With capture_output (PIPEs) the child holds the pipe open, so
-        # subprocess.run blocks on EOF until the SERVER exits -> a hang that never returns.
-        # Send the server's own log to -l <logfile> and give pg_ctl DEVNULL (no pipe to
-        # inherit) so run() returns the moment pg_ctl confirms readiness and exits.
-        subprocess.run(
-            [str(pg_ctl), "-D", str(datadir), "-l", str(logfile),
-             "-o", f"-p {port} -c listen_addresses=127.0.0.1 -c fsync=off",
-             "-w", "-t", "30", "start"],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except subprocess.CalledProcessError as e:
-        log = logfile.read_text(encoding="utf-8", errors="replace") if logfile.exists() else ""
-        shutil.rmtree(datadir, ignore_errors=True)
-        pytest.skip(f"could not start test Postgres (exit {e.returncode}):\n{log}")
-
-    dsn = f"postgresql://postgres:test-password@127.0.0.1:{port}/postgres"
-    try:
-        yield dsn
-    finally:
-        subprocess.run([str(pg_ctl), "-D", str(datadir), "-m", "immediate", "-w", "stop"],
-                       capture_output=True, text=True)
-        shutil.rmtree(datadir, ignore_errors=True)
+def pg_dsn(fleet_pg):
+    """Reuse the canonical disposable PostgreSQL fixture and its safety proof."""
+    yield fleet_pg
 
 
 @pytest.fixture
