@@ -584,7 +584,7 @@ def _transfer_application_ownership(
     apply: bool = True,
     preserve_owner_roles: tuple[str, ...] = (),
     preserve_name_prefixes: tuple[str, ...] = (),
-    preserve_qualified_names: frozenset[tuple[str, str]] = frozenset(),
+    preserve_relation_qualified_names: frozenset[tuple[str, str]] = frozenset(),
     transfer_schemas: bool = True,
 ) -> tuple[dict[str, Any], ...]:
     """Transfer only application objects, never cluster/system-owned objects."""
@@ -619,7 +619,7 @@ def _transfer_application_ownership(
         if object_name.startswith(preserve_name_prefixes) or (
             namespace,
             object_name,
-        ) in preserve_qualified_names:
+        ) in preserve_relation_qualified_names:
             continue
         if apply:
             cur.execute(
@@ -654,10 +654,7 @@ def _transfer_application_ownership(
         routine_kind = "PROCEDURE" if prokind == "p" else "FUNCTION"
         namespace = _row_value(row, "nspname")
         routine_name = _row_value(row, "proname", 1)
-        if routine_name.startswith(preserve_name_prefixes) or (
-            namespace,
-            routine_name,
-        ) in preserve_qualified_names:
+        if routine_name.startswith(preserve_name_prefixes):
             continue
         arguments = _row_value(row, "args", 3)
         identity = sql.SQL("{}.{}({})").format(
@@ -691,10 +688,7 @@ def _transfer_application_ownership(
         object_kind = "DOMAIN" if _row_value(row, "typtype", 2) == "d" else "TYPE"
         namespace = _row_value(row, "nspname")
         type_name = _row_value(row, "typname", 1)
-        if type_name.startswith(preserve_name_prefixes) or (
-            namespace,
-            type_name,
-        ) in preserve_qualified_names:
+        if type_name.startswith(preserve_name_prefixes):
             continue
         if apply:
             cur.execute(
@@ -6682,14 +6676,18 @@ def _validate_fleet_migration_login_boundary(
             f"expected={login_expected!r}, actual={login_actual!r}"
         )
     capability = roles[FLEET_MIGRATION_ROLE]
-    if bool(_row_value(capability, "rolcanlogin", 1)) or any(
-        bool(_row_value(capability, name, index))
-        for index, name in enumerate(
-            ("rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls"),
-            start=3,
+    if (
+        bool(_row_value(capability, "rolcanlogin", 1))
+        or bool(_row_value(capability, "rolinherit", 2))
+        or any(
+            bool(_row_value(capability, name, index))
+            for index, name in enumerate(
+                ("rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls"),
+                start=3,
+            )
         )
     ):
-        raise RuntimeError("fleet migration capability role is login/elevated")
+        raise RuntimeError("fleet migration capability role attributes are not exact")
     memberships = _require_exact_fleet_migration_membership(
         cur, login_role=login_role
     )
@@ -6945,7 +6943,7 @@ def _reconcile_fleet_migration_login(
     else:
         cur.execute(
             sql.SQL(
-                "ALTER ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "ALTER ROLE {} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
                 "NOREPLICATION NOBYPASSRLS"
             ).format(sql.Identifier(FLEET_MIGRATION_ROLE))
         )
@@ -7036,7 +7034,7 @@ def _reconcile_fleet_migration_login(
         cur,
         new_owner_role=FLEET_MIGRATION_ROLE,
         preserve_name_prefixes=("brain_",),
-        preserve_qualified_names=_BRAIN_AUTHORITY_EXACT_OBJECTS,
+        preserve_relation_qualified_names=_BRAIN_AUTHORITY_EXACT_OBJECTS,
         transfer_schemas=False,
     )
     return _validate_fleet_migration_login_boundary(

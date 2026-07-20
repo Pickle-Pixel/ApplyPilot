@@ -127,7 +127,7 @@ def migration_pg(fleet_pg):
         ).fetchone()["present"]:
             conn.execute("DROP OWNED BY applypilot_fleet_migrator CASCADE")
             conn.execute("DROP ROLE applypilot_fleet_migrator")
-        conn.execute("CREATE ROLE applypilot_fleet_migrator NOLOGIN")
+        conn.execute("CREATE ROLE applypilot_fleet_migrator NOLOGIN NOINHERIT")
         conn.execute("GRANT USAGE, CREATE ON SCHEMA public TO applypilot_fleet_migrator")
         with conn.cursor() as cur:
             pg_roles._transfer_application_ownership(

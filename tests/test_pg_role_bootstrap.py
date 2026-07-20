@@ -2602,6 +2602,10 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 (legacy_controller,),
             ).fetchone() == {"rolcanlogin": False, "rolinherit": False, "rolcreatedb": False}
             assert root.execute(
+                "SELECT rolcanlogin,rolinherit FROM pg_roles WHERE rolname=%s",
+                (pg_roles.FLEET_MIGRATION_ROLE,),
+            ).fetchone() == {"rolcanlogin": False, "rolinherit": False}
+            assert root.execute(
                 "SELECT has_schema_privilege('brain_schema_migrator','public','USAGE') AS allowed"
             ).fetchone()["allowed"] is True
             assert root.execute(
@@ -3617,6 +3621,11 @@ def test_real_bootstrap_topology_can_apply_fleet_migration_chain(
         root.execute(
             "DROP FUNCTION IF EXISTS public.applypilot_reject_migration_ledger_mutation() CASCADE"
         )
+        root.execute("DROP FUNCTION IF EXISTS public.applypilot_database_identity() CASCADE")
+        root.execute(
+            "CREATE FUNCTION public.applypilot_database_identity() RETURNS integer "
+            "LANGUAGE sql IMMUTABLE AS 'SELECT 1'"
+        )
         root.execute("DROP TABLE IF EXISTS public.fleet_application_alias CASCADE")
         root.execute("DROP TABLE IF EXISTS public.fleet_application_authority CASCADE")
         root.commit()
@@ -3688,6 +3697,12 @@ def test_real_bootstrap_topology_can_apply_fleet_migration_chain(
                 "JOIN pg_catalog.pg_roles owner ON owner.oid=relation.relowner "
                 "WHERE relation.oid='public.applypilot_database_identity'::pg_catalog.regclass"
             ).fetchone()["owner_name"] == topology.migrator_role
+            assert root.execute(
+                "SELECT owner.rolname AS owner_name FROM pg_catalog.pg_proc routine "
+                "JOIN pg_catalog.pg_roles owner ON owner.oid=routine.proowner "
+                "WHERE routine.oid="
+                "'public.applypilot_database_identity()'::pg_catalog.regprocedure"
+            ).fetchone()["owner_name"] == pg_roles.FLEET_MIGRATION_ROLE
             verifier = pg_roles._client_scram_verifier(
                 root,
                 role_name=pg_roles.FLEET_MIGRATION_LOGIN_ROLE,
@@ -3705,6 +3720,8 @@ def test_real_bootstrap_topology_can_apply_fleet_migration_chain(
                 brain_schema.verify_brain_schema_v10_in_transaction(cur)
             root.rollback()
         finally:
+            root.execute("DROP FUNCTION IF EXISTS public.applypilot_database_identity() CASCADE")
+            root.commit()
             _drop_atomic_bootstrap_roles(root)
 
 
