@@ -461,7 +461,7 @@ def _backup_default_acl_entries(conn) -> tuple[tuple[str, str, str, bool], ...]:
 
 def _public_function_default_execute_state(
     conn,
-) -> tuple[bool, tuple[tuple[str, bool], ...]]:
+) -> tuple[bool, tuple[tuple[str | None, bool], ...]]:
     global_row = conn.execute(
         "SELECT EXISTS("
         "SELECT 1 FROM pg_catalog.pg_default_acl defaults "
@@ -471,18 +471,23 @@ def _public_function_default_execute_state(
         (_MIGRATION_ROLE,),
     ).fetchone()
     rows = conn.execute(
-        "SELECT COALESCE(namespace.nspname,'*') AS schema_name,acl.is_grantable "
+        "SELECT namespace.nspname AS schema_name,acl.is_grantable "
         "FROM pg_catalog.pg_default_acl defaults "
         "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
         "LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
         "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl "
         "WHERE owner.rolname=%s AND defaults.defaclobjtype='f' AND acl.grantee=0 "
         "AND acl.privilege_type='EXECUTE' "
-        "ORDER BY schema_name,acl.is_grantable",
+        "ORDER BY namespace.nspname NULLS FIRST,acl.is_grantable",
         (_MIGRATION_ROLE,),
     ).fetchall()
     return bool(_row_value(global_row, "present")), tuple(
-        (str(_row_value(row, "schema_name")), bool(_row_value(row, "is_grantable", 1)))
+        (
+            None
+            if _row_value(row, "schema_name") is None
+            else str(_row_value(row, "schema_name")),
+            bool(_row_value(row, "is_grantable", 1)),
+        )
         for row in rows
     )
 
@@ -494,7 +499,7 @@ def _reconcile_and_verify_public_function_default_execute(conn) -> None:
         statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(
             sql.Identifier(_MIGRATION_ROLE)
         )
-        if schema_name != "*":
+        if schema_name is not None:
             statement += sql.SQL("IN SCHEMA {} ").format(sql.Identifier(schema_name))
         statement += sql.SQL("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
         conn.execute(statement)

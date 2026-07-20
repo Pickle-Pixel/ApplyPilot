@@ -429,7 +429,7 @@ def test_pg18_backup_first_then_migration_owner_closes_future_function_execute(
     migration = _migration(tmp_path, "20260715_001_backup_first", None, None)
     migration_path = tmp_path / str(migration["path"])
     migration_path.write_text(
-        "CREATE FUNCTION public.migration_backup_first_probe() RETURNS text "
+        'CREATE FUNCTION "*".migration_backup_first_probe() RETURNS text '
         "LANGUAGE sql AS $$ SELECT 'must-not-execute'::text $$;\n",
         encoding="utf-8",
         newline="\n",
@@ -463,15 +463,31 @@ def test_pg18_backup_first_then_migration_owner_closes_future_function_execute(
                 sql.Identifier(migrator._BACKUP_ROLE)
             )
         )
+        provider.execute('CREATE SCHEMA "*"')
+        provider.execute(
+            sql.SQL('GRANT USAGE ON SCHEMA "*" TO {}').format(
+                sql.Identifier(migrator._BACKUP_ROLE)
+            )
+        )
         # This ordering is the inverse of role bootstrap: the backup login is
         # already live before the fixed fleet migration owner is introduced.
         provider.execute(
             sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(migrator._MIGRATION_ROLE))
         )
         provider.execute(
-            sql.SQL("GRANT USAGE,CREATE ON SCHEMA public TO {}").format(
+            sql.SQL('GRANT USAGE,CREATE ON SCHEMA public,"*" TO {}').format(
                 sql.Identifier(migrator._MIGRATION_ROLE)
             )
+        )
+        provider.execute(
+            sql.SQL(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA "*" '
+                "GRANT EXECUTE ON FUNCTIONS TO PUBLIC"
+            ).format(sql.Identifier(migrator._MIGRATION_ROLE))
+        )
+        assert migrator._public_function_default_execute_state(provider) == (
+            False,
+            (("*", False),),
         )
 
     try:
@@ -485,10 +501,11 @@ def test_pg18_backup_first_then_migration_owner_closes_future_function_execute(
         backup_params.update(user=migrator._BACKUP_ROLE, password=backup_password)
         with psycopg.connect(make_conninfo(**backup_params), row_factory=dict_row) as backup:
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
-                backup.execute("SELECT public.migration_backup_first_probe()")
+                backup.execute('SELECT "*".migration_backup_first_probe()')
     finally:
         with psycopg.connect(fleet_pg, autocommit=True, row_factory=dict_row) as provider:
-            provider.execute("DROP FUNCTION IF EXISTS public.migration_backup_first_probe()")
+            provider.execute('DROP FUNCTION IF EXISTS "*".migration_backup_first_probe()')
+            provider.execute('DROP SCHEMA IF EXISTS "*" CASCADE')
             provider.execute("DROP TABLE IF EXISTS public.applypilot_fleet_schema_migrations CASCADE")
             provider.execute("DROP FUNCTION IF EXISTS public.applypilot_reject_migration_ledger_mutation() CASCADE")
             for role_name in (migrator._BACKUP_ROLE, migrator._MIGRATION_ROLE):
@@ -660,6 +677,95 @@ def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idemp
                 provider.cursor(),
                 owner_role=owner_role,
             ) == (False, ())
+        provider.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(topology_migrator)))
+        provider.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(topology_migrator)))
+
+
+def test_pg18_legal_star_schema_execute_defaults_close_and_roll_back_exactly(
+    migration_pg,
+):
+    topology_migrator = "brain_migrator_star_schema_probe"
+    owners = (topology_migrator, migrator._MIGRATION_ROLE)
+    with psycopg.connect(migration_pg, autocommit=True, row_factory=dict_row) as provider:
+        assert provider.info.server_version >= 180000
+        provider.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(topology_migrator)))
+        provider.execute(
+            sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(migrator._BACKUP_ROLE))
+        )
+        provider.execute('CREATE SCHEMA "*"')
+        provider.execute(
+            sql.SQL("REVOKE CONNECT,CREATE,TEMPORARY ON DATABASE {} FROM PUBLIC").format(
+                sql.Identifier(conninfo_to_dict(migration_pg)["dbname"])
+            )
+        )
+        for owner_role in owners:
+            provider.execute(
+                sql.SQL('GRANT USAGE,CREATE ON SCHEMA "*" TO {}').format(
+                    sql.Identifier(owner_role)
+                )
+            )
+            provider.execute(
+                sql.SQL(
+                    'ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA "*" '
+                    "GRANT EXECUTE ON FUNCTIONS TO PUBLIC"
+                ).format(sql.Identifier(owner_role))
+            )
+            assert pg_roles._public_function_default_execute_state(
+                provider.cursor(),
+                owner_role=owner_role,
+            ) == (False, (("*", False),))
+
+        topology = pg_roles.BootstrapTopology(
+            database_owner_role="unused_star_schema_owner",
+            controller_role="unused_star_schema_controller",
+            verifier_role="unused_star_schema_verifier",
+            migrator_role=topology_migrator,
+            retired_admin_roles=(),
+        )
+        rollback_sql = pg_roles._backup_role_rollback_sql(
+            provider.cursor(),
+            topology=topology,
+            database_name=conninfo_to_dict(migration_pg)["dbname"],
+        )
+        for owner_role in owners:
+            assert (
+                f'ALTER DEFAULT PRIVILEGES FOR ROLE "{owner_role}" IN SCHEMA "*" '
+                "GRANT EXECUTE ON FUNCTIONS TO PUBLIC;"
+            ) in rollback_sql
+
+        pg_roles._reconcile_backup_role_boundary(provider.cursor(), topology=topology)
+        boundary = pg_roles._validate_backup_role_boundary(provider.cursor(), topology=topology)
+        assert boundary["public_function_default_execute_closed"] == owners
+        for owner_role in owners:
+            assert pg_roles._public_function_default_execute_state(
+                provider.cursor(),
+                owner_role=owner_role,
+            ) == (True, ())
+            function_name = f"{owner_role}_star_schema_probe"
+            provider.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(owner_role)))
+            provider.execute(
+                sql.SQL('CREATE FUNCTION "*".{}() RETURNS text LANGUAGE sql AS $$ SELECT \'closed\'::text $$').format(
+                    sql.Identifier(function_name)
+                )
+            )
+            provider.execute("RESET ROLE")
+            assert provider.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE') AS allowed",
+                (migrator._BACKUP_ROLE, f'"*".{function_name}()'),
+            ).fetchone()["allowed"] is False
+
+        provider.execute(rollback_sql)
+        provider.execute(rollback_sql)
+        assert provider.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname=%s",
+            (migrator._BACKUP_ROLE,),
+        ).fetchone() is None
+        for owner_role in owners:
+            assert pg_roles._public_function_default_execute_state(
+                provider.cursor(),
+                owner_role=owner_role,
+            ) == (False, (("*", False),))
+        provider.execute('DROP SCHEMA "*" CASCADE')
         provider.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(topology_migrator)))
         provider.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(topology_migrator)))
 

@@ -3839,7 +3839,7 @@ def _public_function_default_execute_rollback_sql(
         statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(
             sql.Identifier(owner_role)
         )
-        if schema_name != "*":
+        if schema_name is not None:
             statement += sql.SQL("IN SCHEMA {} ").format(sql.Identifier(schema_name))
         statement += sql.SQL("GRANT EXECUTE ON FUNCTIONS TO PUBLIC")
         if is_grantable:
@@ -4902,8 +4902,8 @@ def _public_function_default_execute_state(
     cur,
     *,
     owner_role: str,
-) -> tuple[bool, tuple[tuple[str, bool], ...]]:
-    """Return whether the global ACL is materialized and every PUBLIC EXECUTE edge."""
+) -> tuple[bool, tuple[tuple[str | None, bool], ...]]:
+    """Return global materialization and PUBLIC EXECUTE edges with nullable scope."""
     cur.execute(
         "SELECT EXISTS("
         "SELECT 1 FROM pg_catalog.pg_default_acl defaults "
@@ -4914,18 +4914,23 @@ def _public_function_default_execute_state(
     )
     global_row_present = bool(_row_value(cur.fetchone(), "present"))
     cur.execute(
-        "SELECT COALESCE(namespace.nspname,'*') AS schema_name,acl.is_grantable "
+        "SELECT namespace.nspname AS schema_name,acl.is_grantable "
         "FROM pg_catalog.pg_default_acl defaults "
         "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
         "LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
         "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl "
         "WHERE owner.rolname=%s AND defaults.defaclobjtype='f' AND acl.grantee=0 "
         "AND acl.privilege_type='EXECUTE' "
-        "ORDER BY schema_name,acl.is_grantable",
+        "ORDER BY namespace.nspname NULLS FIRST,acl.is_grantable",
         (owner_role,),
     )
     entries = tuple(
-        (str(_row_value(row, "schema_name")), bool(_row_value(row, "is_grantable", 1)))
+        (
+            None
+            if _row_value(row, "schema_name") is None
+            else str(_row_value(row, "schema_name")),
+            bool(_row_value(row, "is_grantable", 1)),
+        )
         for row in cur.fetchall()
     )
     return global_row_present, entries
@@ -4950,7 +4955,7 @@ def _reconcile_public_function_default_execute(cur, *, owner_role: str) -> None:
         statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(
             sql.Identifier(owner_role)
         )
-        if schema_name != "*":
+        if schema_name is not None:
             statement += sql.SQL("IN SCHEMA {} ").format(sql.Identifier(schema_name))
         statement += sql.SQL("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
         cur.execute(statement)
