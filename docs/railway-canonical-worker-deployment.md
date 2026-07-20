@@ -197,12 +197,17 @@ database-identity readability, and `pg_control_system()` capability without a
 password, DSN, verifier, or other secret.
 
 Rollback order is: pause all lanes, retrieve the offline break-glass credential,
-verify the rollback file's SHA-256 against the durable receipt, establish and
-validate the named break-glass database session, then restore the recorded HBA
-backup and reload through that already-established session. Run the generated
-rollback SQL in one fail-stop transaction equivalent to
-`psql --single-transaction --set=ON_ERROR_STOP=on`; never pipe or execute its
-statements independently. Use the executable workflow:
+verify the rollback file's SHA-256 against the durable receipt, and establish and
+validate the named break-glass database session. The executor authenticates the
+live HBA bytes without restoring them, commits authenticated phase-one database
+containment, terminates affected non-break-glass, non-controller sessions,
+repeats the idempotent rollback SQL in phase two, and asserts the final database
+containment postconditions. Only then may it restore the recorded HBA backup and
+reload through the already-established session. HBA admission remains closed
+until both containment phases and the postconditions are durably evidenced.
+Each containment phase is a separate fail-stop transaction equivalent to
+`psql --single-transaction --set=ON_ERROR_STOP=on`; never pipe or execute the
+generated statements independently. Use the executable workflow:
 
 ```powershell
 $env:APPLYPILOT_ADMIN_PG_DSN = '<offline-break-glass-url>'

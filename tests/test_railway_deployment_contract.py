@@ -138,3 +138,26 @@ def test_railway_runbook_documents_fail_closed_release_contract() -> None:
         assert required in runbook
 
     assert runbook.count("${{Postgres.DATABASE_URL}}") == 1
+
+
+def test_railway_runbook_keeps_hba_closed_until_database_containment_finishes() -> None:
+    runbook = (REPO / "docs" / "railway-canonical-worker-deployment.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(runbook.split())
+
+    ordered_steps = (
+        "commits authenticated phase-one database containment",
+        "terminates affected non-break-glass, non-controller sessions",
+        "repeats the idempotent rollback SQL in phase two",
+        "asserts the final database containment postconditions",
+        "Only then may it restore the recorded HBA backup",
+    )
+    positions = [normalized.index(step) for step in ordered_steps]
+
+    assert positions == sorted(positions)
+    assert (
+        "HBA admission remains closed until both containment phases and the "
+        "postconditions are durably evidenced."
+    ) in normalized
+    assert "Each containment phase is a separate fail-stop transaction" in normalized
