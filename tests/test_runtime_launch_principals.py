@@ -299,46 +299,46 @@ def test_scanner_flags_shell_admin_assignment_aliases_and_database_client_sink(t
     assert {finding.line for finding in findings} == set(range(1, len(text.splitlines()) + 1))
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "PGUSER=${PGUSER:-postgres}\npg_dump -U $PGUSER -d applypilot_fleet",
-        "DUMP_USER=${PGUSER:=postgres}\npg_dump --username=$DUMP_USER -Fc",
-        'export BACKUP_USER="${PGUSER:+postgres}"\npsql -U "${BACKUP_USER}" -c "SELECT 1"',
-    ],
-)
-def test_scanner_flags_shell_admin_parameter_expansion_aliases_at_origin_and_sink(text):
+@pytest.mark.parametrize("operator", ["-", ":-", "=", ":=", "+", ":+"])
+@pytest.mark.parametrize("principal", ["postgres", "fleet_worker"])
+@pytest.mark.parametrize("word_quote", ["", "'", '"'])
+def test_scanner_flags_shell_admin_parameter_expansion_aliases_at_origin_and_sink(
+    operator, principal, word_quote
+):
+    text = (
+        f"ADMIN_USER=${{PGUSER{operator}{word_quote}{principal}{word_quote}}}\n"
+        "DUMP_USER=$ADMIN_USER\n"
+        "pg_dump -U $DUMP_USER -d applypilot_fleet"
+    )
     findings = [
         finding
         for finding in scanner.scan_text(text)
         if finding.pattern == "database_client_admin_parameter_flow"
     ]
-    assert {finding.line for finding in findings} == {1, 2}
+    assert {finding.line for finding in findings} == {1, 2, 3}
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        'pg_dump --username="${PGUSER:-postgres}" -Fc',
-        "psql -U ${PGUSER:=postgres} -c 'SELECT 1'",
-        "pg_dump -U '${PGUSER:+fleet_worker}' -Fc",
-    ],
-)
-def test_scanner_flags_direct_shell_admin_parameter_expansion_database_client_sink(text):
+@pytest.mark.parametrize("operator", ["-", ":-", "=", ":=", "+", ":+"])
+@pytest.mark.parametrize("principal", ["postgres", "fleet_worker"])
+@pytest.mark.parametrize("word_quote", ["", "'", '"'])
+@pytest.mark.parametrize("client_argument", ["-U {}", "--username={}"])
+def test_scanner_flags_direct_shell_admin_parameter_expansion_database_client_sink(
+    operator, principal, word_quote, client_argument
+):
+    expansion = f"${{PGUSER{operator}{word_quote}{principal}{word_quote}}}"
+    text = f"pg_dump {client_argument.format(expansion)} -Fc"
     assert "database_client_admin_parameter_flow" in {
         finding.pattern for finding in scanner.scan_text(text)
     }
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        "PGUSER=${PGUSER:-postgres}",
-        "export PGUSER=${PGUSER:=postgres}",
-        'PGUSER="${PGUSER:+fleet_worker}"',
-    ],
-)
-def test_scanner_flags_ambient_pguser_admin_parameter_expansion_without_explicit_user_flag(line):
+@pytest.mark.parametrize("operator", ["-", ":-", "=", ":=", "+", ":+"])
+@pytest.mark.parametrize("principal", ["postgres", "fleet_worker"])
+@pytest.mark.parametrize("word_quote", ["", "'", '"'])
+def test_scanner_flags_ambient_pguser_admin_parameter_expansion_without_explicit_user_flag(
+    operator, principal, word_quote
+):
+    line = f"PGUSER=${{SOURCE_USER{operator}{word_quote}{principal}{word_quote}}}"
     assert "pguser_admin_or_shared" in {
         finding.pattern for finding in scanner.scan_text(line)
     }
@@ -356,6 +356,19 @@ def test_scanner_allows_fail_closed_or_least_privilege_shell_parameter_expansion
     assert "database_client_admin_parameter_flow" not in {
         finding.pattern for finding in scanner.scan_text(text)
     }
+
+
+@pytest.mark.parametrize("operator", ["-", ":-", "=", ":=", "+", ":+"])
+@pytest.mark.parametrize("word_quote", ["", "'", '"'])
+@pytest.mark.parametrize("principal", ["fleet_backup", "postgresql", "fleet_worker_ro"])
+def test_scanner_does_not_broaden_parameter_expansion_principal_matches(
+    operator, word_quote, principal
+):
+    expansion = f"${{PGUSER{operator}{word_quote}{principal}{word_quote}}}"
+    text = f"PGUSER={expansion}\npg_dump --username={expansion} -Fc"
+    patterns = {finding.pattern for finding in scanner.scan_text(text)}
+    assert "pguser_admin_or_shared" not in patterns
+    assert "database_client_admin_parameter_flow" not in patterns
 
 
 def test_scanner_allows_explicit_non_admin_backup_service_channel():

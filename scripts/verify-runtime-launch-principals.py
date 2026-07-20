@@ -71,6 +71,20 @@ EXCLUDED_TOP_DIRS = frozenset(
 LAUNCH_SUFFIXES = frozenset({".ps1", ".py", ".sh", ".bat"})
 
 
+_ADMIN_OR_SHARED_PRINCIPAL = r"(?:postgres|fleet_worker)"
+_ADMIN_OR_SHARED_SHELL_WORD = (
+    rf"(?:{_ADMIN_OR_SHARED_PRINCIPAL}|'(?:{_ADMIN_OR_SHARED_PRINCIPAL})'|"
+    rf'"(?:{_ADMIN_OR_SHARED_PRINCIPAL})")'
+)
+# POSIX parameter expansion supports both the unset-only operators (``-``, ``=``,
+# ``+``) and their unset-or-null colon variants. Quotes may occur inside ``word``;
+# keep them balanced and bind the whole word to one exact forbidden principal.
+_ADMIN_OR_SHARED_SHELL_PARAMETER_EXPANSION = (
+    rf"\$\{{[A-Za-z_][A-Za-z0-9_]*:?[-=+]"
+    rf"{_ADMIN_OR_SHARED_SHELL_WORD}\}}"
+)
+
+
 # --- forbidden principal patterns -------------------------------------------------
 #
 # Each is a (name, compiled-regex) pair. A match anywhere in a discovered launch
@@ -92,8 +106,8 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     (
         "pguser_admin_or_shared",
         re.compile(
-            r"(?<!\$)\bPGUSER\s*=\s*['\"]?(?:(?:postgres|fleet_worker)\b|"
-            r"\$\{[A-Za-z_][A-Za-z0-9_]*:[-=+](?:postgres|fleet_worker)\})['\"]?",
+            rf"(?<!\$)\bPGUSER\s*=\s*['\"]?(?:{_ADMIN_OR_SHARED_PRINCIPAL}\b|"
+            rf"{_ADMIN_OR_SHARED_SHELL_PARAMETER_EXPANSION})['\"]?",
             re.IGNORECASE,
         ),
     ),
@@ -220,7 +234,7 @@ _SHELL_ADMIN_ASSIGNMENT_RE = re.compile(
 )
 _SHELL_ADMIN_PARAMETER_EXPANSION_ASSIGNMENT_RE = re.compile(
     r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]?"
-    r"\$\{[A-Za-z_][A-Za-z0-9_]*:[-=+](?:postgres|fleet_worker)\}['\"]?\s*(?:#.*)?$",
+    rf"{_ADMIN_OR_SHARED_SHELL_PARAMETER_EXPANSION}['\"]?\s*(?:#.*)?$",
     re.IGNORECASE | re.MULTILINE,
 )
 _SHELL_VARIABLE_ALIAS_RE = re.compile(
@@ -230,7 +244,7 @@ _SHELL_VARIABLE_ALIAS_RE = re.compile(
 _DATABASE_CLIENT_USER_ARGUMENT_RE = re.compile(
     r"(?:-U(?:\s+|=)|--username(?:\s+|=))\s*(?:"
     r"['\"]?(postgres|fleet_worker)\b"
-    r"|['\"]?\$\{[A-Za-z_][A-Za-z0-9_]*:[-=+](postgres|fleet_worker)\}['\"]?"
+    rf"|['\"]?({_ADMIN_OR_SHARED_SHELL_PARAMETER_EXPANSION})['\"]?"
     r"|['\"]?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?['\"]?)",
     re.IGNORECASE,
 )
