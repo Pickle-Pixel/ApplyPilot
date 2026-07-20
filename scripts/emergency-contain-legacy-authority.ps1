@@ -1500,12 +1500,12 @@ namespace ApplyPilot
                 throw new IOException("wrapper handle identity changed");
         }
 
-        private static SafeFileHandle OpenDirectoryComponent(string path)
+        private static SafeFileHandle OpenDirectoryComponent(string path, bool denyDeleteSharing)
         {
             SafeFileHandle handle = CreateFileW(
                 ToExtendedLocalPath(path),
                 0,
-                ShareRead | ShareWrite | ShareDelete,
+                ShareRead | ShareWrite | (denyDeleteSharing ? 0 : ShareDelete),
                 IntPtr.Zero,
                 OpenExisting,
                 FileFlagBackupSemantics | FileFlagOpenReparsePoint,
@@ -1570,6 +1570,7 @@ namespace ApplyPilot
         private static List<HeldComponent> OpenComponentChain(
             string authorizedRoot,
             string parent,
+            bool denyAuthorizedRootDeleteSharing,
             Action<string> afterComponentOpen)
         {
             string volumeRoot = GetTrustedLocalVolumeRoot(authorizedRoot);
@@ -1595,9 +1596,12 @@ namespace ApplyPilot
             var held = new List<HeldComponent>();
             try
             {
-                foreach (string componentPath in paths)
+                for (int pathIndex = 0; pathIndex < paths.Count; pathIndex++)
                 {
-                    SafeFileHandle handle = OpenDirectoryComponent(componentPath);
+                    string componentPath = paths[pathIndex];
+                    SafeFileHandle handle = OpenDirectoryComponent(
+                        componentPath,
+                        denyAuthorizedRootDeleteSharing && pathIndex == paths.Count - 1);
                     try
                     {
                         HandleIdentity identity = ReadIdentity(handle, true);
@@ -1692,7 +1696,7 @@ namespace ApplyPilot
                 throw new IOException("wrapper mutation identity is required");
 
             List<HeldComponent> components = OpenComponentChain(
-                authorizedRoot, parent, afterComponentOpen);
+                authorizedRoot, parent, writable, afterComponentOpen);
             SafeFileHandle leafHandle = null;
             try
             {

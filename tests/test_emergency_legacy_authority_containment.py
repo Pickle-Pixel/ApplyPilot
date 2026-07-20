@@ -230,6 +230,13 @@ def _read_path_bytes(path: Path) -> bytes:
     return Path(absolute).read_bytes()
 
 
+def _write_path_bytes(path: Path, content: bytes) -> None:
+    absolute = os.path.abspath(path)
+    if os.name == "nt" and not absolute.startswith("\\\\?\\"):
+        absolute = "\\\\?\\" + absolute
+    Path(absolute).write_bytes(content)
+
+
 def _run_wrapper_rewrite_harness(
     tmp_path: Path,
     wrapper: Path,
@@ -780,6 +787,56 @@ def test_wrapper_replacement_attempt_is_blocked_while_exclusive_handle_is_held(t
     assert b"emergency containment" in wrapper.read_bytes().lower()
 
 
+def test_writable_root_lease_blocks_replacement_at_evidence_publication(tmp_path):
+    wrappers = tmp_path / "wrappers"
+    wrappers.mkdir()
+    wrapper = wrappers / "apply-cycle-task.ps1"
+    secret = "publication-root-lease-secret"
+    preimage = f"Write-Output '{secret}'\n".encode()
+    wrapper.write_bytes(preimage)
+    replacement_root = tmp_path / "replacement-root"
+    replacement_root.mkdir()
+    replacement = replacement_root / wrapper.name
+    replacement_bytes = b"Write-Output 'replacement bytes'\n"
+    replacement.write_bytes(replacement_bytes)
+    moved_root = tmp_path / "moved-root"
+    marker = tmp_path / "root-replacement-attempt.txt"
+    overrides = "\n".join(
+        [
+            "$script:OriginalEvidenceOpen = ${function:Open-KnownEvidenceExclusive}",
+            "function Open-KnownEvidenceExclusive([string]$Path) {",
+            f"  try {{ Move-Item -LiteralPath '{_ps_quote(wrappers)}' "
+            f"-Destination '{_ps_quote(moved_root)}' -ErrorAction Stop; "
+            f"Move-Item -LiteralPath '{_ps_quote(replacement_root)}' "
+            f"-Destination '{_ps_quote(wrappers)}' -ErrorAction Stop; "
+            f"Set-Content -LiteralPath '{_ps_quote(marker)}' -Value 'replacement_succeeded' }} "
+            f"catch {{ Set-Content -LiteralPath '{_ps_quote(marker)}' -Value 'replacement_blocked' }}",
+            "  return & $script:OriginalEvidenceOpen $Path",
+            "}",
+        ]
+    )
+
+    result, payload = _run_wrapper_rewrite_harness(tmp_path, wrapper, overrides)
+
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text(encoding="utf-8").strip() == "replacement_blocked"
+    assert payload["failures"] == []
+    assert payload["unresolved"] == []
+    evidence = list(wrappers.glob(f"{wrapper.name}.emergency-containment-evidence-*"))
+    assert len(evidence) == 1
+    assert _read_path_bytes(evidence[0]) == preimage
+    assert b"emergency containment" in wrapper.read_bytes().lower()
+    assert replacement_root.exists()
+    assert replacement.read_bytes() == replacement_bytes
+    assert list(replacement_root.glob("*.emergency-containment-evidence-*")) == []
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "ShareRead | ShareWrite | (denyDeleteSharing ? 0 : ShareDelete)" in text
+    assert "denyAuthorizedRootDeleteSharing && pathIndex == paths.Count - 1" in text
+    assert "authorizedRoot, parent, writable, afterComponentOpen" in text
+
+
 def test_hardlink_creation_during_mutation_is_detected_and_preimage_is_unchanged(tmp_path):
     wrappers = tmp_path / "wrappers"
     wrappers.mkdir()
@@ -1312,6 +1369,54 @@ def test_authorized_wrapper_evidence_supports_extended_length_path(tmp_path):
     assert result.returncode == 0, result.stderr
     assert payload["failures"] == []
     assert payload["unresolved"] == []
+    assert _read_path_bytes(evidence_path) == preimage
+
+
+def test_preexisting_valid_evidence_supports_extended_length_path(tmp_path):
+    wrappers = tmp_path / ("wrappers-" + ("y" * 120))
+    wrappers.mkdir()
+    wrapper = wrappers / "apply-cycle-task.ps1"
+    preimage = b"Write-Output 'preexisting extended evidence'\n"
+    wrapper.write_bytes(preimage)
+    evidence_path = Path(
+        f"{wrapper}.emergency-containment-evidence-{hashlib.sha256(preimage).hexdigest()}"
+    )
+    assert len(str(evidence_path)) > 260
+    _write_path_bytes(evidence_path, preimage)
+
+    result, payload = _run_wrapper_rewrite_harness(tmp_path, wrapper)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["failures"] == []
+    assert payload["unresolved"] == []
+    assert _read_path_bytes(evidence_path) == preimage
+    assert b"emergency containment" in wrapper.read_bytes().lower()
+
+
+def test_extended_length_failed_evidence_creation_cleans_stage_and_retries(tmp_path):
+    wrappers = tmp_path / ("wrappers-" + ("z" * 120))
+    wrappers.mkdir()
+    wrapper = wrappers / "apply-cycle-task.ps1"
+    preimage = b"Write-Output 'extended cleanup retry'\n"
+    wrapper.write_bytes(preimage)
+    evidence_path = Path(
+        f"{wrapper}.emergency-containment-evidence-{hashlib.sha256(preimage).hexdigest()}"
+    )
+    assert len(str(evidence_path)) > 260
+    overrides = "function Flush-KnownEvidenceStream($Stream) { throw 'flush failed' }"
+
+    first_result, first_payload = _run_wrapper_rewrite_harness(tmp_path, wrapper, overrides)
+
+    assert first_result.returncode == 0, first_result.stderr
+    assert any(item["action"] == "rewrite_wrapper" for item in first_payload["failures"])
+    assert list(wrappers.glob(".applypilot-emergency-containment-stage-*")) == []
+    assert wrapper.read_bytes() == preimage
+
+    second_result, second_payload = _run_wrapper_rewrite_harness(tmp_path, wrapper)
+
+    assert second_result.returncode == 0, second_result.stderr
+    assert second_payload["failures"] == []
+    assert second_payload["unresolved"] == []
     assert _read_path_bytes(evidence_path) == preimage
 
 
