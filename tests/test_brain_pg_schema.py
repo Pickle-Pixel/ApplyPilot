@@ -3333,6 +3333,56 @@ def test_policy_partition_routing_detach_and_global_decision_identity(brain_pg):
         )
 
 
+def test_policy_partition_preserves_fixed_backup_read_boundary(brain_pg):
+    with psycopg.connect(brain_pg, row_factory=dict_row) as conn:
+        _install_fixture_data(conn)
+        conn.execute(
+            "CREATE ROLE fleet_backup LOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1"
+        )
+        conn.execute(
+            pg_sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM PUBLIC").format(
+                pg_sql.Identifier(conn.info.dbname)
+            )
+        )
+        pg_roles._reconcile_backup_role_boundary(
+            conn.cursor(),
+            topology=pg_roles.BootstrapTopology(
+                database_owner_role="postgres",
+                controller_role="unused_controller",
+                verifier_role="brain_schema_verifier",
+                migrator_role="brain_schema_migrator",
+                retired_admin_roles=(),
+                infrastructure_superuser_roles=("postgres",),
+            ),
+        )
+        conn.commit()
+        _insert_policy(conn, "backup-readable-policy")
+
+        partition = schema.ensure_policy_partition(conn, "backup-readable-policy")
+        assert schema.ensure_policy_partition(conn, "backup-readable-policy") == partition
+
+        assert conn.execute(
+            "SELECT has_table_privilege('fleet_backup', %s, 'SELECT') AS allowed",
+            (f"public.{partition}",),
+        ).fetchone()["allowed"] is True
+        assert conn.execute(
+            "SELECT has_table_privilege('fleet_backup', %s, 'INSERT,UPDATE,DELETE,TRUNCATE') AS allowed",
+            (f"public.{partition}",),
+        ).fetchone()["allowed"] is False
+        pg_roles._validate_backup_role_boundary(
+            conn.cursor(),
+            topology=pg_roles.BootstrapTopology(
+                database_owner_role="postgres",
+                controller_role="unused_controller",
+                verifier_role="brain_schema_verifier",
+                migrator_role="brain_schema_migrator",
+                retired_admin_roles=(),
+                infrastructure_superuser_roles=("postgres",),
+            ),
+        )
+
+
 def test_migration_batches_support_skip_locked_disjoint_claims(brain_pg):
     with psycopg.connect(brain_pg, row_factory=dict_row) as conn:
         _install_fixture_data(conn)

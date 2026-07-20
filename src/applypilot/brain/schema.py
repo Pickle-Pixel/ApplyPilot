@@ -3648,6 +3648,13 @@ def ensure_policy_partition(conn, policy_version: str) -> str:
                     sql.Identifier("public"), sql.Identifier(partition_name), sql.Identifier(_VERIFIER_ROLE)
                 )
             )
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (_BACKUP_ROLE,))
+            if cur.fetchone() is not None:
+                cur.execute(
+                    sql.SQL("GRANT SELECT ON TABLE {}.{} TO {}").format(
+                        sql.Identifier("public"), sql.Identifier(partition_name), sql.Identifier(_BACKUP_ROLE)
+                    )
+                )
             cur.execute(
                 "SELECT pg_get_expr(c.relpartbound, c.oid) AS bound, owner.rolname AS owner_name "
                 "FROM pg_class c JOIN pg_roles owner ON owner.oid = c.relowner "
