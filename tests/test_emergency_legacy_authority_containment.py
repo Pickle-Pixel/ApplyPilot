@@ -223,6 +223,13 @@ def _ps_quote(value: Path | str) -> str:
     return str(value).replace("'", "''")
 
 
+def _read_path_bytes(path: Path) -> bytes:
+    absolute = os.path.abspath(path)
+    if os.name == "nt" and not absolute.startswith("\\\\?\\"):
+        absolute = "\\\\?\\" + absolute
+    return Path(absolute).read_bytes()
+
+
 def _run_wrapper_rewrite_harness(
     tmp_path: Path,
     wrapper: Path,
@@ -769,7 +776,7 @@ def test_wrapper_replacement_attempt_is_blocked_while_exclusive_handle_is_held(t
     assert marker.read_text(encoding="utf-8").strip() == "replacement_blocked"
     evidence = list(wrappers.glob(f"{wrapper.name}.emergency-containment-evidence-*"))
     assert len(evidence) == 1
-    assert evidence[0].read_bytes() == preimage
+    assert _read_path_bytes(evidence[0]) == preimage
     assert b"emergency containment" in wrapper.read_bytes().lower()
 
 
@@ -1286,7 +1293,26 @@ def test_every_existing_authorized_wrapper_converges_to_exact_deny_stub(
     assert payload["wrappers"][0]["deny_stub"] is True
     evidence = list(wrappers.glob(f"{name}.emergency-containment-evidence-*"))
     assert len(evidence) == 1
-    assert evidence[0].read_bytes() == fragment
+    assert _read_path_bytes(evidence[0]) == fragment
+
+
+def test_authorized_wrapper_evidence_supports_extended_length_path(tmp_path):
+    wrappers = tmp_path / ("wrappers-" + ("x" * 120))
+    wrappers.mkdir()
+    wrapper = wrappers / "apply-cycle-task.ps1"
+    preimage = b"Write-Output 'extended length evidence'\n"
+    wrapper.write_bytes(preimage)
+    evidence_path = Path(
+        f"{wrapper}.emergency-containment-evidence-{hashlib.sha256(preimage).hexdigest()}"
+    )
+    assert len(str(evidence_path)) > 260
+
+    result, payload = _run_wrapper_rewrite_harness(tmp_path, wrapper)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["failures"] == []
+    assert payload["unresolved"] == []
+    assert _read_path_bytes(evidence_path) == preimage
 
 
 def test_partial_wrapper_write_is_rolled_back_through_same_handle(tmp_path):
@@ -1314,7 +1340,7 @@ def test_partial_wrapper_write_is_rolled_back_through_same_handle(tmp_path):
     assert payload["unresolved"][0]["conditions"] == ["exact_deny_stub_absent"]
     evidence = list(wrappers.glob(f"{wrapper.name}.emergency-containment-evidence-*"))
     assert len(evidence) == 1
-    assert evidence[0].read_bytes() == preimage
+    assert _read_path_bytes(evidence[0]) == preimage
 
 
 def test_restore_failure_stays_unresolved_and_clean_retry_preserves_fragment(tmp_path):
@@ -1349,7 +1375,7 @@ def test_restore_failure_stays_unresolved_and_clean_retry_preserves_fragment(tmp
     assert second_payload["unresolved"] == []
     assert second_payload["wrappers"][0]["deny_stub"] is True
     evidence = list(wrappers.glob(f"{wrapper.name}.emergency-containment-evidence-*"))
-    assert sorted(item.read_bytes() for item in evidence) == sorted([preimage, fragment])
+    assert sorted(_read_path_bytes(item) for item in evidence) == sorted([preimage, fragment])
 
 
 def test_failed_evidence_creation_is_retryable_and_never_accepts_fragment(tmp_path):
@@ -1373,7 +1399,7 @@ def test_failed_evidence_creation_is_retryable_and_never_accepts_fragment(tmp_pa
     assert second_payload["unresolved"] == []
     evidence = list(wrappers.glob(f"{wrapper.name}.emergency-containment-evidence-*"))
     assert len(evidence) == 1
-    assert evidence[0].read_bytes() == preimage
+    assert _read_path_bytes(evidence[0]) == preimage
 
 
 def test_preexisting_corrupt_evidence_is_immutable_and_blocks_rewrite(tmp_path):
@@ -4149,7 +4175,10 @@ def test_evidence_publication_uses_delete_on_close_staging_and_verified_final_co
     assert "FileAttributeTemporary | FileFlagDeleteOnClose" in text
     assert "[guid]::NewGuid().ToString('N')" in text
     assert ".applypilot-emergency-containment-stage-" in text
-    assert "SetFileInformationByHandle" not in text
+    assert "SetFileInformationByHandle" in text
+    assert "SafeFileHandle openedHandle = stream != null ? stream.SafeFileHandle : handle" in text
+    assert "DeleteOpenedEvidence(openedHandle)" in text
+    assert "File.Delete(extendedFinalPath)" not in text
     assert "MoveFile" not in text
     assert "ReplaceFile" not in text
     assert "File.Move" not in text

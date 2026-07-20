@@ -1503,7 +1503,7 @@ namespace ApplyPilot
         private static SafeFileHandle OpenDirectoryComponent(string path)
         {
             SafeFileHandle handle = CreateFileW(
-                path,
+                ToExtendedLocalPath(path),
                 0,
                 ShareRead | ShareWrite | ShareDelete,
                 IntPtr.Zero,
@@ -1517,6 +1517,22 @@ namespace ApplyPilot
                 throw new Win32Exception(error);
             }
             return handle;
+        }
+
+        private static string ToExtendedLocalPath(string path)
+        {
+            if (String.IsNullOrWhiteSpace(path) ||
+                path.StartsWith(@"\\", StringComparison.Ordinal) ||
+                path.StartsWith(@"\\?\", StringComparison.Ordinal) ||
+                path.StartsWith(@"\\.\", StringComparison.Ordinal))
+                throw new IOException("wrapper path is not a canonical local path");
+            string fullPath = Path.GetFullPath(path);
+            string root = Path.GetPathRoot(fullPath);
+            if (String.IsNullOrEmpty(root) || root.Length != 3 ||
+                root[1] != ':' || root[2] != '\\' || !Char.IsLetter(root[0]) ||
+                fullPath.IndexOf(':', 2) >= 0)
+                throw new IOException("wrapper path is not a canonical local path");
+            return @"\\?\" + fullPath;
         }
 
         private static string GetTrustedLocalVolumeRoot(string path)
@@ -1682,7 +1698,7 @@ namespace ApplyPilot
             {
                 if (beforeLeafOpen != null) beforeLeafOpen();
                 leafHandle = CreateFileW(
-                    fullPath,
+                    ToExtendedLocalPath(fullPath),
                     writable ? GenericRead | GenericWrite : GenericRead,
                     0,
                     IntPtr.Zero,
@@ -1924,10 +1940,57 @@ namespace ApplyPilot
             uint flagsAndAttributes,
             IntPtr templateFile);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetFileInformationByHandle(
+            SafeFileHandle file,
+            int informationClass,
+            IntPtr information,
+            uint bufferSize);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileDispositionInfo
+        {
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool DeleteFile;
+        }
+
+        private static string ToExtendedLocalPath(string path)
+        {
+            if (String.IsNullOrWhiteSpace(path) ||
+                path.StartsWith(@"\\", StringComparison.Ordinal) ||
+                path.StartsWith(@"\\?\", StringComparison.Ordinal) ||
+                path.StartsWith(@"\\.\", StringComparison.Ordinal))
+                throw new IOException("evidence path is not a canonical local path");
+            string fullPath = Path.GetFullPath(path);
+            string root = Path.GetPathRoot(fullPath);
+            if (String.IsNullOrEmpty(root) || root.Length != 3 ||
+                root[1] != ':' || root[2] != '\\' || !Char.IsLetter(root[0]) ||
+                fullPath.IndexOf(':', 2) >= 0)
+                throw new IOException("evidence path is not a canonical local path");
+            return @"\\?\" + fullPath;
+        }
+
+        private static void DeleteOpenedEvidence(SafeFileHandle handle)
+        {
+            var disposition = new FileDispositionInfo { DeleteFile = true };
+            int size = Marshal.SizeOf<FileDispositionInfo>();
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                Marshal.StructureToPtr(disposition, buffer, false);
+                if (!SetFileInformationByHandle(handle, 4, buffer, (uint)size))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
         public static SafeFileHandle CreateEvidenceStage(string path)
         {
             SafeFileHandle handle = CreateFileW(
-                path,
+                ToExtendedLocalPath(path),
                 GenericRead | GenericWrite | Delete,
                 0,
                 IntPtr.Zero,
@@ -1947,10 +2010,11 @@ namespace ApplyPilot
         {
             SafeFileHandle handle = null;
             FileStream stream = null;
+            string extendedFinalPath = ToExtendedLocalPath(finalPath);
             try
             {
                 handle = CreateFileW(
-                    finalPath,
+                    extendedFinalPath,
                     GenericRead | GenericWrite | Delete,
                     0,
                     IntPtr.Zero,
@@ -1987,11 +2051,28 @@ namespace ApplyPilot
             }
             catch
             {
-                if (stream != null) { stream.Dispose(); }
-                else if (handle != null) { handle.Dispose(); }
-                try { System.IO.File.Delete(finalPath); } catch { }
+                SafeFileHandle openedHandle = stream != null ? stream.SafeFileHandle : handle;
+                try
+                {
+                    if (openedHandle != null && !openedHandle.IsInvalid && !openedHandle.IsClosed)
+                        DeleteOpenedEvidence(openedHandle);
+                }
+                finally
+                {
+                    if (stream != null) { stream.Dispose(); }
+                    else if (handle != null) { handle.Dispose(); }
+                }
                 throw;
             }
+        }
+
+        public static FileStream OpenExistingEvidence(string path)
+        {
+            return new FileStream(
+                ToExtendedLocalPath(path),
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.None);
         }
     }
 }
@@ -2066,12 +2147,8 @@ function Publish-NewKnownEvidenceByHandle($Lease) {
 }
 
 function Open-KnownExistingEvidenceExclusive([string]$Path) {
-  return [IO.FileStream]::new(
-    $Path,
-    [IO.FileMode]::Open,
-    [IO.FileAccess]::Read,
-    [IO.FileShare]::None
-  )
+  Initialize-KnownEvidenceNativeApi
+  return [ApplyPilot.KnownEvidenceNativeApi]::OpenExistingEvidence($Path)
 }
 
 function Write-KnownEvidenceBytes($Stream, [byte[]]$Content) {
