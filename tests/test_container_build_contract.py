@@ -203,7 +203,22 @@ def test_python_ci_enables_and_verifies_tls_on_service_postgres() -> None:
         r'''printf "\nssl=on\nssl_cert_file='\''server.crt'\''\nssl_key_file='\''server.key'\''\n" >> "$PGDATA/postgresql.conf"'''
         in tls_lines
     )
-    assert 'docker restart "$POSTGRES_SERVICE_ID"' in tls_lines
+    helper_start = tls_lines.index("diagnose_postgres_service() {")
+    assert tls_lines[helper_start : helper_start + 4] == (
+        "diagnose_postgres_service() {",
+        'docker logs "$POSTGRES_SERVICE_ID" >&2 || true',
+        "docker inspect --format '{{json .State}}' "
+        '"$POSTGRES_SERVICE_ID" >&2 || true',
+        "}",
+    )
+    restart_failure = tls_lines.index(
+        'if ! docker restart "$POSTGRES_SERVICE_ID"; then'
+    )
+    assert tls_lines[restart_failure + 1 : restart_failure + 4] == (
+        'echo "PostgreSQL service restart failed after enabling TLS" >&2',
+        "diagnose_postgres_service",
+        "exit 1",
+    )
     attempt_loops = [
         line
         for line in tls_lines
@@ -215,24 +230,36 @@ def test_python_ci_enables_and_verifies_tls_on_service_postgres() -> None:
         'pg_isready -U postgres -d postgres; then'
         in tls_lines
     )
+    readiness_timeout = tls_lines.index(
+        'echo "PostgreSQL service did not become ready after enabling TLS" >&2'
+    )
+    assert tls_lines[readiness_timeout + 1 : readiness_timeout + 3] == (
+        "diagnose_postgres_service",
+        "exit 1",
+    )
 
     docker_commands = [
         line
         for line in tls_lines
-        if re.search(r"\bdocker (?:exec|restart|logs)\b", line)
+        if re.search(r"\bdocker (?:exec|restart|logs|inspect)\b", line)
     ]
     assert docker_commands
     for command in docker_commands:
-        verb = re.search(r"\bdocker (exec|restart|logs)\b", command)
+        verb = re.search(r"\bdocker (exec|restart|logs|inspect)\b", command)
         assert verb is not None
         if verb.group(1) == "exec":
             assert re.search(
                 r'\bdocker exec(?: -u 0)? "\$POSTGRES_SERVICE_ID"(?: |$)',
                 command,
             )
+        elif verb.group(1) in {"restart", "logs"}:
+            assert re.search(
+                rf'\bdocker {verb.group(1)} "\$POSTGRES_SERVICE_ID"(?: |;|$)',
+                command,
+            )
         else:
             assert re.search(
-                rf'\bdocker {verb.group(1)} "\$POSTGRES_SERVICE_ID"(?: |$)',
+                r'''\bdocker inspect --format '\{\{json \.State\}\}' "\$POSTGRES_SERVICE_ID"(?: |$)''',
                 command,
             )
 

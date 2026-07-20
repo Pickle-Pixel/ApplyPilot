@@ -134,6 +134,10 @@ jobs:
           POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
         run: |
           set -euo pipefail
+          diagnose_postgres_service() {
+            docker logs "$POSTGRES_SERVICE_ID" >&2 || true
+            docker inspect --format '{{json .State}}' "$POSTGRES_SERVICE_ID" >&2 || true
+          }
           docker exec -u 0 "$POSTGRES_SERVICE_ID" bash -ceu '
             openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
               -subj /CN=localhost \
@@ -144,7 +148,11 @@ jobs:
             printf "\nssl=on\nssl_cert_file='\''server.crt'\''\nssl_key_file='\''server.key'\''\n" \
               >> "$PGDATA/postgresql.conf"
           '
-          docker restart "$POSTGRES_SERVICE_ID"
+          if ! docker restart "$POSTGRES_SERVICE_ID"; then
+            echo "PostgreSQL service restart failed after enabling TLS" >&2
+            diagnose_postgres_service
+            exit 1
+          fi
           for attempt in $(seq 1 30); do
             if docker exec "$POSTGRES_SERVICE_ID" \
               pg_isready -U postgres -d postgres; then
@@ -153,6 +161,7 @@ jobs:
             sleep 1
           done
           echo "PostgreSQL service did not become ready after enabling TLS" >&2
+          diagnose_postgres_service
           exit 1
 
       - name: Mark disposable PostgreSQL service
