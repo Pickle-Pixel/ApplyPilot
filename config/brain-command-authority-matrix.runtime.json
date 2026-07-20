@@ -4834,7 +4834,7 @@
         "powershell -File scripts/emergency-contain-legacy-authority.ps1"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/emergency-contain-legacy-authority.ps1;sourceBlobSha256=ca1198961a90a0148ad24de71d17804a8a8db27bc80a2d16ec8a69165b84e5ee",
+      "canonicalTarget": "scripts/emergency-contain-legacy-authority.ps1;sourceBlobSha256=8c487a682d3715c43bdfcbb17706437ce551f92a86d480d709699ee8fe81d888",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
