@@ -94,6 +94,23 @@ function Assert-ProtectedDirectory {
     return $resolved
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::Open(
+        $Path,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-','').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Assert-PinnedRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$PgDump,
@@ -106,9 +123,9 @@ function Assert-PinnedRuntime {
     foreach ($commit in @($ExpectedRepoHead,$ExpectedRepoTree)) {
         if ($commit -notmatch '^[0-9a-f]{40}$') { throw "Expected Git pin is invalid." }
     }
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PgDump).Hash.ToLowerInvariant() -cne $ExpectedPgDumpSha256) { throw "pg_dump hash pin mismatch." }
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Psql).Hash.ToLowerInvariant() -cne $ExpectedPsqlSha256) { throw "psql hash pin mismatch." }
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PgRestore).Hash.ToLowerInvariant() -cne $ExpectedPgRestoreSha256) { throw "pg_restore hash pin mismatch." }
+    if ((Get-Sha256Hex -Path $PgDump) -cne $ExpectedPgDumpSha256) { throw "pg_dump hash pin mismatch." }
+    if ((Get-Sha256Hex -Path $Psql) -cne $ExpectedPsqlSha256) { throw "psql hash pin mismatch." }
+    if ((Get-Sha256Hex -Path $PgRestore) -cne $ExpectedPgRestoreSha256) { throw "pg_restore hash pin mismatch." }
     $version = (& $PgDump --version 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $version -notmatch '^pg_dump \(PostgreSQL\) 18(?:\.|$)') { throw "pg_dump must be approved PostgreSQL major 18." }
     $version = (& $Psql --version 2>&1 | Out-String).Trim()
@@ -118,7 +135,7 @@ function Assert-PinnedRuntime {
     $repo = (Resolve-Path -LiteralPath $RepoPath -ErrorAction Stop).Path
     if ((& git -C $repo rev-parse 'HEAD^{commit}').Trim() -cne $ExpectedRepoHead -or
         (& git -C $repo rev-parse 'HEAD^{tree}').Trim() -cne $ExpectedRepoTree) { throw "repository exact-head pin mismatch." }
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PSCommandPath).Hash.ToLowerInvariant() -cne $ExpectedScriptSha256) { throw "backup script hash pin mismatch." }
+    if ((Get-Sha256Hex -Path $PSCommandPath) -cne $ExpectedScriptSha256) { throw "backup script hash pin mismatch." }
 }
 
 if ($PgUser -cne 'fleet_backup') { throw "PgUser must be the fixed dedicated fleet_backup login." }
@@ -182,7 +199,7 @@ if ($RegisterTask) {
         Remove-Item -LiteralPath $installBackup -Force -ErrorAction SilentlyContinue
     }
     Assert-ProtectedCredentialFile -Path $launcher | Out-Null
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $launcher).Hash.ToLowerInvariant() -cne $ExpectedScriptSha256) { throw "installed backup script hash mismatch." }
+    if ((Get-Sha256Hex -Path $launcher) -cne $ExpectedScriptSha256) { throw "installed backup script hash mismatch." }
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" $arguments"
     $trigger = New-ScheduledTaskTrigger -Daily -At 3:30am
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1)
@@ -251,7 +268,7 @@ Set-ProtectedFileAcl -Path $partial
 $flush = [IO.File]::Open($partial,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
 try { $flush.Flush($true) } finally { $flush.Dispose() }
 [IO.File]::Move($partial,$dest)
-$artifactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dest).Hash.ToLowerInvariant()
+$artifactHash = Get-Sha256Hex -Path $dest
 Assert-ProtectedCredentialFile -Path $dest | Out-Null
 Get-ChildItem $BackupDir -Filter "applypilot_fleet-*.dump" | Sort-Object LastWriteTime -Descending |
     Select-Object -Skip $KeepBackups | Remove-Item -Force -ErrorAction SilentlyContinue

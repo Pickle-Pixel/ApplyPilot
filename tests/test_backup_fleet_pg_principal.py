@@ -86,7 +86,7 @@ def test_backup_pins_runtime_and_hardens_persisted_artifacts() -> None:
         "$ExpectedRepoTree",
         "$ExpectedScriptSha256",
         "PostgreSQL\\) 18",
-        "Get-FileHash",
+        "Get-Sha256Hex",
         "Set-ProtectedFileAcl",
         "pg_restore",
         "[IO.File]::Move",
@@ -166,9 +166,11 @@ Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile({ps_literal(SCRIPT)},[ref]$tokens,[ref]$errors)
 if ($errors.Count) {{ throw ($errors | Out-String) }}
-$definition=$ast.Find({{param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-PinnedRuntime'}},$true)
-if ($null -eq $definition) {{ throw 'Assert-PinnedRuntime function missing' }}
-Invoke-Expression $definition.Extent.Text
+$hashDefinition=$ast.Find({{param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-Sha256Hex'}},$true)
+$runtimeDefinition=$ast.Find({{param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-PinnedRuntime'}},$true)
+if ($null -eq $hashDefinition -or $null -eq $runtimeDefinition) {{ throw 'pinned runtime functions missing' }}
+Invoke-Expression $hashDefinition.Extent.Text
+Invoke-Expression $runtimeDefinition.Extent.Text
 $ExpectedPgDumpSha256={ps_literal(expected['pg_dump'])}
 $ExpectedPsqlSha256={ps_literal(expected['psql'])}
 $ExpectedPgRestoreSha256={ps_literal(expected['pg_restore'])}
