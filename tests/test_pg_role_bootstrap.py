@@ -3664,6 +3664,15 @@ def test_real_bootstrap_topology_can_apply_fleet_migration_chain(
                 )
             )
             assert result == 0
+            with root.cursor() as cur:
+                cur.execute("SET LOCAL ROLE brain_schema_migrator")
+                brain_schema.ensure_brain_schema_v10_in_transaction(
+                    cur,
+                    expected_controller_role=topology.controller_role,
+                )
+                cur.execute("RESET ROLE")
+                brain_schema.verify_brain_schema_v10_in_transaction(cur)
+            root.commit()
             assert root.execute(
                 "SELECT owner.rolname AS owner_name FROM pg_catalog.pg_class relation "
                 "JOIN pg_catalog.pg_roles owner ON owner.oid=relation.relowner "
@@ -3674,6 +3683,27 @@ def test_real_bootstrap_topology_can_apply_fleet_migration_chain(
                 "JOIN pg_catalog.pg_roles owner ON owner.oid=relation.relowner "
                 "WHERE relation.oid='public.brain_schema_versions'::pg_catalog.regclass"
             ).fetchone()["owner_name"] == topology.migrator_role
+            assert root.execute(
+                "SELECT owner.rolname AS owner_name FROM pg_catalog.pg_class relation "
+                "JOIN pg_catalog.pg_roles owner ON owner.oid=relation.relowner "
+                "WHERE relation.oid='public.applypilot_database_identity'::pg_catalog.regclass"
+            ).fetchone()["owner_name"] == topology.migrator_role
+            verifier = pg_roles._client_scram_verifier(
+                root,
+                role_name=pg_roles.FLEET_MIGRATION_LOGIN_ROLE,
+                password=FLEET_MIGRATION_PASSWORD,
+            )
+            with root.cursor() as cur:
+                for _ in range(2):
+                    brain_schema.verify_brain_schema_v10_in_transaction(cur)
+                    pg_roles._reconcile_fleet_migration_login(
+                        cur,
+                        database_name=identity["database_name"],
+                        password_verifier=verifier,
+                        login_role=pg_roles.FLEET_MIGRATION_LOGIN_ROLE,
+                    )
+                brain_schema.verify_brain_schema_v10_in_transaction(cur)
+            root.rollback()
         finally:
             _drop_atomic_bootstrap_roles(root)
 

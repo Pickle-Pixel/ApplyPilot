@@ -25,6 +25,13 @@ DEFAULT_ROLE = "fleet_worker"
 FLEET_BACKUP_ROLE = "fleet_backup"
 FLEET_MIGRATION_ROLE = "applypilot_fleet_migrator"
 FLEET_MIGRATION_LOGIN_ROLE = "applypilot_fleet_migrator_login"
+_BRAIN_AUTHORITY_EXACT_OBJECTS = frozenset(
+    {
+        # V8's durable database-incarnation singleton intentionally belongs to
+        # the Brain authority domain despite not using the brain_ namespace.
+        ("public", "applypilot_database_identity"),
+    }
+)
 _ROLE_LOCK_KEY = "applypilot:fleet-worker-role:v2"
 _CANDIDATE_ROLE_LOCK_KEY = "applypilot:brain-candidate-roles:v1"
 _ARTIFACT_AUTHORITY_ROLE_LOCK_KEY = "applypilot:brain-artifact-authority-roles:v1"
@@ -577,6 +584,7 @@ def _transfer_application_ownership(
     apply: bool = True,
     preserve_owner_roles: tuple[str, ...] = (),
     preserve_name_prefixes: tuple[str, ...] = (),
+    preserve_qualified_names: frozenset[tuple[str, str]] = frozenset(),
     transfer_schemas: bool = True,
 ) -> tuple[dict[str, Any], ...]:
     """Transfer only application objects, never cluster/system-owned objects."""
@@ -608,7 +616,10 @@ def _transfer_application_ownership(
         object_kind = relation_kinds[_row_value(row, "relkind", 2)]
         namespace = _row_value(row, "nspname")
         object_name = _row_value(row, "relname", 1)
-        if object_name.startswith(preserve_name_prefixes):
+        if object_name.startswith(preserve_name_prefixes) or (
+            namespace,
+            object_name,
+        ) in preserve_qualified_names:
             continue
         if apply:
             cur.execute(
@@ -643,7 +654,10 @@ def _transfer_application_ownership(
         routine_kind = "PROCEDURE" if prokind == "p" else "FUNCTION"
         namespace = _row_value(row, "nspname")
         routine_name = _row_value(row, "proname", 1)
-        if routine_name.startswith(preserve_name_prefixes):
+        if routine_name.startswith(preserve_name_prefixes) or (
+            namespace,
+            routine_name,
+        ) in preserve_qualified_names:
             continue
         arguments = _row_value(row, "args", 3)
         identity = sql.SQL("{}.{}({})").format(
@@ -677,7 +691,10 @@ def _transfer_application_ownership(
         object_kind = "DOMAIN" if _row_value(row, "typtype", 2) == "d" else "TYPE"
         namespace = _row_value(row, "nspname")
         type_name = _row_value(row, "typname", 1)
-        if type_name.startswith(preserve_name_prefixes):
+        if type_name.startswith(preserve_name_prefixes) or (
+            namespace,
+            type_name,
+        ) in preserve_qualified_names:
             continue
         if apply:
             cur.execute(
@@ -7019,6 +7036,7 @@ def _reconcile_fleet_migration_login(
         cur,
         new_owner_role=FLEET_MIGRATION_ROLE,
         preserve_name_prefixes=("brain_",),
+        preserve_qualified_names=_BRAIN_AUTHORITY_EXACT_OBJECTS,
         transfer_schemas=False,
     )
     return _validate_fleet_migration_login_boundary(

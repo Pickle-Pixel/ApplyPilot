@@ -32,6 +32,7 @@ MIGRATOR_ROLE = "fleet_migrator_test"
 RETIRED_ADMIN_ROLE = "fleet_provider_admin_test"
 CONTROLLER_PASSWORD = "applypilot-disposable-controller-only"
 BACKUP_PASSWORD = "applypilot-disposable-backup-only"
+FLEET_MIGRATION_PASSWORD = "applypilot-disposable-fleet-migration-only"
 
 
 _EVIDENCE_TEMP = tempfile.TemporaryDirectory(prefix="applypilot-role-evidence-")
@@ -110,6 +111,8 @@ def _drop_role(conn) -> None:
             cur.execute("DROP OWNED BY fleet_worker_inherited")
             cur.execute("DROP ROLE fleet_worker_inherited")
         for support_role in (
+            pg_roles.FLEET_MIGRATION_LOGIN_ROLE,
+            pg_roles.FLEET_MIGRATION_ROLE,
             pg_roles.FLEET_BACKUP_ROLE,
             CONTROLLER_ROLE,
             VERIFIER_ROLE,
@@ -193,6 +196,15 @@ def worker_role(fleet_db):
             )
         )
         conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(CONTROLLER_ROLE)))
+        pg_roles._reconcile_fleet_migration_login(
+            conn.cursor(),
+            database_name=conninfo_to_dict(conn.info.dsn)["dbname"],
+            password_verifier=pg_roles._client_scram_verifier(
+                conn,
+                role_name=pg_roles.FLEET_MIGRATION_LOGIN_ROLE,
+                password=FLEET_MIGRATION_PASSWORD,
+            ),
+        )
         pg_roles._reconcile_backup_role_boundary(
             conn.cursor(),
             topology=pg_roles.BootstrapTopology(
@@ -270,14 +282,17 @@ def test_identity_function_does_not_depend_on_controller_migrator_membership(fle
             "JOIN pg_roles table_owner ON table_owner.oid=relation.relowner "
             "WHERE function.oid='public.fleet_worker_identity()'::regprocedure"
         ).fetchone()
-        assert metadata == {"function_owner": MIGRATOR_ROLE, "table_owner": MIGRATOR_ROLE}
+        assert metadata == {
+            "function_owner": pg_roles.FLEET_MIGRATION_ROLE,
+            "table_owner": pg_roles.FLEET_MIGRATION_ROLE,
+        }
         assert (
             controller.execute(
                 "SELECT 1 FROM pg_auth_members membership "
                 "JOIN pg_roles parent ON parent.oid=membership.roleid "
                 "WHERE membership.member=(SELECT oid FROM pg_roles WHERE rolname=%s) "
                 "AND parent.rolname=%s",
-                (CONTROLLER_ROLE, MIGRATOR_ROLE),
+                (CONTROLLER_ROLE, pg_roles.FLEET_MIGRATION_ROLE),
             ).fetchone()
             is None
         )
