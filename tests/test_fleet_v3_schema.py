@@ -353,7 +353,7 @@ def test_v3_schema_declares_autotriage_actions_once():
 
 
 def test_v3_schema_migrates_compute_queue_url_primary_key(fleet_pg):
-    with pgqueue.connect(fleet_pg) as conn:
+    with pgqueue.connect_admin(fleet_pg) as conn:
         pgqueue.ensure_schema(conn)
         with conn.cursor() as cur:
             cur.execute("DROP TABLE IF EXISTS compute_queue")
@@ -461,14 +461,14 @@ def test_v3_schema_adds_and_backfills_cumulative_cost_for_pre_column_queues(flee
     assert legacy_schema != base_schema
     assert "cumulative_cost_usd" not in legacy_schema
 
-    with pgqueue.connect(fleet_pg, autocommit=True) as admin:
+    with pgqueue.connect_admin(fleet_pg, autocommit=True) as admin:
         admin.execute(
             psycopg.sql.SQL("CREATE DATABASE {}").format(
                 psycopg.sql.Identifier(database_name)
             )
         )
     try:
-        with pgqueue.connect(legacy_dsn) as conn, conn.cursor() as cur:
+        with pgqueue.connect_admin(legacy_dsn) as conn, conn.cursor() as cur:
             cur.execute(legacy_schema)
             cur.execute(
                 "CREATE TABLE linkedin_queue "
@@ -527,7 +527,7 @@ def test_v3_schema_adds_and_backfills_cumulative_cost_for_pre_column_queues(flee
             )
             linkedin_cost = float(cur.fetchone()["cumulative_cost_usd"])
     finally:
-        with pgqueue.connect(fleet_pg, autocommit=True) as admin:
+        with pgqueue.connect_admin(fleet_pg, autocommit=True) as admin:
             admin.execute(
                 psycopg.sql.SQL("DROP DATABASE {} WITH (FORCE)").format(
                     psycopg.sql.Identifier(database_name)
@@ -934,7 +934,7 @@ def test_queue_accepts_legacy_all_null_and_complete_canonical_rows(fleet_db, tab
 def test_existing_queue_is_explicitly_upgraded_to_fresh_canonical_schema(fleet_pg, table):
     lane = "ats" if table == "apply_queue" else "linkedin"
     canonical_index = f"idx_{table}_canonical_lease"
-    with pgqueue.connect(fleet_pg) as conn:
+    with pgqueue.connect_admin(fleet_pg) as conn:
         pgqueue.ensure_schema(conn)
         fleet_schema.ensure_schema_v3(conn)
         with conn.cursor() as cur:

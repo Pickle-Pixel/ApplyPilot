@@ -236,6 +236,11 @@ def fleet_pg():
         )
     ext = ".exe" if os.name == "nt" else ""
     initdb, pg_ctl = binp / f"initdb{ext}", binp / f"pg_ctl{ext}"
+    openssl = binp / f"openssl{ext}"
+    if not openssl.exists() and shutil.which("openssl"):
+        openssl = Path(shutil.which("openssl") or "")
+    if not openssl.exists():
+        pytest.skip("applypilot-pgtest OpenSSL binary not found; TLS runtime-principal tests require it")
     datadir = Path(tempfile.mkdtemp(prefix="ap_fleetpg_"))
     # Let initdb create the data directory so its service account receives the
     # platform-native ACL instead of inheriting Python's private temp ACL.
@@ -265,13 +270,35 @@ def fleet_pg():
         pwfile.unlink(missing_ok=True)
         subprocess.run(
             [
+                str(openssl),
+                "req",
+                "-new",
+                "-x509",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+                "-keyout",
+                str(datadir / "server.key"),
+                "-out",
+                str(datadir / "server.crt"),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "OPENSSL_CONF": os.devnull},
+        )
+        os.chmod(datadir / "server.key", 0o600)
+        subprocess.run(
+            [
                 str(pg_ctl),
                 "-D",
                 str(datadir),
                 "-l",
                 str(logfile),
                 "-o",
-                f"-p {port} -c listen_addresses=127.0.0.1 -c fsync=off",
+                f"-p {port} -c listen_addresses=127.0.0.1 -c fsync=off -c ssl=on",
                 "-w",
                 "-t",
                 "30",
@@ -288,7 +315,7 @@ def fleet_pg():
         details = "\n".join(part for part in (e.stdout, e.stderr, log) if part)
         pytest.skip(f"could not start test Postgres (exit {e.returncode}):\n{details}")
 
-    dsn = f"postgresql://postgres:{_TEST_PG_PASSWORD}@127.0.0.1:{port}/postgres"
+    dsn = f"postgresql://postgres:{_TEST_PG_PASSWORD}@127.0.0.1:{port}/postgres?sslmode=require"
     _FLEET_PG_LOGFILE = logfile
     previous_disposable_marker = os.environ.get("APPLYPILOT_PGTEST_DISPOSABLE")
     previous_cluster_marker = os.environ.get(DISPOSABLE_CLUSTER_MARKER_ENV)
@@ -434,3 +461,143 @@ def fleet_db(fleet_pg, monkeypatch):
         with pgqueue.connect_admin(fleet_pg) as conn:
             _drop_fixed_brain_test_roles(conn)
             _restore_test_public_acls(conn)
+
+
+@pytest.fixture
+def fleet_control_db(fleet_db, fleet_pg, monkeypatch):
+    """TLS DSN for an isolated nonadmin controller role with a narrow DB contract.
+
+    ``fleet_db`` remains the explicit schema/setup channel.  This fixture is the
+    runtime channel used by subprocesses and modules that retain the production
+    ``pgqueue.connect`` symbol, so the mapped-principal and TLS guards are exercised
+    instead of monkeypatched away.
+    """
+    fixture_id = secrets.token_hex(6)
+    role = f"test_fleet_control_{fixture_id}"
+    password = f"test-control-{secrets.token_hex(16)}"
+    params = psycopg.conninfo.conninfo_to_dict(fleet_pg)
+    params.update(user=role, password=password, sslmode="require")
+    runtime_dsn = psycopg.conninfo.make_conninfo(**params)
+
+    with pgqueue.connect_admin(fleet_pg) as admin:
+        require_disposable_postgres(admin)
+        database_name = admin.execute("SELECT current_database() AS name").fetchone()["name"]
+        admin.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS PASSWORD {}"
+            ).format(sql.Identifier(role), sql.Literal(password))
+        )
+        admin.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(database_name), sql.Identifier(role)
+            )
+        )
+        admin.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
+        admin.execute(
+            sql.SQL(
+                "GRANT SELECT ON public.worker_heartbeat, public.rate_governor, "
+                "public.apply_queue, public.compute_queue, public.search_tasks, "
+                "public.linkedin_queue, public.auth_challenge, public.poison_jobs, "
+                "public.llm_usage, public.fleet_config TO {}"
+            ).format(sql.Identifier(role))
+        )
+        admin.execute(
+            sql.SQL(
+                "GRANT INSERT ON public.remote_commands, public.poison_jobs, "
+                "public.rate_governor TO {}"
+            ).format(sql.Identifier(role))
+        )
+        admin.execute(
+            sql.SQL("GRANT SELECT (id) ON public.remote_commands TO {}").format(
+                sql.Identifier(role)
+            )
+        )
+        admin.execute(
+            sql.SQL("GRANT UPDATE ON public.poison_jobs, public.rate_governor TO {}").format(
+                sql.Identifier(role)
+            )
+        )
+        admin.execute(
+            sql.SQL("GRANT USAGE, SELECT ON SEQUENCE public.remote_commands_id_seq TO {}").format(
+                sql.Identifier(role)
+            )
+        )
+        admin.commit()
+
+    monkeypatch.setenv("APPLYPILOT_PG_PRINCIPAL", role)
+    try:
+        yield runtime_dsn
+    finally:
+        with pgqueue.connect_admin(fleet_pg) as admin:
+            require_disposable_postgres(admin)
+            admin.execute(sql.SQL("DROP OWNED BY {} CASCADE").format(sql.Identifier(role)))
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+            admin.commit()
+
+
+@pytest.fixture
+def fleet_runtime_db(fleet_db, fleet_pg, monkeypatch):
+    """TLS DSN for one mapped worker with only its SECURITY DEFINER API grant."""
+    fixture_id = secrets.token_hex(6)
+    role = f"test_fleet_worker_{fixture_id}"
+    worker_id = f"test-worker-{fixture_id}"
+    machine_owner = f"test-machine-{fixture_id}"
+    password = f"test-worker-{secrets.token_hex(16)}"
+    params = psycopg.conninfo.conninfo_to_dict(fleet_pg)
+    params.update(user=role, password=password, sslmode="require")
+    runtime_dsn = psycopg.conninfo.make_conninfo(**params)
+
+    with pgqueue.connect_admin(fleet_pg) as admin:
+        require_disposable_postgres(admin)
+        database_name = admin.execute("SELECT current_database() AS name").fetchone()["name"]
+        admin.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS PASSWORD {}"
+            ).format(sql.Identifier(role), sql.Literal(password))
+        )
+        admin.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(database_name), sql.Identifier(role)
+            )
+        )
+        admin.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
+        admin.execute(
+            sql.SQL(
+                "GRANT EXECUTE ON FUNCTION public.fleet_worker_admission_snapshot() TO {}"
+            ).format(sql.Identifier(role))
+        )
+        admin.execute(
+            "INSERT INTO public.workers(worker_id,machine_owner,validated,capabilities) "
+            "VALUES(%s,%s,true,'{}'::jsonb)",
+            (worker_id, machine_owner),
+        )
+        admin.execute(
+            "INSERT INTO public.fleet_desired_state"
+            "(machine_owner,desired_workers,agent,model,generation,updated_at) "
+            "VALUES(%s,1,'fixture','fixture',1,now())",
+            (machine_owner,),
+        )
+        admin.execute(
+            "INSERT INTO public.worker_heartbeat"
+            "(worker_id,machine_owner,role,state,sw_version,last_beat) "
+            "VALUES(%s,%s,'compute','idle','fixture-version',now())",
+            (worker_id, machine_owner),
+        )
+        admin.execute(
+            "INSERT INTO public.fleet_worker_principals(role_name,worker_id,contract) "
+            "VALUES(%s,%s,'compute')",
+            (role, worker_id),
+        )
+        admin.commit()
+
+    monkeypatch.setenv("APPLYPILOT_PG_PRINCIPAL", role)
+    try:
+        yield runtime_dsn
+    finally:
+        with pgqueue.connect_admin(fleet_pg) as admin:
+            require_disposable_postgres(admin)
+            admin.execute(sql.SQL("DROP OWNED BY {} CASCADE").format(sql.Identifier(role)))
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+            admin.commit()

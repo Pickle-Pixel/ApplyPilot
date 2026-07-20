@@ -1059,10 +1059,10 @@ def test_A4_pause_scope_cannot_reach_linkedin(fleet_db):
         assert row["breaker_until"] is not None
 
 
-def test_A4_codex_bridge_pause_scope_structured_rejection(fleet_db, monkeypatch):
+def test_A4_codex_bridge_pause_scope_structured_rejection(fleet_db, fleet_control_db, monkeypatch):
     """A4: the codex_bridge MCP tool surfaces a structured rejection for a forbidden scope."""
     from applypilot.fleet import codex_bridge, governor
-    monkeypatch.setenv("FLEET_PG_DSN", fleet_db)
+    monkeypatch.setenv("FLEET_PG_DSN", fleet_control_db)
     with pgqueue.connect(fleet_db) as conn:
         governor.ensure_scope(conn, governor.LINKEDIN_ACCOUNT)
     fn = getattr(codex_bridge.pause_scope, "fn", codex_bridge.pause_scope)
