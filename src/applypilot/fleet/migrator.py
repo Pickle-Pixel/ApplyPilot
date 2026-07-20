@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from psycopg import sql
+
 
 _MANIFEST_FIELDS = frozenset({"schema_version", "manifest_id", "migration_role", "predecessor", "migrations"})
 _PREDECESSOR_FIELDS = frozenset({"runtime_commit", "runtime_tree", "files"})
@@ -35,6 +37,20 @@ _LOCK_KEY = "applypilot:fleet:migrations:v1"
 _DEFAULT_LOCK_TIMEOUT_SECONDS = 30.0
 _DEFAULT_STATEMENT_TIMEOUT_MS = 300_000
 _LEDGER_TABLE = "applypilot_fleet_schema_migrations"
+_MIGRATION_ROLE = "applypilot_fleet_migrator"
+_BACKUP_ROLE = "fleet_backup"
+_BACKUP_DEFAULT_ACLS = (
+    ("*", "S", "SELECT", False),
+    ("*", "n", "USAGE", False),
+    ("*", "r", "SELECT", False),
+)
+_DEFAULT_ACL_OBJECT_KINDS = {
+    "S": "SEQUENCES",
+    "f": "FUNCTIONS",
+    "n": "SCHEMAS",
+    "r": "TABLES",
+    "T": "TYPES",
+}
 # The published, canonical predecessor tuples. A release archive strips `.git`,
 # so it cannot appeal to the object store to prove its predecessor bytes. The
 # only artifact-safe boundary is a pinned (commit, tree, files) tuple *plus* the
@@ -416,6 +432,93 @@ def _acquire_lock(conn, timeout_seconds: float) -> None:
         time.sleep(0.1)
 
 
+def _row_value(row: Any, key: str, index: int = 0) -> Any:
+    return row[key] if hasattr(row, "keys") else row[index]
+
+
+def _backup_default_acl_entries(conn) -> tuple[tuple[str, str, str, bool], ...]:
+    rows = conn.execute(
+        "SELECT COALESCE(namespace.nspname,'*') AS schema_name,defaults.defaclobjtype,"
+        "acl.privilege_type,acl.is_grantable FROM pg_catalog.pg_default_acl defaults "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
+        "LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl "
+        "JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE owner.rolname=%s AND grantee.rolname=%s "
+        "ORDER BY schema_name,defaults.defaclobjtype,acl.privilege_type,acl.is_grantable",
+        (_MIGRATION_ROLE, _BACKUP_ROLE),
+    ).fetchall()
+    return tuple(
+        (
+            str(_row_value(row, "schema_name")),
+            str(_row_value(row, "defaclobjtype", 1)),
+            str(_row_value(row, "privilege_type", 2)),
+            bool(_row_value(row, "is_grantable", 3)),
+        )
+        for row in rows
+    )
+
+
+def _reconcile_and_verify_backup_defaults(conn) -> tuple[tuple[str, str, str, bool], ...] | None:
+    """Keep future fleet-migration objects readable by the fixed backup login.
+
+    Older/no-backup installations remain supported: the migration path performs
+    no ACL work until the fixed ``fleet_backup`` role has been provisioned.
+    When it is present, every default-ACL edge from this fixed object owner to
+    the backup role is removed before the exact read-only set is installed.
+    """
+    present = conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=%s) AS present",
+        (_BACKUP_ROLE,),
+    ).fetchone()
+    if not bool(_row_value(present, "present")):
+        return None
+
+    scopes = conn.execute(
+        "SELECT DISTINCT namespace.nspname AS schema_name,defaults.defaclobjtype "
+        "FROM pg_catalog.pg_default_acl defaults "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
+        "LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl "
+        "JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE owner.rolname=%s AND grantee.rolname=%s "
+        "ORDER BY namespace.nspname NULLS FIRST,defaults.defaclobjtype",
+        (_MIGRATION_ROLE, _BACKUP_ROLE),
+    ).fetchall()
+    for row in scopes:
+        schema_name = _row_value(row, "schema_name")
+        object_kind = str(_row_value(row, "defaclobjtype", 1))
+        object_type = _DEFAULT_ACL_OBJECT_KINDS.get(object_kind)
+        if object_type is None:
+            raise MigrationError(f"unsupported backup default ACL object kind: {object_kind!r}")
+        statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(
+            sql.Identifier(_MIGRATION_ROLE)
+        )
+        if schema_name is not None and object_kind != "n":
+            statement += sql.SQL("IN SCHEMA {} ").format(sql.Identifier(str(schema_name)))
+        statement += sql.SQL("REVOKE ALL PRIVILEGES ON {} FROM {}").format(
+            sql.SQL(object_type), sql.Identifier(_BACKUP_ROLE)
+        )
+        conn.execute(statement)
+
+    for statement in (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE applypilot_fleet_migrator "
+        "GRANT USAGE ON SCHEMAS TO fleet_backup",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE applypilot_fleet_migrator "
+        "GRANT SELECT ON TABLES TO fleet_backup",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE applypilot_fleet_migrator "
+        "GRANT SELECT ON SEQUENCES TO fleet_backup",
+    ):
+        conn.execute(statement)
+    actual = _backup_default_acl_entries(conn)
+    if actual != _BACKUP_DEFAULT_ACLS:
+        raise MigrationError(
+            "fleet_backup migration-owner default ACL mismatch: "
+            f"expected={_BACKUP_DEFAULT_ACLS!r}, actual={actual!r}"
+        )
+    return actual
+
+
 def _bootstrap_ledger(conn) -> None:
     existing = conn.execute("SELECT to_regclass('public.applypilot_fleet_schema_migrations') AS oid").fetchone()
     existing_oid = existing["oid"] if hasattr(existing, "keys") else existing[0]
@@ -568,6 +671,9 @@ def apply_manifest(
     _acquire_lock(conn, lock_timeout_seconds)
     applied: list[str] = []
     try:
+        # This must precede both ledger bootstrap and migration SQL: objects
+        # created by either path need their backup ACLs at creation time.
+        _reconcile_and_verify_backup_defaults(conn)
         _bootstrap_ledger(conn)
         conn.commit()
         already_applied = _ledger_prefix(conn, manifest)

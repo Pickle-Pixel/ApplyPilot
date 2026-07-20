@@ -23,6 +23,7 @@ from psycopg import sql
 
 DEFAULT_ROLE = "fleet_worker"
 FLEET_BACKUP_ROLE = "fleet_backup"
+FLEET_MIGRATION_ROLE = "applypilot_fleet_migrator"
 _ROLE_LOCK_KEY = "applypilot:fleet-worker-role:v2"
 _CANDIDATE_ROLE_LOCK_KEY = "applypilot:brain-candidate-roles:v1"
 _ARTIFACT_AUTHORITY_ROLE_LOCK_KEY = "applypilot:brain-artifact-authority-roles:v1"
@@ -3771,6 +3772,36 @@ def _catalog_derived_authority_containment_sql(
     return inventory_and_containment, assertion
 
 
+def _conditional_backup_default_acl_revoke_sql(
+    cur,
+    *,
+    owner_role: str,
+    backup_role: str,
+) -> str:
+    """Return an idempotent role-existence-guarded default-ACL cleanup."""
+    statements = "\n".join(
+        statement.as_string(cur.connection)
+        for statement in (
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE USAGE ON SCHEMAS FROM {};").format(
+                sql.Identifier(owner_role), sql.Identifier(backup_role)
+            ),
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE SELECT ON TABLES FROM {};").format(
+                sql.Identifier(owner_role), sql.Identifier(backup_role)
+            ),
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE SELECT ON SEQUENCES FROM {};").format(
+                sql.Identifier(owner_role), sql.Identifier(backup_role)
+            ),
+        )
+    )
+    return (
+        "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
+        + sql.Literal(owner_role).as_string(cur.connection)
+        + ") THEN\n"
+        + statements
+        + "\nEND IF;"
+    )
+
+
 def _forward_v7_containment_sql(
     cur,
     *,
@@ -3845,6 +3876,14 @@ def _forward_v7_containment_sql(
         sql.SQL("DROP ROLE IF EXISTS {};").format(backup),
     ):
         backup_cleanup.append(statement.as_string(cur.connection))
+    backup_cleanup.insert(
+        -2,
+        _conditional_backup_default_acl_revoke_sql(
+            cur,
+            owner_role=FLEET_MIGRATION_ROLE,
+            backup_role=topology.backup_role,
+        ),
+    )
     statements.append(
         "DO $applypilot_backup_rollback$ BEGIN\n"
         + "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
@@ -3902,6 +3941,14 @@ def _backup_role_rollback_sql(
             sql.SQL("ALTER ROLE {} IN DATABASE {} RESET ALL;").format(backup, sql.Identifier(database_name)),
             sql.SQL("DROP ROLE IF EXISTS {};").format(backup),
         )
+    )
+    cleanup.insert(
+        -2,
+        _conditional_backup_default_acl_revoke_sql(
+            cur,
+            owner_role=FLEET_MIGRATION_ROLE,
+            backup_role=topology.backup_role,
+        ),
     )
     return (
         "DO $applypilot_backup_rollback$ BEGIN\n"
@@ -4736,6 +4783,98 @@ def _reject_unsupported_backup_objects(cur) -> None:
         )
 
 
+_BACKUP_DEFAULT_ACL_EXPECTED = (
+    ("*", "S", "SELECT", False),
+    ("*", "n", "USAGE", False),
+    ("*", "r", "SELECT", False),
+)
+_DEFAULT_ACL_OBJECT_KINDS = {
+    "S": "SEQUENCES",
+    "f": "FUNCTIONS",
+    "n": "SCHEMAS",
+    "r": "TABLES",
+    "T": "TYPES",
+}
+
+
+def _role_exists(cur, role_name: str) -> bool:
+    cur.execute("SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=%s) AS present", (role_name,))
+    return bool(_row_value(cur.fetchone(), "present"))
+
+
+def _backup_default_acl_entries(
+    cur,
+    *,
+    owner_role: str,
+    backup_role: str,
+) -> tuple[tuple[str, str, str, bool], ...]:
+    cur.execute(
+        "SELECT COALESCE(namespace.nspname,'*') AS schema_name,defaults.defaclobjtype,"
+        "acl.privilege_type,acl.is_grantable FROM pg_catalog.pg_default_acl defaults "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
+        "LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl "
+        "JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE owner.rolname=%s AND grantee.rolname=%s "
+        "ORDER BY schema_name,defaults.defaclobjtype,acl.privilege_type,acl.is_grantable",
+        (owner_role, backup_role),
+    )
+    return tuple(
+        (
+            str(_row_value(row, "schema_name")),
+            str(_row_value(row, "defaclobjtype", 1)),
+            str(_row_value(row, "privilege_type", 2)),
+            bool(_row_value(row, "is_grantable", 3)),
+        )
+        for row in cur.fetchall()
+    )
+
+
+def _reconcile_exact_backup_default_acls(
+    cur,
+    *,
+    owner_role: str,
+    backup_role: str,
+) -> None:
+    """Replace one owner's backup default ACLs with the exact read-only set."""
+    cur.execute(
+        "SELECT DISTINCT namespace.nspname AS schema_name,defaults.defaclobjtype "
+        "FROM pg_catalog.pg_default_acl defaults "
+        "JOIN pg_catalog.pg_roles owner ON owner.oid=defaults.defaclrole "
+        "LEFT JOIN pg_catalog.pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) acl "
+        "JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee "
+        "WHERE owner.rolname=%s AND grantee.rolname=%s "
+        "ORDER BY namespace.nspname NULLS FIRST,defaults.defaclobjtype",
+        (owner_role, backup_role),
+    )
+    for row in cur.fetchall():
+        schema_name = _row_value(row, "schema_name")
+        object_kind = str(_row_value(row, "defaclobjtype", 1))
+        object_type = _DEFAULT_ACL_OBJECT_KINDS.get(object_kind)
+        if object_type is None:
+            raise RuntimeError(f"unsupported backup default ACL object kind: {object_kind!r}")
+        statement = sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(sql.Identifier(owner_role))
+        if schema_name is not None and object_kind != "n":
+            statement += sql.SQL("IN SCHEMA {} ").format(sql.Identifier(str(schema_name)))
+        statement += sql.SQL("REVOKE ALL PRIVILEGES ON {} FROM {}").format(
+            sql.SQL(object_type), sql.Identifier(backup_role)
+        )
+        cur.execute(statement)
+    for statement in (
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}").format(
+            sql.Identifier(owner_role), sql.Identifier(backup_role)
+        ),
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON TABLES TO {}").format(
+            sql.Identifier(owner_role), sql.Identifier(backup_role)
+        ),
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON SEQUENCES TO {}").format(
+            sql.Identifier(owner_role), sql.Identifier(backup_role)
+        ),
+    ):
+        cur.execute(statement)
+
+
 def _reconcile_backup_role_boundary(cur, *, topology: BootstrapTopology) -> None:
     """Install the fixed read-only backup principal's complete ACL boundary."""
     if topology.backup_role != FLEET_BACKUP_ROLE:
@@ -4744,7 +4883,6 @@ def _reconcile_backup_role_boundary(cur, *, topology: BootstrapTopology) -> None
     _reconcile_role_memberships(cur, role_name=topology.backup_role)
     database = sql.Identifier(cur.connection.info.dbname)
     backup = sql.Identifier(topology.backup_role)
-    migrator = sql.Identifier(topology.migrator_role)
     cur.execute(
         sql.SQL(
             "ALTER ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
@@ -4779,24 +4917,20 @@ def _reconcile_backup_role_boundary(cur, *, topology: BootstrapTopology) -> None
         # Schema USAGE plus PostgreSQL's default PUBLIC EXECUTE would otherwise
         # give the backup login an application-code execution path.
         cur.execute(sql.SQL("REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA {} FROM PUBLIC").format(schema))
-    cur.execute(
-        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}").format(
-            migrator, backup
-        )
+    _reconcile_exact_backup_default_acls(
+        cur,
+        owner_role=topology.migrator_role,
+        backup_role=topology.backup_role,
     )
-    cur.execute(
-        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON TABLES TO {}").format(
-            migrator, backup
+    if FLEET_MIGRATION_ROLE != topology.migrator_role and _role_exists(cur, FLEET_MIGRATION_ROLE):
+        _reconcile_exact_backup_default_acls(
+            cur,
+            owner_role=FLEET_MIGRATION_ROLE,
+            backup_role=topology.backup_role,
         )
-    )
-    cur.execute(
-        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON SEQUENCES TO {}").format(
-            migrator, backup
-        )
-    )
     cur.execute(
         sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC").format(
-            migrator
+            sql.Identifier(topology.migrator_role)
         )
     )
 
@@ -4908,24 +5042,39 @@ def _validate_backup_role_boundary(cur, *, topology: BootstrapTopology) -> dict[
         )
         if not bool(_row_value(cur.fetchone(), "allowed")):
             raise RuntimeError("fleet_backup cannot read applypilot_database_identity")
-    cur.execute(
-        "SELECT COALESCE(namespace.nspname,'*') AS schema_name,defaults.defaclobjtype,"
-        "acl.privilege_type,acl.is_grantable FROM pg_default_acl defaults "
-        "JOIN pg_roles owner ON owner.oid=defaults.defaclrole "
-        "LEFT JOIN pg_namespace namespace ON namespace.oid=defaults.defaclnamespace "
-        "CROSS JOIN LATERAL aclexplode(defaults.defaclacl) acl "
-        "JOIN pg_roles grantee ON grantee.oid=acl.grantee "
-        "WHERE owner.rolname=%s AND grantee.rolname=%s "
-        "ORDER BY schema_name,defaults.defaclobjtype,acl.privilege_type",
-        (topology.migrator_role, topology.backup_role),
+    defaults = _backup_default_acl_entries(
+        cur,
+        owner_role=topology.migrator_role,
+        backup_role=topology.backup_role,
     )
-    defaults = tuple(
-        (_row_value(row, "schema_name"), _row_value(row, "defaclobjtype", 1), _row_value(row, "privilege_type", 2), bool(_row_value(row, "is_grantable", 3)))
-        for row in cur.fetchall()
+    if defaults != _BACKUP_DEFAULT_ACL_EXPECTED:
+        raise RuntimeError(
+            "fleet_backup default ACL mismatch for "
+            f"{topology.migrator_role}: expected={_BACKUP_DEFAULT_ACL_EXPECTED!r}, actual={defaults!r}"
+        )
+    fleet_migration_role_present = (
+        FLEET_MIGRATION_ROLE == topology.migrator_role
+        or _role_exists(cur, FLEET_MIGRATION_ROLE)
     )
-    expected_defaults = (("*", "S", "SELECT", False), ("*", "n", "USAGE", False), ("*", "r", "SELECT", False))
-    if defaults != expected_defaults:
-        raise RuntimeError(f"fleet_backup default ACL mismatch: expected={expected_defaults!r}, actual={defaults!r}")
+    fleet_migration_defaults = (
+        defaults
+        if FLEET_MIGRATION_ROLE == topology.migrator_role
+        else (
+            _backup_default_acl_entries(
+                cur,
+                owner_role=FLEET_MIGRATION_ROLE,
+                backup_role=topology.backup_role,
+            )
+            if fleet_migration_role_present
+            else None
+        )
+    )
+    if fleet_migration_defaults is not None and fleet_migration_defaults != _BACKUP_DEFAULT_ACL_EXPECTED:
+        raise RuntimeError(
+            "fleet_backup default ACL mismatch for "
+            f"{FLEET_MIGRATION_ROLE}: expected={_BACKUP_DEFAULT_ACL_EXPECTED!r}, "
+            f"actual={fleet_migration_defaults!r}"
+        )
     cur.execute(
         "SELECT setting FROM pg_db_role_setting setting "
         "JOIN pg_roles role ON role.oid=setting.setrole "
@@ -4938,7 +5087,7 @@ def _validate_backup_role_boundary(cur, *, topology: BootstrapTopology) -> dict[
     expected_settings = ("default_transaction_read_only=on", "search_path=pg_catalog, pg_temp")
     if settings != expected_settings:
         raise RuntimeError(f"fleet_backup role settings mismatch: expected={expected_settings!r}, actual={settings!r}")
-    return {
+    boundary = {
         "role_name": topology.backup_role,
         "connection_limit": 1,
         "memberships": 0,
@@ -4950,6 +5099,10 @@ def _validate_backup_role_boundary(cur, *, topology: BootstrapTopology) -> dict[
         "role_settings": settings,
         "default_acl_entries": defaults,
     }
+    if fleet_migration_defaults is not None and FLEET_MIGRATION_ROLE != topology.migrator_role:
+        boundary["fleet_migration_owner"] = FLEET_MIGRATION_ROLE
+        boundary["fleet_migration_default_acl_entries"] = fleet_migration_defaults
+    return boundary
 
 
 def bootstrap_database_roles(
@@ -5958,6 +6111,22 @@ def ensure_fleet_worker_role(
 
             cur.execute("SELECT current_database() AS current_database")
             database = sql.Identifier(_row_value(cur.fetchone(), "current_database"))
+            if not regrant_manifest.controller_roles or not regrant_manifest.verifier_roles:
+                raise RuntimeError("explicit regrant manifest requires controller and verifier roles")
+            topology = BootstrapTopology(
+                database_owner_role=regrant_manifest.database_owner_role,
+                controller_role=regrant_manifest.controller_roles[0],
+                verifier_role=regrant_manifest.verifier_roles[0],
+                migrator_role=regrant_manifest.migrator_role,
+                retired_admin_roles=regrant_manifest.retired_admin_roles,
+                backup_role=regrant_manifest.backup_role,
+                infrastructure_superuser_roles=regrant_manifest.infrastructure_superuser_roles,
+            )
+            if not _role_exists(cur, topology.backup_role):
+                raise RuntimeError(
+                    "complete role bootstrap or existing-topology authority upgrade before worker reconciliation: "
+                    "fixed fleet_backup role does not exist"
+                )
             inventory = _database_inventory(cur, role_name=role, manifest=regrant_manifest)
             _reject_pg_temp_shadow(cur)
             owned = _owned_objects(cur, role) if role_exists else []
@@ -5991,6 +6160,20 @@ def ensure_fleet_worker_role(
             if cur.fetchone() is None:
                 raise RuntimeError(f"fleet worker enrollment is missing for worker_id {effective_worker!r}")
 
+            # All preceding work is read-only. The complete backup validation is
+            # deliberately the final gate before rollback generation, durable
+            # evidence, or any database mutation.
+            try:
+                backup_boundary_preflight = _validate_backup_role_boundary(
+                    cur,
+                    topology=topology,
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "complete role bootstrap or existing-topology authority upgrade before worker reconciliation: "
+                    f"{exc}"
+                ) from exc
+
             rollback_sql = _public_acl_rollback_sql(
                 cur,
                 connect_allowlist=inventory["connect_allowlist"],
@@ -6014,6 +6197,7 @@ def ensure_fleet_worker_role(
                 "credential_forward_reconcile_required": role_exists,
                 "worker_id": effective_worker,
                 "contract": effective_contract,
+                "backup_role_boundary_preflight": backup_boundary_preflight,
                 "prepared_at": prepared_at,
             }
             _write_preparation_evidence(
@@ -6085,15 +6269,7 @@ def ensure_fleet_worker_role(
             )
             backup_boundary = _validate_backup_role_boundary(
                 cur,
-                topology=BootstrapTopology(
-                    database_owner_role=regrant_manifest.database_owner_role,
-                    controller_role=regrant_manifest.controller_roles[0],
-                    verifier_role=regrant_manifest.verifier_roles[0],
-                    migrator_role=regrant_manifest.migrator_role,
-                    retired_admin_roles=regrant_manifest.retired_admin_roles,
-                    backup_role=regrant_manifest.backup_role,
-                    infrastructure_superuser_roles=regrant_manifest.infrastructure_superuser_roles,
-                ),
+                topology=topology,
             )
             evidence_inventory["backup_role_boundary"] = backup_boundary
         conn.commit()

@@ -98,6 +98,16 @@ python scripts/bootstrap-fleet-pg-roles.py `
 Remove-Item Env:APPLYPILOT_ADMIN_PG_DSN, Env:APPLYPILOT_CONTROLLER_PG_PASSWORD, Env:APPLYPILOT_BACKUP_PG_PASSWORD
 ```
 
+Worker reconciliation has a strict rollout prerequisite. First complete either
+the new-topology role bootstrap above or the existing-topology authority upgrade.
+Then authenticate its committed receipt and confirm every role/authority gate,
+including the complete `fleet_backup` boundary. Only after those gates pass may
+an operator onboard, reconcile, or rotate a worker role. Worker reconciliation
+full-validates the backup boundary before it generates rollback SQL, writes
+durable evidence, or changes a role; a missing or drifted backup role fails with
+`complete role bootstrap or existing-topology authority upgrade before worker
+reconciliation`.
+
 Before role hardening, prepare a reviewed JSON regrant manifest:
 
 ```json
@@ -127,8 +137,9 @@ structured object kind, qualified name, privilege allowlist, and approved
 grantee. Raw SQL, comments, control characters, unknown fields, unsupported
 privileges, secrets, and PUBLIC grantees are rejected before mutation.
 
-Run `scripts/setup-fleet-pg-tailscale.ps1` once per enrolled node identity,
-contract, and unique role. Reconciliation executes `REVOKE CONNECT ON DATABASE`
+After the prerequisite sequence above is authenticated, run
+`scripts/setup-fleet-pg-tailscale.ps1` once per enrolled node identity, contract,
+and unique role. Reconciliation executes `REVOKE CONNECT ON DATABASE`
 from PUBLIC, transfers ownership to the dedicated NOLOGIN/NOSUPERUSER owner,
 retires the named legacy/shared admin logins while preserving the isolated
 infrastructure break-glass role, revokes broad

@@ -11,6 +11,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.rows import dict_row
 
 from applypilot.fleet import migrator
@@ -308,6 +309,190 @@ def test_apply_requires_exact_role_and_creates_immutable_ledger(migration_pg, tm
         assert result.already_applied == ()
         with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
             conn.execute("TRUNCATE applypilot_fleet_schema_migrations")
+
+
+def test_apply_without_fixed_backup_role_remains_compatible(migration_pg, tmp_path):
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, []))
+    with psycopg.connect(migration_pg, row_factory=dict_row) as conn:
+        assert conn.info.server_version >= 180000
+        assert conn.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname=%s",
+            (migrator._BACKUP_ROLE,),
+        ).fetchone() is None
+        conn.execute("SET ROLE applypilot_fleet_migrator")
+        result = migrator.apply_manifest(conn, manifest, tmp_path)
+        assert result == migrator.ApplyResult(applied=(), already_applied=())
+
+
+def test_pg18_migration_owner_reconciles_exact_backup_defaults_before_future_objects(
+    migration_pg,
+    tmp_path,
+):
+    migration = _migration(tmp_path, "20260715_001_backup_future", None, None)
+    migration_path = tmp_path / str(migration["path"])
+    migration_path.write_text(
+        "CREATE TABLE public.migration_backup_future("
+        "id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,payload text NOT NULL);\n"
+        "INSERT INTO public.migration_backup_future(payload) VALUES ('readable');\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    migration["sha256"] = hashlib.sha256(migration_path.read_bytes()).hexdigest()
+    manifest = migrator.load_manifest(_write_manifest(tmp_path, [migration]))
+    backup_password = "applypilot-disposable-migration-backup"
+
+    with psycopg.connect(migration_pg, autocommit=True, row_factory=dict_row) as provider:
+        assert provider.info.server_version >= 180000
+        assert provider.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname=%s",
+            (migrator._BACKUP_ROLE,),
+        ).fetchone() is None
+        provider.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE),
+                sql.Literal(backup_password),
+            )
+        )
+        provider.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(conninfo_to_dict(migration_pg)["dbname"]),
+                sql.Identifier(migrator._BACKUP_ROLE),
+            )
+        )
+        provider.execute(
+            sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(
+                sql.Identifier(migrator._BACKUP_ROLE)
+            )
+        )
+        provider.execute("SET ROLE applypilot_fleet_migrator")
+        for statement in (
+            "ALTER DEFAULT PRIVILEGES GRANT ALL PRIVILEGES ON SCHEMAS TO fleet_backup",
+            "ALTER DEFAULT PRIVILEGES GRANT ALL PRIVILEGES ON TABLES TO fleet_backup",
+            "ALTER DEFAULT PRIVILEGES GRANT ALL PRIVILEGES ON SEQUENCES TO fleet_backup",
+            "ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO fleet_backup",
+            "ALTER DEFAULT PRIVILEGES GRANT USAGE ON TYPES TO fleet_backup",
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT INSERT ON TABLES TO fleet_backup",
+        ):
+            provider.execute(statement)
+        provider.execute("RESET ROLE")
+
+    try:
+        with psycopg.connect(migration_pg, row_factory=dict_row) as conn:
+            conn.execute("SET ROLE applypilot_fleet_migrator")
+            result = migrator.apply_manifest(conn, manifest, tmp_path)
+            assert result.applied == (migration["id"],)
+            assert migrator._backup_default_acl_entries(conn) == migrator._BACKUP_DEFAULT_ACLS
+
+        backup_params = conninfo_to_dict(migration_pg)
+        backup_params.update(user=migrator._BACKUP_ROLE, password=backup_password)
+        with psycopg.connect(make_conninfo(**backup_params), row_factory=dict_row) as backup:
+            assert backup.execute(
+                "SELECT count(*) AS count FROM public.applypilot_fleet_schema_migrations"
+            ).fetchone()["count"] == 1
+            assert backup.execute(
+                "SELECT payload FROM public.migration_backup_future"
+            ).fetchone()["payload"] == "readable"
+            assert backup.execute(
+                "SELECT last_value FROM public.migration_backup_future_id_seq"
+            ).fetchone()["last_value"] == 1
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                backup.execute(
+                    "INSERT INTO public.migration_backup_future(payload) VALUES ('denied')"
+                )
+            backup.rollback()
+    finally:
+        with psycopg.connect(migration_pg, autocommit=True, row_factory=dict_row) as provider:
+            provider.execute("DROP TABLE IF EXISTS public.migration_backup_future CASCADE")
+            if provider.execute(
+                "SELECT 1 FROM pg_roles WHERE rolname=%s",
+                (migrator._BACKUP_ROLE,),
+            ).fetchone() is not None:
+                provider.execute(
+                    sql.SQL("DROP OWNED BY {}").format(sql.Identifier(migrator._BACKUP_ROLE))
+                )
+                provider.execute(
+                    sql.SQL("DROP ROLE {}").format(sql.Identifier(migrator._BACKUP_ROLE))
+                )
+
+
+def test_pg18_backup_rollback_paths_guard_fixed_migration_defaults_and_are_idempotent(
+    migration_pg,
+    monkeypatch,
+):
+    topology_migrator = "brain_migrator_rollback_probe"
+    with psycopg.connect(migration_pg, autocommit=True, row_factory=dict_row) as provider:
+        assert provider.info.server_version >= 180000
+        provider.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(topology_migrator)))
+        provider.execute(
+            sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(migrator._BACKUP_ROLE))
+        )
+        for owner_role in (topology_migrator, migrator._MIGRATION_ROLE):
+            for statement in (
+                sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}").format(
+                    sql.Identifier(owner_role), sql.Identifier(migrator._BACKUP_ROLE)
+                ),
+                sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON TABLES TO {}").format(
+                    sql.Identifier(owner_role), sql.Identifier(migrator._BACKUP_ROLE)
+                ),
+                sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON SEQUENCES TO {}").format(
+                    sql.Identifier(owner_role), sql.Identifier(migrator._BACKUP_ROLE)
+                ),
+            ):
+                provider.execute(statement)
+
+        topology = pg_roles.BootstrapTopology(
+            database_owner_role="unused_backup_rollback_owner",
+            controller_role="unused_backup_rollback_controller",
+            verifier_role="unused_backup_rollback_verifier",
+            migrator_role=topology_migrator,
+            retired_admin_roles=(),
+        )
+        with provider.cursor() as cur:
+            rollback_sql = pg_roles._backup_role_rollback_sql(
+                cur,
+                topology=topology,
+                database_name=conninfo_to_dict(migration_pg)["dbname"],
+            )
+            monkeypatch.setattr(
+                pg_roles,
+                "_catalog_derived_authority_containment_sql",
+                lambda *_args, **_kwargs: ("SELECT 1;", "SELECT 1;"),
+            )
+            monkeypatch.setattr(pg_roles, "_other_database_connect_rollback_sql", lambda *_args, **_kwargs: "")
+            monkeypatch.setattr(pg_roles, "_bootstrap_object_rollback_sql", lambda *_args, **_kwargs: "")
+            forward_sql = pg_roles._forward_v7_containment_sql(
+                cur,
+                topology=topology,
+                database_name=conninfo_to_dict(migration_pg)["dbname"],
+                database_owner_before="postgres",
+                ownership=(),
+                other_databases=(),
+                retired_memberships=(),
+            )
+
+        for generated in (rollback_sql, forward_sql):
+            assert "rolname='applypilot_fleet_migrator'" in generated
+            assert (
+                'ALTER DEFAULT PRIVILEGES FOR ROLE "applypilot_fleet_migrator" '
+                'REVOKE USAGE ON SCHEMAS FROM "fleet_backup";'
+            ) in generated
+            assert (
+                'ALTER DEFAULT PRIVILEGES FOR ROLE "applypilot_fleet_migrator" '
+                'REVOKE SELECT ON TABLES FROM "fleet_backup";'
+            ) in generated
+            assert (
+                'ALTER DEFAULT PRIVILEGES FOR ROLE "applypilot_fleet_migrator" '
+                'REVOKE SELECT ON SEQUENCES FROM "fleet_backup";'
+            ) in generated
+
+        provider.execute(rollback_sql)
+        provider.execute(rollback_sql)
+        assert provider.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname=%s",
+            (migrator._BACKUP_ROLE,),
+        ).fetchone() is None
+        provider.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(topology_migrator)))
+        provider.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(topology_migrator)))
 
 
 def test_apply_is_atomic_resumable_and_rejects_ledger_drift(migration_pg, tmp_path):

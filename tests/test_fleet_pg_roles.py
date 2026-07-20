@@ -402,7 +402,7 @@ def test_authenticated_worker_loop_submission_and_challenge_boundaries(fleet_db)
         ).fetchone() == {"worker_id": WORKER, "kind": "visible_captcha", "resolved_at": None}
 
 
-def test_reconciliation_is_function_only_and_removes_public_and_membership(fleet_db):
+def test_reconciliation_is_function_only_and_removes_membership(fleet_db):
     with pgqueue.connect(fleet_db) as conn:
         conn.execute("CREATE ROLE fleet_worker_inherited")
         conn.execute("CREATE ROLE fleet_worker_child")
@@ -414,7 +414,6 @@ def test_reconciliation_is_function_only_and_removes_public_and_membership(fleet
         conn.execute(sql.SQL("GRANT {} TO fleet_worker_child").format(sql.Identifier(ROLE)))
         conn.execute(sql.SQL("GRANT {} TO fleet_worker_grantee_approved").format(sql.Identifier(ROLE)))
         conn.execute("GRANT fleet_worker_grantee_approved TO fleet_worker_grantee_child")
-        conn.execute("GRANT SELECT,UPDATE ON public.apply_queue TO PUBLIC")
         conn.commit()
         pg_roles.ensure_fleet_worker_role(
             conn,
@@ -878,6 +877,57 @@ def test_manifest_is_required_before_database_wide_acl_changes(fleet_db):
         )
 
 
+@pytest.mark.parametrize("backup_drift", ["missing", "attributes"])
+def test_worker_reconciliation_requires_completed_backup_rollout_before_evidence_or_mutation(
+    fleet_db,
+    tmp_path: Path,
+    monkeypatch,
+    backup_drift: str,
+):
+    evidence_paths = pg_roles.DurableEvidencePaths(
+        preparation_receipt_path=(tmp_path / "prepared.json").resolve(),
+        rollback_sql_path=(tmp_path / "rollback.sql").resolve(),
+        authentication_key=_EVIDENCE_KEY,
+        authentication_key_id=_EVIDENCE_KEY_ID,
+    )
+    with pgqueue.connect(fleet_db) as conn:
+        require_disposable_postgres(conn)
+        if backup_drift == "missing":
+            conn.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(pg_roles.FLEET_BACKUP_ROLE)))
+            conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(pg_roles.FLEET_BACKUP_ROLE)))
+        else:
+            conn.execute(
+                sql.SQL("ALTER ROLE {} CONNECTION LIMIT 2").format(
+                    sql.Identifier(pg_roles.FLEET_BACKUP_ROLE)
+                )
+            )
+        conn.commit()
+
+        def rollback_generation_must_not_run(*_args, **_kwargs):
+            raise AssertionError("rollback generation ran before backup-boundary preflight")
+
+        monkeypatch.setattr(pg_roles, "_public_acl_rollback_sql", rollback_generation_must_not_run)
+        with pytest.raises(
+            RuntimeError,
+            match="complete role bootstrap or existing-topology authority upgrade before worker reconciliation",
+        ):
+            pg_roles.ensure_fleet_worker_role(
+                conn,
+                PASSWORD,
+                role=ROLE,
+                worker_id=WORKER,
+                contract="apply",
+                regrant_manifest=_manifest(),
+                evidence_paths=evidence_paths,
+            )
+        conn.rollback()
+
+        assert not evidence_paths.preparation_receipt_path.exists()
+        assert not evidence_paths.rollback_sql_path.exists()
+        assert conn.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (ROLE,)).fetchone() is None
+        assert conn.execute("SELECT 1 AS usable").fetchone()["usable"] == 1
+
+
 def test_connect_acl_is_exact_and_receipt_contains_rollback_sql(fleet_db):
     with pgqueue.connect(fleet_db) as conn:
         conn.execute(
@@ -920,6 +970,9 @@ def test_connect_acl_is_exact_and_receipt_contains_rollback_sql(fleet_db):
         assert receipt.role_name == ROLE
         assert receipt.worker_id == WORKER
         assert receipt.contract == "apply"
+        assert receipt.inventory["backup_role_boundary_preflight"] == receipt.inventory[
+            "backup_role_boundary"
+        ]
         owner = conn.execute(
             "SELECT owner.rolname,owner.rolcanlogin FROM pg_database d "
             "JOIN pg_roles owner ON owner.oid=d.datdba WHERE d.datname=current_database()"
@@ -943,7 +996,7 @@ def test_generated_rollback_sql_restores_public_connect_and_removes_new_allowlis
 ):
     with pgqueue.connect(fleet_db) as conn:
         database = sql.Identifier(conninfo_to_dict(fleet_db)["dbname"])
-        conn.execute(sql.SQL("GRANT CONNECT, CREATE ON DATABASE {} TO PUBLIC").format(database))
+        conn.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO PUBLIC").format(database))
         conn.commit()
         receipt = pg_roles.ensure_fleet_worker_role(
             conn,
@@ -963,12 +1016,9 @@ def test_generated_rollback_sql_restores_public_connect_and_removes_new_allowlis
             ]
             is True
         )
-        assert (
-            conn.execute("SELECT has_database_privilege('public',current_database(),'CREATE') AS allowed").fetchone()[
-                "allowed"
-            ]
-            is True
-        )
+        assert conn.execute(
+            "SELECT has_database_privilege('public',current_database(),'CREATE') AS allowed"
+        ).fetchone()["allowed"] is False
         direct = conn.execute(
             "SELECT COALESCE(array_agg(grantee.rolname ORDER BY grantee.rolname),ARRAY[]::name[]) AS roles "
             "FROM pg_database d CROSS JOIN LATERAL aclexplode(d.datacl) acl "
