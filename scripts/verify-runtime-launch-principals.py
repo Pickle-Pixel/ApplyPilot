@@ -89,7 +89,14 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     # PGUSER=postgres / $env:PGUSER='fleet_worker': the libpq session env selecting admin/shared.
     # The (?<!\$) lookbehind skips PowerShell params spelled like $PgUser (a script parameter,
     # not the ambient libpq variable) while still catching $env:PGUSER / export PGUSER / PGUSER=.
-    ("pguser_admin_or_shared", re.compile(r"(?<!\$)\bPGUSER\s*=\s*['\"]?(?:postgres|fleet_worker)\b", re.IGNORECASE)),
+    (
+        "pguser_admin_or_shared",
+        re.compile(
+            r"(?<!\$)\bPGUSER\s*=\s*['\"]?(?:(?:postgres|fleet_worker)\b|"
+            r"\$\{[A-Za-z_][A-Za-z0-9_]*:[-=+](?:postgres|fleet_worker)\})['\"]?",
+            re.IGNORECASE,
+        ),
+    ),
     # postgres://postgres@ or postgresql://fleet_worker:... URL DSN principals.
     ("url_admin_or_shared", re.compile(r"\bpostgres(?:ql)?://(?:postgres|fleet_worker)[:@]", re.IGNORECASE)),
     # SET ROLE / SET SESSION AUTHORIZATION postgres|fleet_worker: role-switching fallback.
@@ -211,13 +218,20 @@ _SHELL_ADMIN_ASSIGNMENT_RE = re.compile(
     r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]?(postgres|fleet_worker)['\"]?\s*(?:#.*)?$",
     re.IGNORECASE | re.MULTILINE,
 )
+_SHELL_ADMIN_PARAMETER_EXPANSION_ASSIGNMENT_RE = re.compile(
+    r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]?"
+    r"\$\{[A-Za-z_][A-Za-z0-9_]*:[-=+](?:postgres|fleet_worker)\}['\"]?\s*(?:#.*)?$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _SHELL_VARIABLE_ALIAS_RE = re.compile(
     r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?['\"]?\s*(?:#.*)?$",
     re.IGNORECASE | re.MULTILINE,
 )
 _DATABASE_CLIENT_USER_ARGUMENT_RE = re.compile(
     r"(?:-U(?:\s+|=)|--username(?:\s+|=))\s*(?:"
-    r"['\"]?(postgres|fleet_worker)\b|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)",
+    r"['\"]?(postgres|fleet_worker)\b"
+    r"|['\"]?\$\{[A-Za-z_][A-Za-z0-9_]*:[-=+](postgres|fleet_worker)\}['\"]?"
+    r"|['\"]?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?['\"]?)",
     re.IGNORECASE,
 )
 
@@ -317,7 +331,11 @@ def _database_client_admin_parameter_flow_lines(text: str) -> set[int]:
         return text.count("\n", 0, offset) + 1
 
     unsafe_origins: dict[str, set[int]] = {}
-    for pattern in (_POWERSHELL_ADMIN_ASSIGNMENT_RE, _SHELL_ADMIN_ASSIGNMENT_RE):
+    for pattern in (
+        _POWERSHELL_ADMIN_ASSIGNMENT_RE,
+        _SHELL_ADMIN_ASSIGNMENT_RE,
+        _SHELL_ADMIN_PARAMETER_EXPANSION_ASSIGNMENT_RE,
+    ):
         for match in pattern.finditer(text):
             unsafe_origins.setdefault(match.group(1).casefold(), set()).add(
                 line_number(match.start())
@@ -348,8 +366,8 @@ def _database_client_admin_parameter_flow_lines(text: str) -> set[int]:
             block += "\n" + lines[cursor]
             cursor += 1
         for match in _DATABASE_CLIENT_USER_ARGUMENT_RE.finditer(block):
-            literal, variable = match.groups()
-            if literal:
+            literal, expansion_literal, variable = match.groups()
+            if literal or expansion_literal:
                 findings.add(index + 1)
             elif variable and variable.casefold() in unsafe_origins:
                 findings.add(index + 1)

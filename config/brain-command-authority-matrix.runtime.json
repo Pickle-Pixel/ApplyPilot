@@ -5818,7 +5818,7 @@
         "python scripts/verify-runtime-launch-principals.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/verify-runtime-launch-principals.py;sourceBlobSha256=21ee28218870b9370e4731ada47a1aa633ec592d2741738f81695a329c101597",
+      "canonicalTarget": "scripts/verify-runtime-launch-principals.py;sourceBlobSha256=9361a741608e07882cb232c573a64f17d33a73f09c06f96b2c1bf58758c025d5",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
