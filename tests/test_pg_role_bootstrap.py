@@ -1465,6 +1465,8 @@ def test_hba_target_descriptor_stays_open_through_replace(tmp_path: Path, monkey
     live.write_bytes(authenticated)
     before = live.stat()
     real_open = module.os.open
+    if real_open not in module.os.supports_dir_fd:
+        pytest.skip("os.open does not support descriptor-relative paths on this platform")
     real_close = module.os.close
     real_exchange = module._rename_exchange
     target_descriptor = -1
@@ -1486,6 +1488,10 @@ def test_hba_target_descriptor_stays_open_through_replace(tmp_path: Path, monkey
         assert target_descriptor not in closed_descriptors
         return real_exchange(*args, **kwargs)
 
+    supports_dir_fd = set(module.os.supports_dir_fd)
+    supports_dir_fd.remove(real_open)
+    supports_dir_fd.add(tracking_open)
+    monkeypatch.setattr(module.os, "supports_dir_fd", supports_dir_fd)
     monkeypatch.setattr(module.os, "open", tracking_open)
     monkeypatch.setattr(module.os, "close", tracking_close)
     monkeypatch.setattr(module, "_rename_exchange", tracking_exchange)
