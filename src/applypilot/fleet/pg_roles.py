@@ -3816,6 +3816,45 @@ def _conditional_backup_default_acl_revoke_sql(
     )
 
 
+def _dynamic_backup_object_acl_revoke_sql(
+    cur,
+    *,
+    backup_role: str,
+) -> str:
+    """Revoke backup ACLs from every user schema present when rollback runs.
+
+    Rollback receipts are prepared before the fixed backup defaults are
+    installed.  Those defaults can grant the backup role privileges on schemas
+    and objects created after receipt preparation, so freezing ``_user_schemas``
+    into the receipt would leave dependencies that make ``DROP ROLE`` fail.
+    Catalog-driven execution keeps the receipt least-privilege and retry-safe
+    without using destructive ``DROP OWNED`` semantics.
+    """
+    backup_literal = sql.Literal(backup_role).as_string(cur.connection)
+    statements = "\n".join(
+        "EXECUTE pg_catalog.format("
+        + sql.Literal(template).as_string(cur.connection)
+        + ",applypilot_backup_schema.nspname,"
+        + backup_literal
+        + ");"
+        for template in (
+            "REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I",
+            "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I FROM %I",
+            "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I FROM %I",
+            "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA %I FROM %I",
+        )
+    )
+    return (
+        "FOR applypilot_backup_schema IN\n"
+        "SELECT namespace.nspname FROM pg_catalog.pg_namespace namespace "
+        "WHERE namespace.nspname<>'information_schema' "
+        "AND namespace.nspname!~'^pg_' ORDER BY namespace.nspname\n"
+        "LOOP\n"
+        + statements
+        + "\nEND LOOP;"
+    )
+
+
 def _public_function_default_execute_rollback_sql(
     cur,
     *,
@@ -3938,12 +3977,21 @@ def _forward_v7_containment_sql(
             backup_role=topology.backup_role,
         ),
     )
+    backup_cleanup.insert(
+        -2,
+        _dynamic_backup_object_acl_revoke_sql(
+            cur,
+            backup_role=topology.backup_role,
+        ),
+    )
     # Forward containment intentionally preserves the closed future-function
     # boundary. Exact pre-transition restoration belongs to the topology-only
     # rollback path below; reopening PUBLIC EXECUTE here would recreate the
     # capability that this authenticated containment receipt removes.
     statements.append(
-        "DO $applypilot_backup_rollback$ BEGIN\n"
+        "DO $applypilot_backup_rollback$\n"
+        "DECLARE applypilot_backup_schema record;\n"
+        "BEGIN\n"
         + "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
         + sql.Literal(topology.backup_role).as_string(cur.connection)
         + ") THEN\n"
@@ -4008,6 +4056,13 @@ def _backup_role_rollback_sql(
             backup_role=topology.backup_role,
         ),
     )
+    cleanup.insert(
+        -2,
+        _dynamic_backup_object_acl_revoke_sql(
+            cur,
+            backup_role=topology.backup_role,
+        ),
+    )
     for owner_role in dict.fromkeys((topology.migrator_role, FLEET_MIGRATION_ROLE)):
         public_execute_restore = _public_function_default_execute_rollback_sql(
             cur,
@@ -4016,7 +4071,9 @@ def _backup_role_rollback_sql(
         if public_execute_restore:
             cleanup.insert(-2, public_execute_restore)
     return (
-        "DO $applypilot_backup_rollback$ BEGIN\n"
+        "DO $applypilot_backup_rollback$\n"
+        "DECLARE applypilot_backup_schema record;\n"
+        "BEGIN\n"
         "IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname="
         + sql.Literal(topology.backup_role).as_string(cur.connection)
         + ") THEN\n"
