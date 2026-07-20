@@ -64,6 +64,10 @@ jobs:
               tests/test_linkedin_login.py
               tests/test_otp_runbooks_and_bootstrap.py
               tests/test_mapped_role_deployment_contract.py::test_abrupt_committed_receipt_finalization_leaves_prior_in_doubt_receipt_intact
+          - name: pg18-ci-repair-contracts
+            tests: >-
+              tests/test_load_canary_home_spend_cap.py::test_native_exit_guard_stops_later_steps_after_a_failed_command
+              tests/test_mapped_role_deployment_contract.py::test_hba_post_write_failure_restores_hba_and_outputs_byte_exact
 
     steps:
       - name: Checkout
@@ -102,6 +106,7 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
 
@@ -124,9 +129,35 @@ jobs:
       - name: Lint
         run: ruff check src/
 
+      - name: Enable TLS on disposable PostgreSQL service
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          docker exec -u 0 "$POSTGRES_SERVICE_ID" bash -ceu '
+            openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+              -subj /CN=localhost \
+              -keyout "$PGDATA/server.key" \
+              -out "$PGDATA/server.crt"
+            chown postgres:postgres "$PGDATA/server.crt" "$PGDATA/server.key"
+            chmod 600 "$PGDATA/server.key"
+            printf "\nssl=on\nssl_cert_file='\''server.crt'\''\nssl_key_file='\''server.key'\''\n" \
+              >> "$PGDATA/postgresql.conf"
+          '
+          docker restart "$POSTGRES_SERVICE_ID"
+          for attempt in $(seq 1 30); do
+            if docker exec "$POSTGRES_SERVICE_ID" \
+              pg_isready -U postgres -d postgres; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "PostgreSQL service did not become ready after enabling TLS" >&2
+          exit 1
+
       - name: Mark disposable PostgreSQL service
         env:
-          APPLYPILOT_PGTEST_DSN: postgresql://postgres:applypilot-ci-test-only@127.0.0.1:5432/postgres
+          APPLYPILOT_PGTEST_DSN: postgresql://postgres:applypilot-ci-test-only@127.0.0.1:5432/postgres?sslmode=require
           APPLYPILOT_PGTEST_CLUSTER_MARKER: ci-${{ github.run_id }}-${{ matrix.python-version }}
         run: |
           python - <<'PY'
@@ -137,6 +168,9 @@ jobs:
           dsn = os.environ["APPLYPILOT_PGTEST_DSN"]
           nonce = os.environ["APPLYPILOT_PGTEST_CLUSTER_MARKER"]
           with psycopg.connect(dsn) as connection:
+              ssl_setting = connection.execute("SHOW ssl").fetchone()
+              if ssl_setting != ("on",):
+                  raise RuntimeError("PostgreSQL service did not enable TLS")
               connection.execute(
                   "COMMENT ON DATABASE postgres IS 'applypilot:disposable-postgres-test-database:v1'"
               )
@@ -153,7 +187,7 @@ jobs:
 
       - name: Test
         env:
-          APPLYPILOT_PGTEST_DSN: postgresql://postgres:applypilot-ci-test-only@127.0.0.1:5432/postgres
+          APPLYPILOT_PGTEST_DSN: postgresql://postgres:applypilot-ci-test-only@127.0.0.1:5432/postgres?sslmode=require
           APPLYPILOT_PGTEST_DISPOSABLE: "1"
           APPLYPILOT_PGTEST_CLUSTER_MARKER: ci-${{ github.run_id }}-${{ matrix.python-version }}
         run: >-
@@ -164,6 +198,8 @@ jobs:
           --ignore=tests/test_chrome_reservation.py
           --ignore=tests/test_linkedin_login.py
           --ignore=tests/test_otp_runbooks_and_bootstrap.py
+          --deselect=tests/test_load_canary_home_spend_cap.py::test_native_exit_guard_stops_later_steps_after_a_failed_command
+          --deselect=tests/test_mapped_role_deployment_contract.py::test_hba_post_write_failure_restores_hba_and_outputs_byte_exact
 
       - name: Install package build tools
         if: matrix.python-version == '3.12'

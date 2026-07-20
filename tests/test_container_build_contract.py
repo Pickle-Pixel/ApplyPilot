@@ -34,6 +34,12 @@ DOCKERIGNORE_PATH = REPO_ROOT / ".dockerignore"
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 
 CONTAINER_JOB_NAME = "container-build"
+WINDOWS_NATIVE_CI_NODES = (
+    "tests/test_load_canary_home_spend_cap.py::"
+    "test_native_exit_guard_stops_later_steps_after_a_failed_command",
+    "tests/test_mapped_role_deployment_contract.py::"
+    "test_hba_post_write_failure_restores_hba_and_outputs_byte_exact",
+)
 
 
 def _load_workflow() -> dict:
@@ -148,6 +154,65 @@ def test_python_ci_marks_service_postgres_as_disposable_before_tests() -> None:
     test_environment = steps["Test"]["env"]
     assert test_environment["APPLYPILOT_PGTEST_DISPOSABLE"] == "1"
     assert test_environment["APPLYPILOT_PGTEST_CLUSTER_MARKER"].startswith("ci-")
+
+
+def test_python_ci_enables_and_verifies_tls_on_service_postgres() -> None:
+    job = _load_workflow()["jobs"]["test"]
+    steps = {step["name"]: step for step in job["steps"]}
+    tls_step = steps["Enable TLS on disposable PostgreSQL service"]
+    assert tls_step["env"]["POSTGRES_SERVICE_ID"] == "${{ job.services.postgres.id }}"
+
+    tls_script = tls_step["run"]
+    for required in (
+        "docker exec -u 0",
+        "openssl req -x509",
+        "-days 1",
+        "-subj /CN=localhost",
+        '"$PGDATA/server.crt"',
+        '"$PGDATA/server.key"',
+        "chown postgres:postgres",
+        'chmod 600 "$PGDATA/server.key"',
+        "ssl=on",
+        "docker restart",
+        "for attempt in $(seq 1 30)",
+        "pg_isready",
+    ):
+        assert required in tls_script
+
+    marker = steps["Mark disposable PostgreSQL service"]
+    assert marker["env"]["APPLYPILOT_PGTEST_DSN"].endswith("?sslmode=require")
+    marker_script = marker["run"]
+    assert "SHOW ssl" in marker_script
+    assert "PostgreSQL service did not enable TLS" in marker_script
+
+    test_environment = steps["Test"]["env"]
+    assert test_environment["APPLYPILOT_PGTEST_DSN"].endswith("?sslmode=require")
+
+
+def test_pg18_repair_contract_nodes_are_routed_to_windows_only() -> None:
+    doc = _load_workflow()
+    windows_job = doc["jobs"]["phase-a-windows-file"]
+    packets = {
+        packet["name"]: packet["tests"]
+        for packet in windows_job["strategy"]["matrix"]["include"]
+    }
+    packet_nodes = packets["pg18-ci-repair-contracts"].split()
+    assert packet_nodes == list(WINDOWS_NATIVE_CI_NODES)
+
+    linux_job = doc["jobs"]["test"]
+    assert linux_job["strategy"]["fail-fast"] is False
+    test_command = {
+        step["name"]: step for step in linux_job["steps"]
+    }["Test"]["run"]
+    deselected = [
+        token.removeprefix("--deselect=")
+        for token in test_command.split()
+        if token.startswith("--deselect=")
+    ]
+    assert deselected == list(WINDOWS_NATIVE_CI_NODES)
+    for node in WINDOWS_NATIVE_CI_NODES:
+        test_file = node.split("::", 1)[0]
+        assert f"--ignore={test_file}" not in test_command
 
 
 def test_python_ci_matrix_matches_declared_support() -> None:
