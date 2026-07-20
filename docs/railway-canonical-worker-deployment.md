@@ -66,7 +66,10 @@ owner can activate only the exact migrator and verifier roles through OID-10-
 granted `SET`-only memberships; it receives no standing inherited authority.
 Its independent password is accepted only through
 `APPLYPILOT_DATABASE_OWNER_PG_PASSWORD`, converted client-side to a SCRAM-SHA-256
-verifier, and rotated in the same atomic transaction. `fleet_backup` is
+verifier, and rotated in the same atomic transaction. The separately generated
+fleet-migration LOGIN password is supplied only as
+`APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD` and receives the same client-side SCRAM
+handling. `fleet_backup` is
 `NOINHERIT NOSUPERUSER NOCREATEDB
 NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1`; it has no inbound
 or outbound memberships and owns no object. It receives only database CONNECT,

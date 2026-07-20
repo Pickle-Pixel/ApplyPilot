@@ -576,6 +576,8 @@ def _transfer_application_ownership(
     new_owner_role: str,
     apply: bool = True,
     preserve_owner_roles: tuple[str, ...] = (),
+    preserve_name_prefixes: tuple[str, ...] = (),
+    transfer_schemas: bool = True,
 ) -> tuple[dict[str, Any], ...]:
     """Transfer only application objects, never cluster/system-owned objects."""
     new_owner = sql.Identifier(new_owner_role)
@@ -606,6 +608,8 @@ def _transfer_application_ownership(
         object_kind = relation_kinds[_row_value(row, "relkind", 2)]
         namespace = _row_value(row, "nspname")
         object_name = _row_value(row, "relname", 1)
+        if object_name.startswith(preserve_name_prefixes):
+            continue
         if apply:
             cur.execute(
                 sql.SQL("ALTER {} {} OWNER TO {}").format(
@@ -639,6 +643,8 @@ def _transfer_application_ownership(
         routine_kind = "PROCEDURE" if prokind == "p" else "FUNCTION"
         namespace = _row_value(row, "nspname")
         routine_name = _row_value(row, "proname", 1)
+        if routine_name.startswith(preserve_name_prefixes):
+            continue
         arguments = _row_value(row, "args", 3)
         identity = sql.SQL("{}.{}({})").format(
             sql.Identifier(namespace), sql.Identifier(routine_name), sql.SQL(arguments)
@@ -671,6 +677,8 @@ def _transfer_application_ownership(
         object_kind = "DOMAIN" if _row_value(row, "typtype", 2) == "d" else "TYPE"
         namespace = _row_value(row, "nspname")
         type_name = _row_value(row, "typname", 1)
+        if type_name.startswith(preserve_name_prefixes):
+            continue
         if apply:
             cur.execute(
                 sql.SQL("ALTER {} {} OWNER TO {}").format(
@@ -705,13 +713,16 @@ def _transfer_application_ownership(
         owner_name = _row_value(row, "owner_name", 1)
         schema_name = _row_value(row, "nspname")
         schema = sql.Identifier(schema_name)
-        if apply:
+        preserve_schema = (
+            not transfer_schemas or schema_name.startswith(preserve_name_prefixes)
+        )
+        if apply and not preserve_schema:
             if owner_name not in preserve_owner_roles and owner_name != new_owner_role:
                 cur.execute(sql.SQL("ALTER SCHEMA {} OWNER TO {}").format(schema, new_owner))
             if owner_name not in preserve_owner_roles:
                 # Ownership privileges are not inherited by members of the owner role.
                 cur.execute(sql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO {}").format(schema, new_owner))
-        if owner_name == new_owner_role or owner_name in preserve_owner_roles:
+        if preserve_schema or owner_name == new_owner_role or owner_name in preserve_owner_roles:
             continue
         transferred.append(
             {
@@ -6997,6 +7008,18 @@ def _reconcile_fleet_migration_login(
         sql.SQL("GRANT USAGE, CREATE ON SCHEMA public TO {}").format(
             sql.Identifier(FLEET_MIGRATION_ROLE)
         )
+    )
+    # The fleet manifest executes ALTER/CREATE statements as this exact
+    # capability. PostgreSQL does not inherit owner rights through membership,
+    # so schema CREATE alone cannot alter the bootstrapped fleet tables. Hand
+    # off the fleet/runtime objects while retaining the independent brain_*
+    # authority domain and its public-schema ownership under brain_schema_migrator.
+    # The separately authenticated LOGIN remains SET-only and owns nothing.
+    _transfer_application_ownership(
+        cur,
+        new_owner_role=FLEET_MIGRATION_ROLE,
+        preserve_name_prefixes=("brain_",),
+        transfer_schemas=False,
     )
     return _validate_fleet_migration_login_boundary(
         cur, login_role=login_role, require_password_catalog=True

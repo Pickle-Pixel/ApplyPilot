@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import inspect
 from itertools import count
@@ -84,6 +85,15 @@ def _brain_import_script_module():
 def _rollback_script_module():
     path = Path(__file__).resolve().parents[1] / "scripts" / "rollback-fleet-pg-role.py"
     spec = importlib.util.spec_from_file_location("applypilot_rollback_script", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _authority_migrator_script_module():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run-private-authority-migrator.py"
+    spec = importlib.util.spec_from_file_location("applypilot_authority_migrator_script", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -3581,6 +3591,89 @@ def test_bootstrap_provisioned_canonical_owner_passes_import_identity_gate(
                     "session_name": ATOMIC_OWNER,
                     "current_name": ATOMIC_OWNER,
                 }
+        finally:
+            _drop_atomic_bootstrap_roles(root)
+
+
+def test_real_bootstrap_topology_can_apply_fleet_migration_chain(
+    fleet_db: str,
+    monkeypatch,
+) -> None:
+    """The deployed migrator must work after the real ownership handoff.
+
+    Unlike the migration-only fixture, this test must not pre-transfer objects
+    directly to ``applypilot_fleet_migrator``.  Bootstrap owns that boundary.
+    """
+    topology = _atomic_topology()
+    wrapper = _authority_migrator_script_module()
+    with pgqueue.connect(fleet_db) as root:
+        root.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS"
+            ).format(sql.Identifier(ATOMIC_RETIRED_ADMIN))
+        )
+        _create_atomic_lifecycle_roles(root)
+        root.execute("DROP TABLE IF EXISTS public.applypilot_fleet_schema_migrations CASCADE")
+        root.execute(
+            "DROP FUNCTION IF EXISTS public.applypilot_reject_migration_ledger_mutation() CASCADE"
+        )
+        root.execute("DROP TABLE IF EXISTS public.fleet_application_alias CASCADE")
+        root.execute("DROP TABLE IF EXISTS public.fleet_application_authority CASCADE")
+        root.commit()
+        try:
+            pg_roles.bootstrap_database_roles(
+                root,
+                CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
+                topology=topology,
+                evidence_paths=_test_evidence_paths(),
+                install_brain_authority=True,
+            )
+            identity = root.execute(
+                "SELECT current_database() AS database_name,"
+                "control.system_identifier::text AS system_identifier "
+                "FROM pg_catalog.pg_control_system() AS control"
+            ).fetchone()
+            root.commit()
+
+            login_params = conninfo_to_dict(fleet_db)
+            login_params.update(
+                user=pg_roles.FLEET_MIGRATION_LOGIN_ROLE,
+                password=FLEET_MIGRATION_PASSWORD,
+                sslmode="disable",
+            )
+            monkeypatch.setenv(
+                "AUTHORITY_MIGRATOR_BOOTSTRAP_IT_DSN", make_conninfo(**login_params)
+            )
+            result = wrapper.run(
+                argparse.Namespace(
+                    target_dsn_env="AUTHORITY_MIGRATOR_BOOTSTRAP_IT_DSN",
+                    expected_private_host=login_params["host"],
+                    expected_database_name=identity["database_name"],
+                    expected_system_identifier=identity["system_identifier"],
+                    allow_disposable_loopback=True,
+                    repository_root=str(Path(__file__).resolve().parents[1]),
+                    package_manifest=str(
+                        Path(__file__).resolve().parents[1]
+                        / "deploy"
+                        / "authority-migrator"
+                        / "package-manifest.json"
+                    ),
+                )
+            )
+            assert result == 0
+            assert root.execute(
+                "SELECT owner.rolname AS owner_name FROM pg_catalog.pg_class relation "
+                "JOIN pg_catalog.pg_roles owner ON owner.oid=relation.relowner "
+                "WHERE relation.oid='public.fleet_config'::pg_catalog.regclass"
+            ).fetchone()["owner_name"] == pg_roles.FLEET_MIGRATION_ROLE
+            assert root.execute(
+                "SELECT owner.rolname AS owner_name FROM pg_catalog.pg_class relation "
+                "JOIN pg_catalog.pg_roles owner ON owner.oid=relation.relowner "
+                "WHERE relation.oid='public.brain_schema_versions'::pg_catalog.regclass"
+            ).fetchone()["owner_name"] == topology.migrator_role
         finally:
             _drop_atomic_bootstrap_roles(root)
 
