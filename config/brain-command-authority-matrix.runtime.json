@@ -5555,7 +5555,7 @@
         "python scripts/brain-sqlite-to-postgres.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/brain-sqlite-to-postgres.py;sourceBlobSha256=3c6144b891f1fd34c0536cba502eac11e906d121246b18256d1d0354a2b6becf",
+      "canonicalTarget": "scripts/brain-sqlite-to-postgres.py;sourceBlobSha256=06cde6821bc8cb51fba0b8d27be3a4062921320d1180e3933ba64c2b3dd44745",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,

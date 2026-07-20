@@ -124,6 +124,16 @@ identity read. Their authenticated receipt records both exact edges. Set
 `BRAIN_IMPORT_DSN` to that database-owner login; do not use a separate ambient
 login, add direct table grants, or enable standing inherited authority:
 
+The importer independently enforces that contract on both its preflight and
+write connection. Before it seals a SQLite snapshot, reads destination identity,
+acquires an import lock, writes evidence, or mutates PostgreSQL, it requires
+`session_user = current_user =` the current database owner; the exact dedicated
+LOGIN/NOINHERIT/non-elevated role attributes; exactly the two OID-10-granted
+SET-only migrator and verifier memberships; and no other membership edge in
+either direction. A provider-admin or superuser DSN, an ordinary service login,
+any extra membership, or a drifted
+membership option fails closed without logging connection details.
+
 Both supported topology commands require the canonical login's independent
 password through `APPLYPILOT_DATABASE_OWNER_PG_PASSWORD`. They remove it from
 their process environment, build a SCRAM-SHA-256 verifier client-side, and rotate

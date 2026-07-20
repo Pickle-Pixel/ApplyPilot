@@ -19,6 +19,7 @@ from psycopg.rows import dict_row
 
 from applypilot.brain.importer import SOURCE_TABLES, SealedSnapshotReceipt, SourceFileAudit
 from applypilot.brain.sqlite_to_postgres import ImportSummary
+from conftest import require_disposable_postgres
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -50,6 +51,11 @@ class _Result:
     def fetchone(self):
         return self.row
 
+    def fetchall(self):
+        if isinstance(self.row, (list, tuple)):
+            return list(self.row)
+        return [] if self.row is None else [self.row]
+
 
 _LOGIN_ROLE = "canonical_import_login"
 # The durable identity read is a pure SELECT, so it runs under the least-privileged role V8
@@ -65,6 +71,9 @@ def test_runbook_provisions_canonical_import_login_for_read_only_identity_role()
     assert "brain_schema_verifier` for the durable" in runbook
     assert "ADMIN false, INHERIT false, SET true, grantor OID 10" in runbook
     assert "authenticated receipt records both exact edges" in runbook
+    assert "Before it seals a SQLite snapshot" in runbook
+    assert "A provider-admin" in runbook
+    assert "no other membership edge" in runbook
     assert "SET ROLE brain_schema_verifier;" in runbook
     assert "SET ROLE brain_schema_migrator;" not in runbook
 
@@ -102,6 +111,30 @@ class _Connection:
         self.commits = 0
         # The privileged singleton SELECT is only visible when the verifier role is active.
         self.identity_readable_only_as_role: str | None = _IDENTITY_ROLE
+        self.canonical_identity = {
+            "canonical_session_user": _LOGIN_ROLE,
+            "canonical_current_user": _LOGIN_ROLE,
+            "database_owner_role": _LOGIN_ROLE,
+            "rolcanlogin": True,
+            "rolinherit": False,
+            "rolsuper": False,
+            "rolcreatedb": False,
+            "rolcreaterole": False,
+            "rolreplication": False,
+            "rolbypassrls": False,
+        }
+        self.canonical_memberships = tuple(
+            {
+                "canonical_parent_role": parent_role,
+                "canonical_member_role": _LOGIN_ROLE,
+                "grantor_oid": 10,
+                "grantor_is_superuser": True,
+                "admin_option": False,
+                "inherit_option": False,
+                "set_option": True,
+            }
+            for parent_role in ("brain_schema_migrator", "brain_schema_verifier")
+        )
 
     def __enter__(self):
         return self
@@ -119,6 +152,10 @@ class _Connection:
         normalized = " ".join(query.split())
         self.statements.append(normalized)
         upper = normalized.upper()
+        if "AS CANONICAL_SESSION_USER" in upper:
+            return _Result(dict(self.canonical_identity))
+        if "AS CANONICAL_PARENT_ROLE" in upper:
+            return _Result(tuple(dict(row) for row in self.canonical_memberships))
         if upper.startswith("SET ROLE "):
             self.role = normalized.split(None, 2)[2].strip().strip(";").strip('"')
             return _Result(None)
@@ -904,8 +941,12 @@ def _provision_v8_identity_singleton(connection) -> None:
 
 
 def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypatch, tmp_path: Path, fleet_db) -> None:
-    connection = psycopg.connect(fleet_db, row_factory=dict_row)
+    admin = psycopg.connect(fleet_db, row_factory=dict_row)
+    connection = None
     try:
+        login_dsn = _provision_canonical_login(admin, fleet_db)
+        identity = _read_identity(admin)
+        connection = psycopg.connect(login_dsn, row_factory=dict_row)
         connection.execute(
             "CREATE TEMP TABLE brain_migration_sources (migration_source_id bigint PRIMARY KEY, "
             "source_namespace text NOT NULL, source_fingerprint text NOT NULL)"
@@ -918,13 +959,6 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
             "CREATE TEMP TABLE brain_migration_run_events (migration_run_event_id bigint PRIMARY KEY, "
             "migration_run_id bigint, source_namespace text NOT NULL, event_type text NOT NULL, metadata jsonb)"
         )
-        _provision_v8_identity_singleton(connection)
-        identity = connection.execute(
-            "SELECT current_database() AS database,(pg_control_system()).system_identifier::text AS system_identifier,"
-            "(SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid,"
-            "(SELECT database_incarnation_id::text FROM public.applypilot_database_identity WHERE singleton_id=1)"
-            " AS database_incarnation_id,current_setting('server_version_num') AS server_version_num"
-        ).fetchone()
         connection.commit()
         cli, _source, _snapshot, sealed, marker = _prepare(monkeypatch, tmp_path)
         arguments = _final_arguments(tmp_path, marker)
@@ -999,6 +1033,7 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
         assert connection.execute(
             "SELECT event_type FROM brain_migration_run_events WHERE migration_run_event_id=201"
         ).fetchone()["event_type"] == "completed"
+        connection.rollback()
 
         monkeypatch.setattr(cli, "atomic_write_no_overwrite", original_publish)
         recovered_path = cli.execute([*arguments, "--recover-terminal"])
@@ -1007,38 +1042,200 @@ def test_real_terminal_event_recovers_after_receipt_publication_failure(monkeypa
         assert recovered["result"]["terminalEventId"] == 201
         assert recovered["result"]["parity"]["jobs"]["target_count"] == 4
     finally:
+        if connection is not None:
+            connection.close()
         try:
-            connection.rollback()
-            connection.execute("DROP TABLE IF EXISTS public.applypilot_database_identity")
-            connection.commit()
-        except Exception:
-            pass
-        connection.close()
+            _drop_canonical_login(admin)
+        finally:
+            admin.close()
 
 
 # --- Canonical non-superuser PostgreSQL 18 login proofs -----------------------------------------
 #
 # These exercise the real repair: the durable identity singleton is SELECT-visible only to the
-# ``brain_schema_migrator`` owner, and the canonical import identity is a NOINHERIT LOGIN that is
-# *not* postgres and holds the read-only verifier role only via SET. They prove the pre/post reads succeed
-# through the scoped SET ROLE, that a wrong/absent/mismatched singleton still fails before any
-# write, and that neither the role nor the hardened search_path leaks after success, after a
-# failure, or across a reused (pooled) connection.
+# ``brain_schema_migrator`` owner, and the canonical import identity is the exact NOINHERIT
+# database-owner LOGIN created by bootstrap. It holds only the migrator and read-only verifier
+# roles through OID-10-granted SET-only memberships. They prove the pre/post reads succeed through
+# the scoped SET ROLE, that a wrong/absent/mismatched singleton still fails before any write, and
+# that neither the role nor the hardened search_path leaks after success, after a failure, or
+# across a reused (pooled) connection.
 
 _CANONICAL_LOGIN = "canonical_import_login"
 _CANONICAL_LOGIN_PASSWORD = "canonical-login-disposable-test-only"
 
 
-def _provision_canonical_login(admin, admin_dsn: str) -> str:
-    """Provision a NOINHERIT LOGIN that reaches the singleton only via ``SET ROLE``.
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "set_role_active",
+        "not_database_owner",
+        "nologin",
+        "inherit",
+        "superuser",
+        "createdb",
+        "createrole",
+        "replication",
+        "bypassrls",
+        "missing_parent",
+        "extra_parent",
+        "outbound_edge",
+        "wrong_grantor",
+        "grantor_not_superuser",
+        "admin_option",
+        "inherit_option",
+        "set_option_false",
+    ],
+)
+def test_identity_gate_rejects_every_noncanonical_attribute_or_membership(
+    scenario: str,
+) -> None:
+    cli = _load_cli()
+    connection = _Connection()
+    memberships = [dict(row) for row in connection.canonical_memberships]
+    if scenario == "set_role_active":
+        connection.canonical_identity["canonical_current_user"] = "brain_schema_migrator"
+    elif scenario == "not_database_owner":
+        connection.canonical_identity["database_owner_role"] = "another_owner"
+    elif scenario == "nologin":
+        connection.canonical_identity["rolcanlogin"] = False
+    elif scenario == "inherit":
+        connection.canonical_identity["rolinherit"] = True
+    elif scenario == "superuser":
+        connection.canonical_identity["rolsuper"] = True
+    elif scenario == "createdb":
+        connection.canonical_identity["rolcreatedb"] = True
+    elif scenario == "createrole":
+        connection.canonical_identity["rolcreaterole"] = True
+    elif scenario == "replication":
+        connection.canonical_identity["rolreplication"] = True
+    elif scenario == "bypassrls":
+        connection.canonical_identity["rolbypassrls"] = True
+    elif scenario == "missing_parent":
+        memberships.pop()
+    elif scenario == "extra_parent":
+        memberships.append({**memberships[0], "canonical_parent_role": "extra_role"})
+    elif scenario == "outbound_edge":
+        memberships.append(
+            {
+                **memberships[0],
+                "canonical_parent_role": _LOGIN_ROLE,
+                "canonical_member_role": "other_login",
+            }
+        )
+    elif scenario == "wrong_grantor":
+        memberships[0]["grantor_oid"] = 11
+    elif scenario == "grantor_not_superuser":
+        memberships[0]["grantor_is_superuser"] = False
+    elif scenario == "admin_option":
+        memberships[0]["admin_option"] = True
+    elif scenario == "inherit_option":
+        memberships[0]["inherit_option"] = True
+    elif scenario == "set_option_false":
+        memberships[0]["set_option"] = False
+    else:  # pragma: no cover - exhaustive parametrization guard
+        raise AssertionError(scenario)
+    connection.canonical_memberships = tuple(memberships)
 
-    The login is a member of the read-only ``brain_schema_verifier`` WITH INHERIT FALSE, SET TRUE:
-    it may assume the least-privileged role that V8 grants SELECT on the singleton for the guarded
-    read, but never passively holds its privileges, and it is deliberately neither ``postgres`` nor
-    a superuser. The V8 singleton is owned by the migrator and grants only SELECT to the verifier,
-    so the login cannot read it directly and never assumes the table owner.
+    with pytest.raises(
+        cli.CLIError,
+        match="fixed database-owner canonical import login",
+    ):
+        cli._require_canonical_import_identity(connection)
+    assert connection.rollbacks == 1
+
+
+def test_identity_preflight_connection_error_withholds_dsn_secret(monkeypatch) -> None:
+    cli = _load_cli()
+
+    def fail_with_secret(*_args, **_kwargs):
+        raise RuntimeError(DSN)
+
+    monkeypatch.setattr(cli, "_connect_postgres", fail_with_secret)
+    with pytest.raises(cli.CLIError) as captured:
+        cli._preflight_canonical_import_dsn(DSN)
+    assert DSN not in str(captured.value)
+    assert "top-secret-password" not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
+def test_execute_rejects_provider_admin_before_snapshot_or_output(
+    monkeypatch, tmp_path: Path, fleet_db
+) -> None:
+    admin = psycopg.connect(fleet_db, row_factory=dict_row)
+    try:
+        require_disposable_postgres(admin)
+        admin.rollback()
+        cli, _source, snapshot, _sealed, _marker = _prepare(monkeypatch, tmp_path)
+        snapshot.unlink()
+        snapshot_attempted = False
+
+        def forbidden_snapshot(*_args, **_kwargs):
+            nonlocal snapshot_attempted
+            snapshot_attempted = True
+            pytest.fail("provider-admin DSN reached sealed-snapshot creation")
+
+        monkeypatch.setattr(cli, "seal_sqlite_snapshot", forbidden_snapshot)
+        monkeypatch.setattr(
+            cli,
+            "_connect_postgres",
+            lambda *_args, **_kwargs: _OpenConnection(admin),
+        )
+
+        with pytest.raises(
+            cli.CLIError,
+            match="fixed database-owner canonical import login",
+        ):
+            cli.execute(_arguments(tmp_path))
+
+        assert snapshot_attempted is False
+        assert not snapshot.exists()
+        assert not (tmp_path / "receipt.json").exists()
+        assert not (tmp_path / "receipt.json.commit.json").exists()
+    finally:
+        admin.close()
+
+
+def test_identity_gate_rejects_nonowner_login_on_pg18(fleet_db) -> None:
+    role_name = "noncanonical_import_login_test"
+    password = "noncanonical-import-disposable-test-only"
+    cli = _load_cli()
+    with psycopg.connect(fleet_db, row_factory=dict_row) as admin:
+        require_disposable_postgres(admin)
+        admin.execute(
+            pg_sql.SQL(
+                "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS PASSWORD {}"
+            ).format(pg_sql.Identifier(role_name), pg_sql.Literal(password))
+        )
+        admin.commit()
+        parameters = conninfo_to_dict(fleet_db)
+        parameters.update(user=role_name, password=password)
+        try:
+            with psycopg.connect(make_conninfo(**parameters), row_factory=dict_row) as login:
+                with pytest.raises(
+                    cli.CLIError,
+                    match="fixed database-owner canonical import login",
+                ):
+                    cli._require_canonical_import_identity(login)
+        finally:
+            admin.execute(pg_sql.SQL("DROP ROLE {}").format(pg_sql.Identifier(role_name)))
+            admin.commit()
+
+
+def _provision_canonical_login(admin, admin_dsn: str) -> str:
+    """Provision the exact database-owner canonical login used by production bootstrap.
+
+    The login owns the disposable database and has exactly two OID-10-granted memberships:
+    ``brain_schema_migrator`` and ``brain_schema_verifier``, both ADMIN false, INHERIT false,
+    SET true. It is deliberately neither the bootstrap provider admin nor a superuser. The V8
+    singleton is owned by the migrator and grants only SELECT to the verifier, so the login cannot
+    read it directly and never assumes the table owner for the identity read.
     """
     _provision_v8_identity_singleton(admin)
+    bootstrap = admin.execute(
+        "SELECT rolname,oid FROM pg_roles WHERE oid=10 AND rolsuper"
+    ).fetchone()
+    assert bootstrap is not None
     admin.execute(
         pg_sql.SQL(
             "DO $$ BEGIN CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
@@ -1050,12 +1247,22 @@ def _provision_canonical_login(admin, admin_dsn: str) -> str:
             pg_sql.Identifier(_CANONICAL_LOGIN), pg_sql.Literal(_CANONICAL_LOGIN_PASSWORD)
         )
     )
+    for parent_role in ("brain_schema_migrator", "brain_schema_verifier"):
+        admin.execute(
+            pg_sql.SQL(
+                "GRANT {} TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE GRANTED BY {}"
+            ).format(
+                pg_sql.Identifier(parent_role),
+                pg_sql.Identifier(_CANONICAL_LOGIN),
+                pg_sql.Identifier(bootstrap["rolname"]),
+            )
+        )
+    database_name = admin.execute("SELECT current_database() AS name").fetchone()["name"]
     admin.execute(
-        pg_sql.SQL("GRANT brain_schema_verifier TO {} WITH INHERIT FALSE, SET TRUE").format(
-            pg_sql.Identifier(_CANONICAL_LOGIN)
+        pg_sql.SQL("ALTER DATABASE {} OWNER TO {}").format(
+            pg_sql.Identifier(database_name), pg_sql.Identifier(_CANONICAL_LOGIN)
         )
     )
-    admin.execute(pg_sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(pg_sql.Identifier(_CANONICAL_LOGIN)))
     admin.commit()
     parameters = conninfo_to_dict(admin_dsn)
     parameters.update(user=_CANONICAL_LOGIN, password=_CANONICAL_LOGIN_PASSWORD)
@@ -1064,6 +1271,16 @@ def _provision_canonical_login(admin, admin_dsn: str) -> str:
 
 def _drop_canonical_login(admin) -> None:
     admin.rollback()
+    identity = admin.execute(
+        "SELECT current_database() AS database_name,"
+        "(SELECT rolname FROM pg_roles WHERE oid=10) AS bootstrap_role"
+    ).fetchone()
+    admin.execute(
+        pg_sql.SQL("ALTER DATABASE {} OWNER TO {}").format(
+            pg_sql.Identifier(identity["database_name"]),
+            pg_sql.Identifier(identity["bootstrap_role"]),
+        )
+    )
     admin.execute("DROP TABLE IF EXISTS public.applypilot_database_identity")
     if admin.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (_CANONICAL_LOGIN,)).fetchone() is not None:
         admin.execute(pg_sql.SQL("DROP OWNED BY {} CASCADE").format(pg_sql.Identifier(_CANONICAL_LOGIN)))
@@ -1118,6 +1335,7 @@ def test_canonical_noinherit_login_reads_identity_via_scoped_role_without_leak(
         login_conn = psycopg.connect(login_dsn, row_factory=dict_row)
         try:
             _assert_pg18_login(login_conn)
+            login_conn.rollback()
             # The canonical login genuinely cannot read the singleton directly: only the scoped
             # SET ROLE in the CLI can, which is exactly what makes the run below a real proof.
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -1185,6 +1403,7 @@ def test_canonical_noinherit_login_recover_reads_identity_via_scoped_role(
         login_conn = psycopg.connect(login_dsn, row_factory=dict_row)
         try:
             _assert_pg18_login(login_conn)
+            login_conn.rollback()
             cli, _source, _snapshot, sealed, marker = _prepare(monkeypatch, tmp_path)
             parity = _parity(5)
             monkeypatch.setattr(
@@ -1236,6 +1455,7 @@ def test_canonical_noinherit_login_rejects_bad_singleton_before_writes_without_l
         login_conn = psycopg.connect(login_dsn, row_factory=dict_row)
         try:
             _assert_pg18_login(login_conn)
+            login_conn.rollback()
             cli, _source, _snapshot, _sealed, _marker = _prepare(monkeypatch, tmp_path)
             monkeypatch.setattr(
                 cli, "import_sqlite_to_postgres",

@@ -71,6 +71,15 @@ def _bootstrap_script_module():
     return module
 
 
+def _brain_import_script_module():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "brain-sqlite-to-postgres.py"
+    spec = importlib.util.spec_from_file_location("applypilot_brain_import_script", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _rollback_script_module():
     path = Path(__file__).resolve().parents[1] / "scripts" / "rollback-fleet-pg-role.py"
     spec = importlib.util.spec_from_file_location("applypilot_rollback_script", path)
@@ -3494,6 +3503,47 @@ def test_fixed_atomic_authority_install_failure_rolls_back_everything(fleet_db: 
                 if root.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role_name,)).fetchone():
                     root.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role_name)))
             root.commit()
+
+
+def test_bootstrap_provisioned_canonical_owner_passes_import_identity_gate(
+    fleet_db: str,
+) -> None:
+    topology = _atomic_topology()
+    with pgqueue.connect(fleet_db) as root:
+        root.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS"
+            ).format(sql.Identifier(ATOMIC_RETIRED_ADMIN))
+        )
+        _create_atomic_lifecycle_roles(root)
+        root.commit()
+        try:
+            pg_roles.bootstrap_database_roles(
+                root,
+                CONTROLLER_PASSWORD,
+                BACKUP_PASSWORD,
+                database_owner_password=DATABASE_OWNER_PASSWORD,
+                topology=topology,
+                evidence_paths=_test_evidence_paths(),
+                install_brain_authority=True,
+            )
+            owner_dsn = _dsn(
+                fleet_db,
+                user=ATOMIC_OWNER,
+                password=DATABASE_OWNER_PASSWORD,
+            )
+            with psycopg.connect(owner_dsn, row_factory=dict_row) as canonical_import:
+                _brain_import_script_module()._require_canonical_import_identity(
+                    canonical_import
+                )
+                assert canonical_import.execute(
+                    "SELECT session_user AS session_name,current_user AS current_name"
+                ).fetchone() == {
+                    "session_name": ATOMIC_OWNER,
+                    "current_name": ATOMIC_OWNER,
+                }
+        finally:
+            _drop_atomic_bootstrap_roles(root)
 
 
 def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fleet_db: str) -> None:

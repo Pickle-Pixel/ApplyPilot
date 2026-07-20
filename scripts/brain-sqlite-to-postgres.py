@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import psycopg
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 
@@ -61,6 +62,10 @@ MAX_FREEZE_VALIDITY_SECONDS = 900
 _MODES = ("bulk-import", "final-delta-finalize")
 _ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CANONICAL_IMPORT_PARENT_ROLES = {
+    "brain_schema_migrator",
+    "brain_schema_verifier",
+}
 _ATTESTATION_ENV = {
     "writer-freeze": "APPLYPILOT_WRITER_FREEZE_ATTESTATION",
     "brain-import": "APPLYPILOT_BRAIN_IMPORT_ATTESTATION",
@@ -155,6 +160,123 @@ def _load_dsn(environment_name: str) -> str:
     if not isinstance(dsn, str) or not dsn.strip():
         raise CLIError(f"PostgreSQL DSN environment variable is unset or empty: {environment_name}")
     return dsn
+
+
+def _rollback_identity_preflight(pg) -> None:
+    try:
+        pg.rollback()
+    except Exception:
+        raise CLIError(
+            "canonical import identity preflight could not restore an idle connection; "
+            "connection details withheld"
+        ) from None
+
+
+def _require_canonical_import_identity(pg) -> None:
+    """Require the exact bootstrap-provisioned database-owner import identity.
+
+    This gate runs before any scoped ``SET ROLE``, durable identity read, import
+    lock, output artifact, or database mutation. It rejects a provider-admin
+    connection even though PostgreSQL superusers could otherwise activate the
+    migrator role directly.
+    """
+    transaction_status = getattr(getattr(pg, "info", None), "transaction_status", None)
+    if transaction_status is not None and transaction_status != TransactionStatus.IDLE:
+        raise CLIError("canonical import identity preflight requires an idle dedicated connection")
+    try:
+        identity = pg.execute(
+            "SELECT session_user AS canonical_session_user,"
+            "current_user AS canonical_current_user,"
+            "owner.rolname AS database_owner_role,"
+            "login.rolcanlogin,login.rolinherit,login.rolsuper,login.rolcreatedb,"
+            "login.rolcreaterole,login.rolreplication,login.rolbypassrls "
+            "FROM pg_catalog.pg_database database "
+            "JOIN pg_catalog.pg_roles owner ON owner.oid=database.datdba "
+            "JOIN pg_catalog.pg_roles login ON login.rolname=session_user "
+            "WHERE database.datname=pg_catalog.current_database()"
+        ).fetchone()
+        if not isinstance(identity, Mapping):
+            raise RuntimeError("canonical identity row unavailable")
+        session_user = identity.get("canonical_session_user")
+        memberships = pg.execute(
+            "SELECT parent.rolname AS canonical_parent_role,"
+            "member.rolname AS canonical_member_role,"
+            "grantor.oid AS grantor_oid,grantor.rolsuper AS grantor_is_superuser,"
+            "membership.admin_option,membership.inherit_option,membership.set_option "
+            "FROM pg_catalog.pg_auth_members membership "
+            "JOIN pg_catalog.pg_roles parent ON parent.oid=membership.roleid "
+            "JOIN pg_catalog.pg_roles member ON member.oid=membership.member "
+            "JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor "
+            "WHERE member.rolname=%s OR parent.rolname=%s "
+            "ORDER BY parent.rolname,member.rolname,grantor.oid",
+            (session_user, session_user),
+        ).fetchall()
+    except CLIError:
+        _rollback_identity_preflight(pg)
+        raise
+    except Exception:
+        _rollback_identity_preflight(pg)
+        raise CLIError(
+            "canonical import identity preflight could not be verified; connection details withheld"
+        ) from None
+
+    expected_attributes = {
+        "rolcanlogin": True,
+        "rolinherit": False,
+        "rolsuper": False,
+        "rolcreatedb": False,
+        "rolcreaterole": False,
+        "rolreplication": False,
+        "rolbypassrls": False,
+    }
+    attributes_match = all(
+        identity.get(name) is expected for name, expected in expected_attributes.items()
+    )
+    memberships_match = (
+        len(memberships) == 2
+        and {
+            row.get("canonical_parent_role")
+            for row in memberships
+            if isinstance(row, Mapping)
+        }
+        == _CANONICAL_IMPORT_PARENT_ROLES
+        and all(
+            isinstance(row, Mapping)
+            and row.get("canonical_member_role") == session_user
+            and row.get("grantor_oid") == 10
+            and row.get("grantor_is_superuser") is True
+            and row.get("admin_option") is False
+            and row.get("inherit_option") is False
+            and row.get("set_option") is True
+            for row in memberships
+        )
+    )
+    identity_matches = (
+        isinstance(session_user, str)
+        and bool(session_user)
+        and identity.get("canonical_current_user") == session_user
+        and identity.get("database_owner_role") == session_user
+        and attributes_match
+        and memberships_match
+    )
+    _rollback_identity_preflight(pg)
+    if not identity_matches:
+        raise CLIError(
+            "PostgreSQL DSN must authenticate as the fixed database-owner canonical import "
+            "login with exact SET-only memberships"
+        )
+
+
+def _preflight_canonical_import_dsn(dsn: str) -> None:
+    try:
+        with _connect_postgres(dsn, row_factory=dict_row) as pg:
+            _require_canonical_import_identity(pg)
+    except CLIError:
+        raise
+    except Exception:
+        raise CLIError(
+            "PostgreSQL canonical import identity preflight failed; connection details withheld"
+        ) from None
 
 
 def _attestation_key(purpose: str) -> tuple[bytes, str]:
@@ -930,6 +1052,7 @@ def execute(argv: list[str] | None = None) -> Path:
     output = _canonical_output_path(arguments.output, "output receipt")
     commit_path = _canonical_output_path(str(_publication_commit_path(output)), "publication commit")
     dsn = _load_dsn(arguments.postgres_dsn_env)
+    _preflight_canonical_import_dsn(dsn)
     source_anchors = {
         "database": _capture_path_anchor(source, "SQLite database"),
         "wal": _capture_path_anchor(Path(f"{source}-wal"), "SQLite WAL"),
@@ -980,6 +1103,7 @@ def execute(argv: list[str] | None = None) -> Path:
     final_summary: ImportSummary | None = None
     try:
         with _connect_postgres(dsn, row_factory=dict_row) as pg:
+            _require_canonical_import_identity(pg)
             destination = _destination_identity(pg)
             _assert_destination_binding(
                 destination,
