@@ -2170,6 +2170,23 @@ def _atomic_topology() -> pg_roles.BootstrapTopology:
     )
 
 
+def _expected_canonical_import_memberships(
+    topology: pg_roles.BootstrapTopology,
+) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "parent_role": parent_role,
+            "member_role": topology.database_owner_role,
+            "grantor_role": "postgres",
+            "grantor_oid": 10,
+            "admin_option": False,
+            "inherit_option": False,
+            "set_option": True,
+        }
+        for parent_role in sorted((topology.migrator_role, topology.verifier_role))
+    )
+
+
 def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
     fleet_db: str,
     monkeypatch,
@@ -2425,6 +2442,10 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 "FROM pg_authid WHERE rolname=%s",
                 (owner,),
             ).fetchone() == {"rolcanlogin": True, "rolinherit": False, "has_password": False}
+            assert receipt.topology["canonical_import_role"] == owner
+            assert receipt.inventory["canonical_import_memberships"] == (
+                _expected_canonical_import_memberships(topology)
+            )
             assert (
                 f'GRANT "{owner}" TO "{legacy_controller}"' not in receipt.rollback_sql
             )
@@ -2622,6 +2643,13 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 for run in range(2):
                     root.execute(receipt.rollback_sql)
                     root.commit()
+                    assert root.execute(
+                        "SELECT count(*) AS count FROM pg_auth_members membership "
+                        "JOIN pg_roles parent ON parent.oid=membership.roleid "
+                        "JOIN pg_roles member ON member.oid=membership.member "
+                        "WHERE parent.rolname=ANY(%s) AND member.rolname=%s",
+                        ([topology.migrator_role, topology.verifier_role], owner),
+                    ).fetchone()["count"] == 0
                     assert root.execute(
                         "SELECT has_function_privilege('brain_candidate_writer',"
                         "'public.brain_publish_v4_candidate(text,text,text,text,text,bigint,uuid,text,text,text,text,text,bigint)',"
@@ -3325,6 +3353,25 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
             assert receipt.escalation_required is True
             assert receipt.inventory["database_oid"] > 0
             assert receipt.inventory["system_identifier"].isdigit()
+            assert receipt.topology["canonical_import_role"] == ATOMIC_OWNER
+            assert receipt.inventory["canonical_import_memberships"] == (
+                _expected_canonical_import_memberships(topology)
+            )
+            root.execute(
+                sql.SQL(
+                    "GRANT {} TO {} WITH ADMIN FALSE, INHERIT FALSE, SET FALSE GRANTED BY postgres"
+                ).format(
+                    sql.Identifier(topology.verifier_role),
+                    sql.Identifier(topology.database_owner_role),
+                )
+            )
+            with pytest.raises(RuntimeError, match="canonical import membership mismatch"):
+                pg_roles._require_exact_canonical_import_memberships(root.cursor(), topology=topology)
+            root.rollback()
+            assert pg_roles._require_exact_canonical_import_memberships(
+                root.cursor(), topology=topology
+            ) == _expected_canonical_import_memberships(topology)
+            root.rollback()
             assert receipt.inventory["backup_role_boundary"] == {
                 "role_name": pg_roles.FLEET_BACKUP_ROLE,
                 "connection_limit": 1,

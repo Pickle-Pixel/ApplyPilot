@@ -2467,6 +2467,62 @@ def _verify_v4_contract(cur) -> None:
         raise RuntimeError("brain schema v4 verification failed: " + "; ".join(problems))
 
 
+def _is_exact_canonical_import_dual_domain(cur, *, login_name: str) -> bool:
+    """Allow only the database-owner import LOGIN's two explicit SET channels.
+
+    V5 normally forbids a login from spanning capability domains.  The audited
+    importer is the sole exception: it writes as the migrator and reads the V8
+    identity singleton as the verifier.  Both channels remain non-inheriting,
+    non-admin, OID-10-granted SET-only memberships.
+    """
+    cur.execute(
+        "SELECT owner.rolname AS owner_role,owner.rolcanlogin,owner.rolinherit,"
+        "owner.rolsuper,owner.rolcreatedb,owner.rolcreaterole,owner.rolreplication,"
+        "owner.rolbypassrls FROM pg_database database "
+        "JOIN pg_roles owner ON owner.oid=database.datdba "
+        "WHERE database.datname=current_database()"
+    )
+    owner = cur.fetchone()
+    if owner is None or owner["owner_role"] != login_name:
+        return False
+    if (
+        not owner["rolcanlogin"]
+        or owner["rolinherit"]
+        or owner["rolsuper"]
+        or owner["rolcreatedb"]
+        or owner["rolcreaterole"]
+        or owner["rolreplication"]
+        or owner["rolbypassrls"]
+    ):
+        return False
+    cur.execute(
+        "SELECT parent.rolname AS parent_role,member.rolname AS member_role,"
+        "grantor.oid AS grantor_oid,grantor.rolsuper AS grantor_is_superuser,"
+        "membership.admin_option,"
+        "membership.inherit_option,membership.set_option "
+        "FROM pg_auth_members membership "
+        "JOIN pg_roles parent ON parent.oid=membership.roleid "
+        "JOIN pg_roles member ON member.oid=membership.member "
+        "JOIN pg_roles grantor ON grantor.oid=membership.grantor "
+        "WHERE member.rolname=%s ORDER BY parent.rolname,grantor.oid",
+        (login_name,),
+    )
+    rows = cur.fetchall()
+    return (
+        len(rows) == 2
+        and {row["parent_role"] for row in rows} == {_MIGRATION_ROLE, _VERIFIER_ROLE}
+        and all(
+            row["member_role"] == login_name
+            and row["grantor_oid"] == 10
+            and row["grantor_is_superuser"] is True
+            and not row["admin_option"]
+            and not row["inherit_option"]
+            and row["set_option"]
+            for row in rows
+        )
+    )
+
+
 def _verify_v5_contract(cur) -> None:
     """Verify V5's additive graph authority and superseding candidate ACL."""
     _assert_schema_v5_bytes_immutable()
@@ -2568,6 +2624,10 @@ def _verify_v5_contract(cur) -> None:
         login_name: sorted(domains)
         for login_name, domains in login_domains.items()
         if len(domains) > 1
+        and not (
+            domains == {"migration", "verifier"}
+            and _is_exact_canonical_import_dual_domain(cur, login_name=login_name)
+        )
     }
     if conflicting_logins:
         problems.append(
@@ -3762,17 +3822,21 @@ def _verify_v7_membership_contract(cur, *, require_v10_principals: bool = False)
         )
         provider_edges = cur.fetchall()
         provider_exact = (
-            len(provider_edges) == 1
-            and provider_edges[0]["parent_role"] == _MIGRATION_ROLE
-            and provider_edges[0]["grantor_oid"] == 10
-            and provider_edges[0]["grantor_is_superuser"] is True
-            and provider_edges[0]["admin_option"] is False
-            and provider_edges[0]["inherit_option"] is False
-            and provider_edges[0]["set_option"] is True
+            len(provider_edges) == 2
+            and {row["parent_role"] for row in provider_edges}
+            == {_MIGRATION_ROLE, _VERIFIER_ROLE}
+            and all(
+                row["grantor_oid"] == 10
+                and row["grantor_is_superuser"] is True
+                and row["admin_option"] is False
+                and row["inherit_option"] is False
+                and row["set_option"] is True
+                for row in provider_edges
+            )
         )
         if not provider_exact:
             raise RuntimeError(
-                "brain schema v7 exact migrator-to-database-owner membership contract mismatch"
+                "brain schema v7 exact migrator-and-verifier-to-database-owner membership contract mismatch"
             )
     cur.execute(
         "WITH RECURSIVE closure(root_oid,member_oid,path) AS ("

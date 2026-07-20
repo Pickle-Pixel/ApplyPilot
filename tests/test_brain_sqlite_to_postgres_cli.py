@@ -60,8 +60,11 @@ _DEFAULT_SEARCH_PATH = "\"$user\", public"
 
 def test_runbook_provisions_canonical_import_login_for_read_only_identity_role() -> None:
     runbook = RUNBOOK.read_text(encoding="utf-8")
-    assert "GRANT brain_schema_verifier TO canonical_import_login" in runbook
-    assert "WITH ADMIN FALSE, INHERIT FALSE, SET TRUE" in runbook
+    assert "fixed database-owner LOGIN" in runbook
+    assert "brain_schema_migrator` for the import" in runbook
+    assert "brain_schema_verifier` for the durable" in runbook
+    assert "ADMIN false, INHERIT false, SET true, grantor OID 10" in runbook
+    assert "authenticated receipt records both exact edges" in runbook
     assert "SET ROLE brain_schema_verifier;" in runbook
     assert "SET ROLE brain_schema_migrator;" not in runbook
 

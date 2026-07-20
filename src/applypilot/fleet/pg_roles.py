@@ -3009,13 +3009,18 @@ def _install_brain_authority_in_transaction(
         )
         provider_memberships = cur.fetchall()
         provider_membership_exact = (
-            len(provider_memberships) == 1
-            and _row_value(provider_memberships[0], "parent_role") == topology.migrator_role
-            and _row_value(provider_memberships[0], "grantor_oid", 1) == 10
-            and bool(_row_value(provider_memberships[0], "grantor_is_superuser", 2))
-            and not bool(_row_value(provider_memberships[0], "admin_option", 3))
-            and not bool(_row_value(provider_memberships[0], "inherit_option", 4))
-            and bool(_row_value(provider_memberships[0], "set_option", 5))
+            len(provider_memberships) == 2
+            and {
+                _row_value(row, "parent_role") for row in provider_memberships
+            } == {topology.migrator_role, topology.verifier_role}
+            and all(
+                _row_value(row, "grantor_oid", 1) == 10
+                and bool(_row_value(row, "grantor_is_superuser", 2))
+                and not bool(_row_value(row, "admin_option", 3))
+                and not bool(_row_value(row, "inherit_option", 4))
+                and bool(_row_value(row, "set_option", 5))
+                for row in provider_memberships
+            )
         )
         if not provider_exact or not roles_exact or not membership_exact or not provider_membership_exact:
             raise RuntimeError(
@@ -4597,6 +4602,7 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
         )
         if actual != expected:
             raise RuntimeError(f"bootstrap role attributes invalid for {role_name}: {actual!r}")
+    _require_exact_canonical_import_memberships(cur, topology=topology)
     cur.execute("SELECT to_regclass('public.brain_schema_versions') AS relation")
     if _row_value(cur.fetchone(), "relation") is not None:
         cur.execute(
@@ -5057,6 +5063,7 @@ def bootstrap_database_roles(
                 "legacy_rollback_sql_recovers_v1_v5": False,
                 "topology": {
                     "database_owner_role": topology.database_owner_role,
+                    "canonical_import_role": topology.database_owner_role,
                     "controller_role": topology.controller_role,
                     "verifier_role": topology.verifier_role,
                     "migrator_role": topology.migrator_role,
@@ -5135,12 +5142,12 @@ def bootstrap_database_roles(
                 sql.SQL("ALTER DATABASE {} OWNER TO {}").format(database, sql.Identifier(topology.database_owner_role))
             )
             cur.execute(
-                sql.SQL(
-                    "GRANT {} TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE"
-                ).format(
-                    sql.Identifier(topology.migrator_role),
-                    sql.Identifier(topology.database_owner_role),
+                sql.SQL("ALTER ROLE {} NOINHERIT").format(
+                    sql.Identifier(topology.database_owner_role)
                 )
+            )
+            canonical_import_memberships = _reconcile_canonical_import_memberships(
+                cur, topology=topology
             )
             cur.execute(sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM PUBLIC").format(database))
             for role_name in topology.retired_admin_roles:
@@ -5188,6 +5195,7 @@ def bootstrap_database_roles(
             session_user=inventory["session_user"],
             topology={
                 "database_owner_role": topology.database_owner_role,
+                "canonical_import_role": topology.database_owner_role,
                 "controller_role": topology.controller_role,
                 "verifier_role": topology.verifier_role,
                 "migrator_role": topology.migrator_role,
@@ -5195,7 +5203,11 @@ def bootstrap_database_roles(
                 "retired_admin_roles": topology.retired_admin_roles,
                 "infrastructure_superuser_roles": topology.infrastructure_superuser_roles,
             },
-            inventory={**prepared_inventory, "backup_role_boundary": backup_boundary},
+            inventory={
+                **prepared_inventory,
+                "canonical_import_memberships": canonical_import_memberships,
+                "backup_role_boundary": backup_boundary,
+            },
             effective_connect_grantees=effective,
             rollback_sql=rollback_sql,
             escalation_required=install_brain_authority,
@@ -5291,6 +5303,7 @@ def upgrade_brain_authority_existing_topology(
                 "legacy_rollback_sql_recovers_v1_v5": False,
                 "topology": {
                     "database_owner_role": topology.database_owner_role,
+                    "canonical_import_role": topology.database_owner_role,
                     "controller_role": topology.controller_role,
                     "verifier_role": topology.verifier_role,
                     "migrator_role": topology.migrator_role,
@@ -5320,6 +5333,9 @@ def upgrade_brain_authority_existing_topology(
                 expected_system_identifier=expected_system_identifier,
                 require_v7=True,
             )
+            canonical_import_memberships = _require_exact_canonical_import_memberships(
+                cur, topology=topology
+            )
             backup_boundary = _validate_backup_role_boundary(cur, topology=topology)
         conn.commit()
         return BootstrapReceipt(
@@ -5333,6 +5349,7 @@ def upgrade_brain_authority_existing_topology(
                     "writer_role": candidate_roles.writer_role,
                     "reconciled_at": candidate_roles.reconciled_at,
                 },
+                "canonical_import_memberships": canonical_import_memberships,
                 "backup_role_boundary": backup_boundary,
             },
             effective_connect_grantees=(),
@@ -5536,7 +5553,7 @@ def _existing_authority_topology_inventory(
         _validate_retired_admin_memberships_closed(
             cur, retired_admin_roles=topology.retired_admin_roles
         )
-        _verify_existing_provider_membership(cur, topology=topology)
+        _require_exact_canonical_import_memberships(cur, topology=topology)
         expected_final_attributes = {
             topology.database_owner_role: (True, False, False, False, False, False, False),
             topology.controller_role: (True, False, False, False, False, False, False),
@@ -5722,25 +5739,96 @@ def _retired_default_acl_dependencies(
     return tuple(dict(row) for row in cur.fetchall())
 
 
-def _verify_existing_provider_membership(cur, *, topology: BootstrapTopology) -> None:
+def _canonical_import_membership_inventory(
+    cur, *, topology: BootstrapTopology
+) -> tuple[dict[str, Any], ...]:
     cur.execute(
-        "SELECT parent.rolname AS parent_role,grantor.oid AS grantor_oid,"
+        "SELECT parent.rolname AS parent_role,member.rolname AS member_role,"
+        "grantor.rolname AS grantor_role,grantor.oid AS grantor_oid,"
         "membership.admin_option,membership.inherit_option,membership.set_option "
         "FROM pg_auth_members membership JOIN pg_roles parent ON parent.oid=membership.roleid "
         "JOIN pg_roles member ON member.oid=membership.member "
-        "JOIN pg_roles grantor ON grantor.oid=membership.grantor WHERE member.rolname=%s",
+        "JOIN pg_roles grantor ON grantor.oid=membership.grantor WHERE member.rolname=%s "
+        "ORDER BY parent.rolname,grantor.oid",
         (topology.database_owner_role,),
     )
-    rows = cur.fetchall()
+    return tuple(
+        {
+            "parent_role": _row_value(row, "parent_role"),
+            "member_role": _row_value(row, "member_role", 1),
+            "grantor_role": _row_value(row, "grantor_role", 2),
+            "grantor_oid": int(_row_value(row, "grantor_oid", 3)),
+            "admin_option": bool(_row_value(row, "admin_option", 4)),
+            "inherit_option": bool(_row_value(row, "inherit_option", 5)),
+            "set_option": bool(_row_value(row, "set_option", 6)),
+        }
+        for row in cur.fetchall()
+    )
+
+
+def _require_exact_canonical_import_memberships(
+    cur, *, topology: BootstrapTopology
+) -> tuple[dict[str, Any], ...]:
+    rows = _canonical_import_membership_inventory(cur, topology=topology)
+    expected_parents = {topology.migrator_role, topology.verifier_role}
     if not (
-        len(rows) == 1
-        and _row_value(rows[0], "parent_role") == topology.migrator_role
-        and _row_value(rows[0], "grantor_oid", 1) == 10
-        and not bool(_row_value(rows[0], "admin_option", 2))
-        and not bool(_row_value(rows[0], "inherit_option", 3))
-        and bool(_row_value(rows[0], "set_option", 4))
+        len(rows) == 2
+        and {row["parent_role"] for row in rows} == expected_parents
+        and all(
+            row["member_role"] == topology.database_owner_role
+            and row["grantor_oid"] == 10
+            and not row["admin_option"]
+            and not row["inherit_option"]
+            and row["set_option"]
+            for row in rows
+        )
     ):
-        raise RuntimeError(f"authority upgrade provider membership mismatch: {rows!r}")
+        raise RuntimeError(
+            "canonical import membership mismatch: expected exact OID-10 SET-only "
+            f"{sorted(expected_parents)!r} edges to {topology.database_owner_role!r}, got {rows!r}"
+        )
+    return rows
+
+
+def _reconcile_canonical_import_memberships(
+    cur, *, topology: BootstrapTopology
+) -> tuple[dict[str, Any], ...]:
+    """Bind the database-owner LOGIN to write and read roles only via SET ROLE."""
+    cur.execute("SELECT rolname,rolsuper FROM pg_roles WHERE oid=10")
+    bootstrap_role = cur.fetchone()
+    if bootstrap_role is None or not bool(_row_value(bootstrap_role, "rolsuper", 1)):
+        raise RuntimeError("canonical import membership grantor OID 10 must remain a superuser")
+    grantor = sql.Identifier(_row_value(bootstrap_role, "rolname"))
+    cur.execute(
+        sql.SQL(
+            "ALTER ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+            "NOREPLICATION NOBYPASSRLS"
+        ).format(sql.Identifier(topology.database_owner_role))
+    )
+    _reconcile_role_memberships(cur, role_name=topology.migrator_role)
+    _reconcile_role_memberships(cur, role_name=topology.verifier_role)
+    _reconcile_role_memberships(cur, role_name=topology.database_owner_role)
+    for parent_role in (topology.migrator_role, topology.verifier_role):
+        cur.execute(
+            sql.SQL(
+                "GRANT {} TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE GRANTED BY {}"
+            ).format(
+                sql.Identifier(parent_role),
+                sql.Identifier(topology.database_owner_role),
+                grantor,
+            )
+        )
+        _reconcile_role_memberships(
+            cur,
+            role_name=parent_role,
+            approved_grantee_roles=(topology.database_owner_role,),
+        )
+    _reconcile_role_memberships(
+        cur,
+        role_name=topology.database_owner_role,
+        approved_parent_roles=(topology.migrator_role, topology.verifier_role),
+    )
+    return _require_exact_canonical_import_memberships(cur, topology=topology)
 
 
 def _existing_capability_memberships(
@@ -5813,24 +5901,8 @@ def _transition_existing_authority_topology(
         cur.execute(sql.SQL(
             "ALTER ROLE {} {} NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
         ).format(sql.Identifier(role_name), sql.SQL("LOGIN" if login else "NOLOGIN")))
-    _reconcile_role_memberships(cur, role_name=topology.migrator_role)
-    _reconcile_role_memberships(cur, role_name=topology.verifier_role)
-    _reconcile_role_memberships(cur, role_name=topology.database_owner_role)
     _reconcile_exact_controller_membership(cur, controller_role=topology.controller_role)
-    cur.execute(sql.SQL(
-        "GRANT {} TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE"
-    ).format(sql.Identifier(topology.migrator_role), sql.Identifier(topology.database_owner_role)))
-    _reconcile_role_memberships(
-        cur,
-        role_name=topology.migrator_role,
-        approved_grantee_roles=(topology.database_owner_role,),
-    )
-    _reconcile_role_memberships(
-        cur,
-        role_name=topology.database_owner_role,
-        approved_parent_roles=(topology.migrator_role,),
-    )
-    _verify_existing_provider_membership(cur, topology=topology)
+    _reconcile_canonical_import_memberships(cur, topology=topology)
 
 
 def ensure_fleet_worker_role(

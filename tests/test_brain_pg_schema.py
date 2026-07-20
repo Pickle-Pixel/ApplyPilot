@@ -682,6 +682,10 @@ def test_v7_install_preserves_permanent_set_edge_for_non_superuser_database_owne
             "WITH ADMIN FALSE, INHERIT FALSE, SET TRUE GRANTED BY postgres"
         )
         root.execute(
+            "GRANT brain_schema_verifier TO brain_v7_provider "
+            "WITH ADMIN FALSE, INHERIT FALSE, SET TRUE GRANTED BY postgres"
+        )
+        root.execute(
             "CREATE ROLE brain_controller_test_login LOGIN NOINHERIT NOSUPERUSER "
             "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
         )

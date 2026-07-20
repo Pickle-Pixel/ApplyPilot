@@ -116,17 +116,25 @@ python scripts/brain-sqlite-to-postgres.py --mode bulk-import --source C:\absolu
 `--expected-database-incarnation-id` is required for every mode (bulk, final, and
 recovery); the command refuses to run without an exact canonical UUID and there is
 no ambient/GUC/environment fallback. The topology bootstrap creates the fixed
-`NOLOGIN` role `brain_schema_verifier`, but it cannot infer which operator-managed
-login will perform an import. Before the first import, an approved role
-administrator must make the canonical `NOINHERIT` import login a `SET`-only member
-of that read-only verifier role. Replace `canonical_import_login` below with the
-exact login named by `BRAIN_IMPORT_DSN`; do not grant it the migrator role, direct
-table access, or standing inherited authority:
+`NOLOGIN` role `brain_schema_verifier` and treats the fixed database-owner LOGIN
+as the canonical import login. Bootstrap and existing-topology upgrade reconcile
+that `NOINHERIT` login to exactly two OID-10-granted, `SET`-only memberships:
+`brain_schema_migrator` for the import and `brain_schema_verifier` for the durable
+identity read. Their authenticated receipt records both exact edges. Set
+`BRAIN_IMPORT_DSN` to that database-owner login; do not use a separate ambient
+login, add direct table grants, or enable standing inherited authority:
 
 ```sql
-ALTER ROLE canonical_import_login NOINHERIT;
-GRANT brain_schema_verifier TO canonical_import_login
-  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SELECT parent.rolname AS parent_role, member.rolname AS canonical_import_role,
+       membership.admin_option, membership.inherit_option, membership.set_option,
+       membership.grantor AS grantor_oid
+FROM pg_catalog.pg_auth_members membership
+JOIN pg_catalog.pg_roles parent ON parent.oid = membership.roleid
+JOIN pg_catalog.pg_roles member ON member.oid = membership.member
+WHERE member.rolname = '<database-owner-role>'
+ORDER BY parent.rolname;
+-- Require exactly brain_schema_migrator + brain_schema_verifier,
+-- both ADMIN false, INHERIT false, SET true, grantor OID 10.
 ```
 
 Discover the value with least privilege — never as `postgres` and without widening
