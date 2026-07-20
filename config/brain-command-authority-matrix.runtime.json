@@ -5525,7 +5525,7 @@
         "python scripts/bootstrap-fleet-pg-roles.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py;sourceBlobSha256=a3dea794d5bdf3fd66373ea11f8cbb4281fb7bb5f73fa1096a799129672e4858",
+      "canonicalTarget": "scripts/bootstrap-fleet-pg-roles.py;sourceBlobSha256=f2a843b63f8fa3e8be741ef4d36f6f57ae3d20fdef10de2b30a23e182eb93b3f",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5700,7 +5700,7 @@
         "python scripts/run-private-authority-migrator.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/run-private-authority-migrator.py;sourceBlobSha256=efbe5726da06f6ae41d4bdcb0a5f2eb1d0092d4ed75876dc2d5e9e86d5cf8046",
+      "canonicalTarget": "scripts/run-private-authority-migrator.py;sourceBlobSha256=6f047c7c5a1f6b65799d1d19f41b3b444ac70b087d09e803787ff2e024afa2e3",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
@@ -5759,7 +5759,7 @@
         "python scripts/upgrade-brain-authority-existing-topology.py"
       ],
       "authoritySource": "none",
-      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py;sourceBlobSha256=a0424ef431f84e72c2193be47dc567662225acb31583a397e95056656a52e245",
+      "canonicalTarget": "scripts/upgrade-brain-authority-existing-topology.py;sourceBlobSha256=ef4e4eb914587b66bd2ddbd0166c2b6c4a7040249c5b4e1465cbd3d43c794772",
       "capabilities": [],
       "directInvocation": true,
       "employerMutation": false,
