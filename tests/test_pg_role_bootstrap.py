@@ -32,6 +32,7 @@ CONTROLLER = "bootstrap_controller_test"
 CONTROLLER_PASSWORD = "bootstrap-controller-password"
 BACKUP_PASSWORD = "bootstrap-backup-password"
 DATABASE_OWNER_PASSWORD = "bootstrap-database-owner-password"
+FLEET_MIGRATION_PASSWORD = "bootstrap-fleet-migration-password"
 VERIFIER = "bootstrap_verifier_test"
 MIGRATOR = "bootstrap_migrator_test"
 WORKER_ROLE = "bootstrap_worker_test"
@@ -126,6 +127,9 @@ def test_atomic_bootstrap_cli_requires_nonblank_database_owner_password(
     monkeypatch.setenv("APPLYPILOT_ADMIN_PG_DSN", "postgresql://unused")
     monkeypatch.setenv("APPLYPILOT_CONTROLLER_PG_PASSWORD", "controller-password")
     monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "backup-password")
+    monkeypatch.setenv(
+        "APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD", "fleet-migration-password"
+    )
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", _EVIDENCE_KEY.hex())
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", _EVIDENCE_KEY_ID)
     if database_owner_password is None:
@@ -196,6 +200,7 @@ def test_authority_apis_reject_blank_database_owner_password_before_database_acc
             "controller-password",
             "backup-password",
             database_owner_password=database_owner_password,
+            fleet_migration_password="separate-fleet-migration-password",
             topology=topology,
             evidence_paths=object(),
         )
@@ -204,6 +209,7 @@ def test_authority_apis_reject_blank_database_owner_password_before_database_acc
             object(),
             "backup-password",
             database_owner_password=database_owner_password,
+            fleet_migration_password="separate-fleet-migration-password",
             topology=topology,
             evidence_paths=object(),
             expected_database_name="postgres",
@@ -249,6 +255,7 @@ def test_evidence_api_rejects_hostile_callable_without_invoking_it(monkeypatch) 
             "password",
             "backup-password",
             database_owner_password="database-owner-password",
+            fleet_migration_password="fleet-migration-password",
             topology=pg_roles.BootstrapTopology(
                 database_owner_role="owner",
                 controller_role="controller",
@@ -297,12 +304,14 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(
         _backup_password,
         *,
         database_owner_password,
+        fleet_migration_password,
         topology,
         evidence_paths,
         install_brain_authority,
     ):
         nonlocal authority_requested, committed
         assert database_owner_password == "secret-database-owner-password"
+        assert fleet_migration_password == "secret-fleet-migration-password"
         inventory = {
             "prepared_at": "2001-02-03T04:05:06+00:00",
             "database_name": "postgres",
@@ -341,6 +350,9 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(
     monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "secret-backup-password")
     monkeypatch.setenv(
         "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", "secret-database-owner-password"
+    )
+    monkeypatch.setenv(
+        "APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD", "secret-fleet-migration-password"
     )
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", _EVIDENCE_KEY.hex())
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", _EVIDENCE_KEY_ID)
@@ -391,6 +403,7 @@ def test_bootstrap_crash_after_commit_leaves_precommit_receipt_in_doubt(
     )
     assert "secret-database-owner-password" not in artifacts_and_logs
     assert "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD" not in os.environ
+    assert "APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD" not in os.environ
 
 
 def _signed_rollback_receipt(rollback_path: Path, rollback_bytes: bytes, **extra) -> dict:
@@ -2267,6 +2280,7 @@ def test_bootstrap_refuses_autocommit_before_database_mutation(fleet_db: str) ->
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -2344,6 +2358,8 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
         infrastructure_superuser_roles=("postgres",),
     )
     role_names = (
+        pg_roles.FLEET_MIGRATION_LOGIN_ROLE,
+        pg_roles.FLEET_MIGRATION_ROLE,
         pg_roles.FLEET_BACKUP_ROLE,
         "brain_artifact_authority_writer",
         "brain_artifact_authority_owner",
@@ -2390,6 +2406,11 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 root.execute(sql.SQL(
                     "GRANT {} TO postgres WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
                 ).format(sql.Identifier(role_name)))
+            root.execute(
+                sql.SQL("CREATE ROLE {} NOLOGIN INHERIT").format(
+                    sql.Identifier(pg_roles.FLEET_MIGRATION_ROLE)
+                )
+            )
             for role_name in ("brain_status_reader", "brain_policy_controller"):
                 root.execute(sql.SQL("CREATE ROLE {} NOLOGIN NOINHERIT").format(sql.Identifier(role_name)))
             root.execute(sql.SQL(
@@ -2487,6 +2508,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                     root,
                     BACKUP_PASSWORD,
                     database_owner_password=DATABASE_OWNER_PASSWORD,
+                    fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                     topology=topology,
                     evidence_paths=blocked_evidence,
                     expected_database_name=database_name,
@@ -2540,6 +2562,7 @@ def test_existing_topology_upgrade_closes_legacy_admin_graph_and_installs_v7(
                 root,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
                 expected_database_name=database_name,
@@ -3134,6 +3157,7 @@ def test_pg18_bootstrap_validates_connection_then_database_then_evidence(monkeyp
             CONTROLLER_PASSWORD,
             BACKUP_PASSWORD,
             database_owner_password=DATABASE_OWNER_PASSWORD,
+            fleet_migration_password=FLEET_MIGRATION_PASSWORD,
             topology=_atomic_topology(),
             evidence_paths=object(),
             install_brain_authority=True,
@@ -3200,6 +3224,7 @@ def test_unsupported_major_pg16_bootstrap_rejects_before_lock_evidence_or_databa
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=_atomic_topology(),
                 evidence_paths=evidence,
                 install_brain_authority=True,
@@ -3483,6 +3508,7 @@ def test_fixed_atomic_authority_install_failure_rolls_back_everything(fleet_db: 
                     CONTROLLER_PASSWORD,
                     BACKUP_PASSWORD,
                     database_owner_password=DATABASE_OWNER_PASSWORD,
+                    fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                     topology=topology,
                     evidence_paths=_test_evidence_paths(),
                     install_brain_authority=True,
@@ -3535,6 +3561,7 @@ def test_bootstrap_provisioned_canonical_owner_passes_import_identity_gate(
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
                 install_brain_authority=True,
@@ -3574,6 +3601,7 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
                 install_brain_authority=True,
@@ -3652,13 +3680,22 @@ def test_atomic_bootstrap_removes_provider_admin_membership_after_v5_install(fle
                     "default_transaction_read_only=on",
                     "search_path=pg_catalog, pg_temp",
                 ),
-                "default_acl_entries": (
-                    ("*", "S", "SELECT", False),
-                    ("*", "n", "USAGE", False),
-                    ("*", "r", "SELECT", False),
-                ),
-                "public_function_default_execute_closed": ("brain_schema_migrator",),
-            }
+                    "default_acl_entries": (
+                        ("*", "S", "SELECT", False),
+                        ("*", "n", "USAGE", False),
+                        ("*", "r", "SELECT", False),
+                    ),
+                    "fleet_migration_owner": pg_roles.FLEET_MIGRATION_ROLE,
+                    "fleet_migration_default_acl_entries": (
+                        ("*", "S", "SELECT", False),
+                        ("*", "n", "USAGE", False),
+                        ("*", "r", "SELECT", False),
+                    ),
+                    "public_function_default_execute_closed": (
+                        "brain_schema_migrator",
+                        pg_roles.FLEET_MIGRATION_ROLE,
+                    ),
+                }
             assert pg_roles._public_function_default_execute_state(
                 root.cursor(),
                 owner_role=topology.migrator_role,
@@ -4061,6 +4098,7 @@ def test_bootstrap_isolates_other_database_and_rollback_restores_public_connect(
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -4262,6 +4300,7 @@ def test_bootstrap_terminates_active_nonbreakglass_session_on_other_database(fle
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=topology,
                 evidence_paths=evidence_paths,
             )
@@ -4362,6 +4401,7 @@ def test_bootstrap_closes_and_rollback_restores_retired_admin_membership_edges(f
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -4450,6 +4490,7 @@ def test_retired_membership_rollback_preserves_grantor_and_supported_options(fle
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=topology,
                 evidence_paths=_test_evidence_paths(),
             )
@@ -4521,6 +4562,7 @@ def test_retired_membership_closure_fails_without_cascading_dependent_grants(fle
                     CONTROLLER_PASSWORD,
                     BACKUP_PASSWORD,
                     database_owner_password=DATABASE_OWNER_PASSWORD,
+                    fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                     topology=topology,
                     evidence_paths=_test_evidence_paths(),
                 )
@@ -4594,6 +4636,7 @@ def test_live_bootstrap_hands_off_to_non_superuser_controller_and_reconciles(fle
                 CONTROLLER_PASSWORD,
                 BACKUP_PASSWORD,
                 database_owner_password=DATABASE_OWNER_PASSWORD,
+                fleet_migration_password=FLEET_MIGRATION_PASSWORD,
                 topology=pg_roles.BootstrapTopology(
                     database_owner_role=OWNER,
                     controller_role=CONTROLLER,

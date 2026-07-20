@@ -51,6 +51,9 @@ def test_upgrade_cli_requires_nonblank_database_owner_password(
     spec.loader.exec_module(module)
     monkeypatch.setenv("APPLYPILOT_ADMIN_PG_DSN", "postgresql://unused")
     monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "backup-password")
+    monkeypatch.setenv(
+        "APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD", "fleet-migration-password"
+    )
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", (b"x" * 32).hex())
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "test-key")
     if database_owner_password is None:
@@ -118,8 +121,15 @@ def test_committed_receipt_uses_forward_v7_containment(
         escalation_required=False, bootstrapped_at="2001-01-01T00:00:00+00:00",
     )
     monkeypatch.setattr(module.psycopg, "connect", lambda *_args, **_kwargs: FakeConnection())
-    def fake_upgrade(*_args, database_owner_password, evidence_paths, **_kwargs):
+    def fake_upgrade(
+        *_args,
+        database_owner_password,
+        fleet_migration_password,
+        evidence_paths,
+        **_kwargs,
+    ):
         assert database_owner_password == "secret-database-owner-password"
+        assert fleet_migration_password == "secret-fleet-migration-password"
         evidence_paths.rollback_sql_path.write_text(rollback_sql, encoding="utf-8")
         return receipt
 
@@ -129,6 +139,9 @@ def test_committed_receipt_uses_forward_v7_containment(
     monkeypatch.setenv("APPLYPILOT_BACKUP_PG_PASSWORD", "disposable-test-only")
     monkeypatch.setenv(
         "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD", "secret-database-owner-password"
+    )
+    monkeypatch.setenv(
+        "APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD", "secret-fleet-migration-password"
     )
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_HEX", (b"x" * 32).hex())
     monkeypatch.setenv("APPLYPILOT_ROLLBACK_HMAC_KEY_ID", "test-key")
@@ -151,3 +164,4 @@ def test_committed_receipt_uses_forward_v7_containment(
     )
     assert "secret-database-owner-password" not in artifacts_and_logs
     assert "APPLYPILOT_DATABASE_OWNER_PG_PASSWORD" not in os.environ
+    assert "APPLYPILOT_FLEET_MIGRATOR_PG_PASSWORD" not in os.environ

@@ -2,8 +2,8 @@
   "manifest_id": "applypilot-authority-migrator-package-v1",
   "wrappers": {
     "Dockerfile.authority-migrator": "c371f4a01392168c26d6386525e7be8454c8bc42efa8930ba1b4ffb5122d4874",
-    "railway.toml": "59ec663e8c7c7d23a392773f63a0beabd6a1e9ff05db10e93c9fd7dd6cf6e9e3",
-    "scripts/run-private-authority-migrator.py": "efbe5726da06f6ae41d4bdcb0a5f2eb1d0092d4ed75876dc2d5e9e86d5cf8046"
+    "railway.toml": "d347d8bce4b9e6fe10d8f3ebe98f034da08497c1cc43362af4fc667e9c93c570",
+    "scripts/run-private-authority-migrator.py": "6f047c7c5a1f6b65799d1d19f41b3b444ac70b087d09e803787ff2e024afa2e3"
   },
   "migration_manifest": {
     "path": "src/applypilot/fleet/migrations/manifest-v1.json",

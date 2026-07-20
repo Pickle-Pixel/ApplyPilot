@@ -12,11 +12,12 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile.authority-migrator"
 
 [deploy]
-# One-shot migration job: never auto-restart, single replica. The three explicit
+# One-shot migration job: never auto-restart, single replica. The four explicit
 # target parameters are supplied through service variables, not hardcoded here:
 #   AUTHORITY_MIGRATOR_TARGET_DSN       -- the private target DSN (a secret)
+#   AUTHORITY_MIGRATOR_EXPECTED_PRIVATE_HOST -- exact private Railway/Tailscale host
 #   AUTHORITY_MIGRATOR_EXPECTED_DB      -- exact target database name
 #   AUTHORITY_MIGRATOR_EXPECTED_SYSID   -- exact target pg_control system_identifier
-startCommand = "python3 /app/scripts/run-private-authority-migrator.py --target-dsn-env AUTHORITY_MIGRATOR_TARGET_DSN --expected-database-name ${AUTHORITY_MIGRATOR_EXPECTED_DB} --expected-system-identifier ${AUTHORITY_MIGRATOR_EXPECTED_SYSID}"
+startCommand = "python3 /app/scripts/run-private-authority-migrator.py --target-dsn-env AUTHORITY_MIGRATOR_TARGET_DSN --expected-private-host ${AUTHORITY_MIGRATOR_EXPECTED_PRIVATE_HOST} --expected-database-name ${AUTHORITY_MIGRATOR_EXPECTED_DB} --expected-system-identifier ${AUTHORITY_MIGRATOR_EXPECTED_SYSID}"
 restartPolicyType = "never"
 numReplicas = 1

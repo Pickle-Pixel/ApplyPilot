@@ -24,6 +24,7 @@ from psycopg import ClientCursor, sql
 DEFAULT_ROLE = "fleet_worker"
 FLEET_BACKUP_ROLE = "fleet_backup"
 FLEET_MIGRATION_ROLE = "applypilot_fleet_migrator"
+FLEET_MIGRATION_LOGIN_ROLE = "applypilot_fleet_migrator_login"
 _ROLE_LOCK_KEY = "applypilot:fleet-worker-role:v2"
 _CANDIDATE_ROLE_LOCK_KEY = "applypilot:brain-candidate-roles:v1"
 _ARTIFACT_AUTHORITY_ROLE_LOCK_KEY = "applypilot:brain-artifact-authority-roles:v1"
@@ -384,6 +385,7 @@ class BootstrapTopology:
     migrator_role: str
     retired_admin_roles: tuple[str, ...]
     backup_role: str = FLEET_BACKUP_ROLE
+    fleet_migration_login_role: str = FLEET_MIGRATION_LOGIN_ROLE
     expected_service_roles: tuple[str, ...] = ()
     infrastructure_superuser_roles: tuple[str, ...] = ()
 
@@ -546,7 +548,35 @@ def _user_schemas(cur) -> tuple[str, ...]:
     return tuple(_row_value(row, "nspname") for row in cur.fetchall())
 
 
-def _transfer_application_ownership(cur, *, new_owner_role: str, apply: bool = True) -> tuple[dict[str, Any], ...]:
+def _direct_schema_privilege_inventory(
+    cur, *, role_name: str
+) -> tuple[dict[str, str], ...]:
+    cur.execute(
+        "SELECT namespace.nspname AS schema_name,acl.privilege_type "
+        "FROM pg_catalog.pg_namespace namespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) acl "
+        "JOIN pg_catalog.pg_roles role ON role.oid=acl.grantee "
+        "WHERE namespace.nspname<>'information_schema' AND namespace.nspname!~'^pg_' "
+        "AND role.rolname=%s AND acl.privilege_type=ANY(%s) "
+        "ORDER BY namespace.nspname,acl.privilege_type",
+        (role_name, ["USAGE", "CREATE"]),
+    )
+    return tuple(
+        {
+            "schema_name": _row_value(row, "schema_name"),
+            "privilege_type": _row_value(row, "privilege_type", 1),
+        }
+        for row in cur.fetchall()
+    )
+
+
+def _transfer_application_ownership(
+    cur,
+    *,
+    new_owner_role: str,
+    apply: bool = True,
+    preserve_owner_roles: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], ...]:
     """Transfer only application objects, never cluster/system-owned objects."""
     new_owner = sql.Identifier(new_owner_role)
     transferred: list[dict[str, Any]] = []
@@ -571,7 +601,7 @@ def _transfer_application_ownership(cur, *, new_owner_role: str, apply: bool = T
     }
     for row in cur.fetchall():
         owner_name = _row_value(row, "owner_name", 3)
-        if owner_name == new_owner_role:
+        if owner_name == new_owner_role or owner_name in preserve_owner_roles:
             continue
         object_kind = relation_kinds[_row_value(row, "relkind", 2)]
         namespace = _row_value(row, "nspname")
@@ -601,7 +631,7 @@ def _transfer_application_ownership(cur, *, new_owner_role: str, apply: bool = T
     )
     for row in cur.fetchall():
         owner_name = _row_value(row, "owner_name", 4)
-        if owner_name == new_owner_role:
+        if owner_name == new_owner_role or owner_name in preserve_owner_roles:
             continue
         prokind = _row_value(row, "prokind", 2)
         if prokind == "a":
@@ -636,7 +666,7 @@ def _transfer_application_ownership(cur, *, new_owner_role: str, apply: bool = T
     )
     for row in cur.fetchall():
         owner_name = _row_value(row, "owner_name", 3)
-        if owner_name == new_owner_role:
+        if owner_name == new_owner_role or owner_name in preserve_owner_roles:
             continue
         object_kind = "DOMAIN" if _row_value(row, "typtype", 2) == "d" else "TYPE"
         namespace = _row_value(row, "nspname")
@@ -676,11 +706,12 @@ def _transfer_application_ownership(cur, *, new_owner_role: str, apply: bool = T
         schema_name = _row_value(row, "nspname")
         schema = sql.Identifier(schema_name)
         if apply:
-            if owner_name != new_owner_role:
+            if owner_name not in preserve_owner_roles and owner_name != new_owner_role:
                 cur.execute(sql.SQL("ALTER SCHEMA {} OWNER TO {}").format(schema, new_owner))
-            # Ownership privileges are not inherited by members of the owner role.
-            cur.execute(sql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO {}").format(schema, new_owner))
-        if owner_name == new_owner_role:
+            if owner_name not in preserve_owner_roles:
+                # Ownership privileges are not inherited by members of the owner role.
+                cur.execute(sql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO {}").format(schema, new_owner))
+        if owner_name == new_owner_role or owner_name in preserve_owner_roles:
             continue
         transferred.append(
             {
@@ -868,6 +899,7 @@ def _database_inventory(cur, *, role_name: str, manifest: RegrantManifest) -> di
             (
                 manifest.database_owner_role,
                 manifest.backup_role,
+                FLEET_MIGRATION_LOGIN_ROLE,
                 *controller_roles,
                 *verifier_roles,
                 *break_glass_roles,
@@ -2119,6 +2151,23 @@ def _client_scram_verifier(conn, *, role_name: str, password: str) -> str:
 def _require_nonblank_database_owner_password(password: str) -> None:
     if not isinstance(password, str) or not password.strip():
         raise ValueError("database_owner_password must be non-blank")
+
+
+def _require_nonblank_fleet_migration_password(password: str) -> None:
+    if not isinstance(password, str) or not password.strip():
+        raise ValueError("fleet_migration_password must be non-blank")
+
+
+def _require_separate_fleet_migration_password(
+    password: str, *, other_passwords: tuple[str, ...]
+) -> None:
+    if any(
+        isinstance(other, str) and hmac.compare_digest(password, other)
+        for other in other_passwords
+    ):
+        raise ValueError(
+            "fleet_migration_password must be separate from every other bootstrap credential"
+        )
 
 
 def _set_role_password_verifier(cur, *, role_name: str, password_verifier: str) -> None:
@@ -3923,6 +3972,8 @@ def _forward_v7_containment_sql(
             topology.verifier_role,
             topology.migrator_role,
             topology.backup_role,
+            FLEET_MIGRATION_ROLE,
+            topology.fleet_migration_login_role,
             *topology.retired_admin_roles,
         ),
         future_owner_role_names=(
@@ -4592,6 +4643,8 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
         topology.verifier_role,
         topology.migrator_role,
         topology.backup_role,
+        topology.fleet_migration_login_role,
+        FLEET_MIGRATION_ROLE,
         *topology.retired_admin_roles,
         *topology.infrastructure_superuser_roles,
     )
@@ -4603,11 +4656,27 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
         topology.verifier_role,
         topology.migrator_role,
         topology.backup_role,
+        topology.fleet_migration_login_role,
     }
-    if len(permanent_roles) != 5:
-        raise RuntimeError("bootstrap owner/controller/verifier/migrator/backup roles must be distinct")
+    if len(permanent_roles) != 6:
+        raise RuntimeError(
+            "bootstrap owner/controller/verifier/migrator/backup/fleet-migration-login roles "
+            "must be distinct"
+        )
+    if FLEET_MIGRATION_ROLE in (
+        permanent_roles
+        | set(topology.retired_admin_roles)
+        | set(topology.infrastructure_superuser_roles)
+    ):
+        raise RuntimeError(
+            "fixed fleet migration capability must be disjoint from all topology roles"
+        )
     if topology.backup_role != FLEET_BACKUP_ROLE:
         raise RuntimeError(f"bootstrap backup role must be {FLEET_BACKUP_ROLE!r}")
+    if topology.fleet_migration_login_role != FLEET_MIGRATION_LOGIN_ROLE:
+        raise RuntimeError(
+            f"bootstrap fleet migration login must be {FLEET_MIGRATION_LOGIN_ROLE!r}"
+        )
     if not topology.retired_admin_roles:
         raise RuntimeError("bootstrap requires at least one retired provider-admin role")
     if permanent_roles & set(topology.retired_admin_roles):
@@ -4645,6 +4714,25 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
         for row in cur.fetchall()
     )
     role_index = {item["role_name"]: item for item in roles}
+    fleet_migration_capability = role_index.get(FLEET_MIGRATION_ROLE)
+    if fleet_migration_capability is not None and (
+        fleet_migration_capability["can_login"]
+        or fleet_migration_capability["superuser"]
+        or fleet_migration_capability["createdb"]
+        or fleet_migration_capability["createrole"]
+        or fleet_migration_capability["replication"]
+        or fleet_migration_capability["bypassrls"]
+    ):
+        raise RuntimeError("existing fleet migration capability role is login/elevated")
+    if fleet_migration_capability is not None:
+        existing_fleet_migration_edges = _fleet_migration_membership_inventory(
+            cur, login_role=topology.fleet_migration_login_role
+        )
+        if existing_fleet_migration_edges:
+            raise RuntimeError(
+                "existing fleet migration capability memberships require explicit cleanup: "
+                f"{existing_fleet_migration_edges!r}"
+            )
     admin = role_index.get(session_user)
     if not admin or not admin["can_login"] or not admin["superuser"]:
         raise RuntimeError("bootstrap requires a LOGIN SUPERUSER provider-admin session")
@@ -4715,7 +4803,19 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
     if unknown_connect:
         raise RuntimeError("unknown explicit CONNECT dependencies block bootstrap: " + ", ".join(unknown_connect))
 
-    ownership = _transfer_application_ownership(cur, new_owner_role=topology.migrator_role, apply=False)
+    ownership = _transfer_application_ownership(
+        cur,
+        new_owner_role=topology.migrator_role,
+        apply=False,
+        preserve_owner_roles=(FLEET_MIGRATION_ROLE,),
+    )
+    capability_schema_privileges = (
+        _direct_schema_privilege_inventory(
+            cur, role_name=FLEET_MIGRATION_ROLE
+        )
+        if fleet_migration_capability is not None
+        else ()
+    )
     retired_memberships = _retired_membership_inventory(
         cur,
         retired_admin_roles=topology.retired_admin_roles,
@@ -4739,6 +4839,8 @@ def _bootstrap_inventory(cur, *, topology: BootstrapTopology) -> dict[str, Any]:
         "active_services": active_services,
         "direct_connect_before": direct_connect,
         "application_ownership": ownership,
+        "fleet_migration_capability_existed": fleet_migration_capability is not None,
+        "fleet_migration_capability_schema_privileges_before": capability_schema_privileges,
         "retired_admin_memberships_before": retired_memberships,
         "other_connectable_databases": other_databases,
         "cluster_database_names_before": cluster_database_names,
@@ -4752,6 +4854,15 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
         topology.verifier_role: (False, False, False, False, False, False, False),
         topology.controller_role: (True, False, False, False, False, False, False),
         topology.backup_role: (True, False, False, False, False, False, False),
+        topology.fleet_migration_login_role: (
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+        ),
     }
     for role_name, expected in expected_attributes.items():
         cur.execute(
@@ -4777,6 +4888,11 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
         if actual != expected:
             raise RuntimeError(f"bootstrap role attributes invalid for {role_name}: {actual!r}")
     _require_exact_canonical_import_memberships(cur, topology=topology)
+    _validate_fleet_migration_login_boundary(
+        cur,
+        login_role=topology.fleet_migration_login_role,
+        require_password_catalog=True,
+    )
     cur.execute("SELECT to_regclass('public.brain_schema_versions') AS relation")
     if _row_value(cur.fetchone(), "relation") is not None:
         cur.execute(
@@ -4852,6 +4968,7 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
         topology.controller_role,
         topology.verifier_role,
         topology.backup_role,
+        topology.fleet_migration_login_role,
         *topology.infrastructure_superuser_roles,
     }
     if has_public_connect or actual_connect != expected_connect:
@@ -4875,6 +4992,7 @@ def _validate_bootstrap_boundary(cur, *, topology: BootstrapTopology) -> tuple[d
         topology.database_owner_role,
         topology.controller_role,
         topology.backup_role,
+        topology.fleet_migration_login_role,
         *topology.infrastructure_superuser_roles,
     }
     if reconnect != expected_reconnect:
@@ -5326,12 +5444,22 @@ def bootstrap_database_roles(
     backup_password: str,
     *,
     database_owner_password: str,
+    fleet_migration_password: str,
     topology: BootstrapTopology,
     evidence_paths: DurableEvidencePaths,
     install_brain_authority: bool = False,
 ) -> BootstrapReceipt:
     """Perform a fenced role handoff and optional fixed authority install."""
     _require_nonblank_database_owner_password(database_owner_password)
+    _require_nonblank_fleet_migration_password(fleet_migration_password)
+    _require_separate_fleet_migration_password(
+        fleet_migration_password,
+        other_passwords=(
+            controller_password,
+            backup_password,
+            database_owner_password,
+        ),
+    )
     if conn.autocommit:
         raise RuntimeError("atomic bootstrap requires autocommit to be disabled")
     if conn.info.transaction_status.name != "IDLE":
@@ -5345,6 +5473,11 @@ def bootstrap_database_roles(
         conn,
         role_name=topology.database_owner_role,
         password=database_owner_password,
+    )
+    fleet_migration_verifier = _client_scram_verifier(
+        conn,
+        role_name=topology.fleet_migration_login_role,
+        password=fleet_migration_password,
     )
     fence_active = False
     preserve_fence_on_failure = False
@@ -5364,6 +5497,7 @@ def bootstrap_database_roles(
                 topology.controller_role,
                 topology.verifier_role,
                 topology.backup_role,
+                topology.fleet_migration_login_role,
                 *topology.infrastructure_superuser_roles,
             )
             rollback_mode = "forward_v7_containment" if install_brain_authority else "topology_exact"
@@ -5399,6 +5533,17 @@ def bootstrap_database_roles(
                     cur,
                     topology=topology,
                     database_name=inventory["database_name"],
+                )
+                rollback_sql += _fleet_migration_login_rollback_sql(
+                    cur,
+                    topology=topology,
+                    database_name=inventory["database_name"],
+                    capability_existed=inventory[
+                        "fleet_migration_capability_existed"
+                    ],
+                    capability_schema_privileges_before=inventory[
+                        "fleet_migration_capability_schema_privileges_before"
+                    ],
                 )
                 for role_name in (
                     topology.controller_role,
@@ -5443,6 +5588,7 @@ def bootstrap_database_roles(
                     "verifier_role": topology.verifier_role,
                     "migrator_role": topology.migrator_role,
                     "backup_role": topology.backup_role,
+                    "fleet_migration_login_role": topology.fleet_migration_login_role,
                     "retired_admin_roles": topology.retired_admin_roles,
                     "infrastructure_superuser_roles": topology.infrastructure_superuser_roles,
                 },
@@ -5511,7 +5657,11 @@ def bootstrap_database_roles(
                     "NOBYPASSRLS CONNECTION LIMIT 1 PASSWORD {}"
                 ).format(sql.Identifier(topology.backup_role), sql.Literal(backup_verifier))
             )
-            _transfer_application_ownership(cur, new_owner_role=topology.migrator_role)
+            _transfer_application_ownership(
+                cur,
+                new_owner_role=topology.migrator_role,
+                preserve_owner_roles=(FLEET_MIGRATION_ROLE,),
+            )
             database = sql.Identifier(inventory["database_name"])
             cur.execute(
                 sql.SQL("ALTER DATABASE {} OWNER TO {}").format(database, sql.Identifier(topology.database_owner_role))
@@ -5532,6 +5682,8 @@ def bootstrap_database_roles(
                     sql.SQL("REVOKE CONNECT ON DATABASE {} FROM {}").format(database, sql.Identifier(role_name))
                 )
             for role_name in connect_allowlist:
+                if role_name == topology.fleet_migration_login_role:
+                    continue
                 cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(database, sql.Identifier(role_name)))
             for role_name in topology.retired_admin_roles:
                 cur.execute(
@@ -5546,6 +5698,12 @@ def bootstrap_database_roles(
             _reconcile_backup_role_boundary(cur, topology=topology)
             if install_brain_authority:
                 _install_brain_authority_in_transaction(cur, topology=topology)
+            fleet_migration_boundary = _reconcile_fleet_migration_login(
+                cur,
+                database_name=inventory["database_name"],
+                password_verifier=fleet_migration_verifier,
+                login_role=topology.fleet_migration_login_role,
+            )
             _reconcile_backup_role_boundary(cur, topology=topology)
             _validate_other_database_isolation(
                 cur,
@@ -5577,12 +5735,14 @@ def bootstrap_database_roles(
                 "verifier_role": topology.verifier_role,
                 "migrator_role": topology.migrator_role,
                 "backup_role": topology.backup_role,
+                "fleet_migration_login_role": topology.fleet_migration_login_role,
                 "retired_admin_roles": topology.retired_admin_roles,
                 "infrastructure_superuser_roles": topology.infrastructure_superuser_roles,
             },
             inventory={
                 **prepared_inventory,
                 "canonical_import_memberships": canonical_import_memberships,
+                "fleet_migration_login_boundary": fleet_migration_boundary,
                 "backup_role_boundary": backup_boundary,
             },
             effective_connect_grantees=effective,
@@ -5622,6 +5782,7 @@ def upgrade_brain_authority_existing_topology(
     backup_password: str,
     *,
     database_owner_password: str,
+    fleet_migration_password: str,
     topology: BootstrapTopology,
     evidence_paths: DurableEvidencePaths,
     expected_database_name: str,
@@ -5635,6 +5796,11 @@ def upgrade_brain_authority_existing_topology(
     earlier role handoff before the fixed authority schema was introduced.
     """
     _require_nonblank_database_owner_password(database_owner_password)
+    _require_nonblank_fleet_migration_password(fleet_migration_password)
+    _require_separate_fleet_migration_password(
+        fleet_migration_password,
+        other_passwords=(backup_password, database_owner_password),
+    )
     if conn.autocommit:
         raise RuntimeError("atomic authority upgrade requires autocommit to be disabled")
     if conn.info.transaction_status.name != "IDLE":
@@ -5647,6 +5813,11 @@ def upgrade_brain_authority_existing_topology(
         conn,
         role_name=topology.database_owner_role,
         password=database_owner_password,
+    )
+    fleet_migration_verifier = _client_scram_verifier(
+        conn,
+        role_name=topology.fleet_migration_login_role,
+        password=fleet_migration_password,
     )
     lock_acquired = False
     try:
@@ -5692,6 +5863,7 @@ def upgrade_brain_authority_existing_topology(
                     "verifier_role": topology.verifier_role,
                     "migrator_role": topology.migrator_role,
                     "backup_role": topology.backup_role,
+                    "fleet_migration_login_role": topology.fleet_migration_login_role,
                     "retired_admin_roles": topology.retired_admin_roles,
                     "infrastructure_superuser_roles": topology.infrastructure_superuser_roles,
                 },
@@ -5712,6 +5884,12 @@ def upgrade_brain_authority_existing_topology(
             )
             _reconcile_backup_role_boundary(cur, topology=topology)
             candidate_roles = _install_brain_authority_in_transaction(cur, topology=topology)
+            fleet_migration_boundary = _reconcile_fleet_migration_login(
+                cur,
+                database_name=inventory["database_name"],
+                password_verifier=fleet_migration_verifier,
+                login_role=topology.fleet_migration_login_role,
+            )
             _reconcile_backup_role_boundary(cur, topology=topology)
             _existing_authority_topology_inventory(
                 cur,
@@ -5722,6 +5900,11 @@ def upgrade_brain_authority_existing_topology(
             )
             canonical_import_memberships = _require_exact_canonical_import_memberships(
                 cur, topology=topology
+            )
+            fleet_migration_boundary = _validate_fleet_migration_login_boundary(
+                cur,
+                login_role=topology.fleet_migration_login_role,
+                require_password_catalog=True,
             )
             backup_boundary = _validate_backup_role_boundary(cur, topology=topology)
         conn.commit()
@@ -5737,6 +5920,7 @@ def upgrade_brain_authority_existing_topology(
                     "reconciled_at": candidate_roles.reconciled_at,
                 },
                 "canonical_import_memberships": canonical_import_memberships,
+                "fleet_migration_login_boundary": fleet_migration_boundary,
                 "backup_role_boundary": backup_boundary,
             },
             effective_connect_grantees=(),
@@ -5772,10 +5956,14 @@ def _existing_authority_topology_inventory(
         topology.controller_role,
         topology.verifier_role,
         topology.migrator_role,
+        FLEET_MIGRATION_ROLE,
         *topology.retired_admin_roles,
         *topology.infrastructure_superuser_roles,
     )
-    role_names = (*core_role_names, *((topology.backup_role,) if require_v7 else ()))
+    role_names = (
+        *core_role_names,
+        *((topology.backup_role, topology.fleet_migration_login_role) if require_v7 else ()),
+    )
     if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]{0,62}", name) for name in role_names):
         raise ValueError("authority upgrade role names must be plain PostgreSQL identifiers")
     permanent_roles = {
@@ -5784,11 +5972,27 @@ def _existing_authority_topology_inventory(
         topology.verifier_role,
         topology.migrator_role,
         topology.backup_role,
+        topology.fleet_migration_login_role,
     }
-    if len(permanent_roles) != 5:
-        raise RuntimeError("authority upgrade owner/controller/verifier/migrator/backup roles must be distinct")
+    if len(permanent_roles) != 6:
+        raise RuntimeError(
+            "authority upgrade owner/controller/verifier/migrator/backup/"
+            "fleet-migration-login roles must be distinct"
+        )
+    if FLEET_MIGRATION_ROLE in (
+        permanent_roles
+        | set(topology.retired_admin_roles)
+        | set(topology.infrastructure_superuser_roles)
+    ):
+        raise RuntimeError(
+            "fixed fleet migration capability must be disjoint from all topology roles"
+        )
     if topology.backup_role != FLEET_BACKUP_ROLE:
         raise RuntimeError(f"authority upgrade backup role must be {FLEET_BACKUP_ROLE!r}")
+    if topology.fleet_migration_login_role != FLEET_MIGRATION_LOGIN_ROLE:
+        raise RuntimeError(
+            f"authority upgrade fleet migration login must be {FLEET_MIGRATION_LOGIN_ROLE!r}"
+        )
     if not topology.retired_admin_roles:
         raise RuntimeError("authority upgrade requires at least one retired provider-admin role")
     if permanent_roles & set(topology.retired_admin_roles):
@@ -5832,9 +6036,17 @@ def _existing_authority_topology_inventory(
     if missing:
         raise RuntimeError("authority upgrade topology roles do not exist: " + ", ".join(missing))
     if not require_v7:
-        cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (topology.backup_role,))
-        if cur.fetchone() is not None:
-            raise RuntimeError("authority upgrade requires fleet_backup to be absent before atomic provisioning")
+        cur.execute(
+            "SELECT rolname FROM pg_roles WHERE rolname=ANY(%s) ORDER BY rolname",
+            ([topology.backup_role, topology.fleet_migration_login_role],),
+        )
+        unexpected_new_roles = [_row_value(row, "rolname") for row in cur.fetchall()]
+        if unexpected_new_roles:
+            raise RuntimeError(
+                "authority upgrade requires fleet_backup and the dedicated fleet "
+                "migration login to be absent before atomic provisioning: "
+                + ", ".join(unexpected_new_roles)
+            )
     admin = roles[session_user]
     if not bool(_row_value(admin, "rolcanlogin", 1)) or not bool(_row_value(admin, "rolsuper", 3)):
         raise RuntimeError("authority upgrade requires a LOGIN SUPERUSER provider-admin session")
@@ -5843,6 +6055,7 @@ def _existing_authority_topology_inventory(
         topology.controller_role: (True, None, False, False, False, False, False),
         topology.verifier_role: (False, None, False, False, False, False, False),
         topology.migrator_role: (False, None, False, False, False, False, False),
+        FLEET_MIGRATION_ROLE: (False, None, False, False, False, False, False),
     }
     attribute_names = (
         "rolcanlogin", "rolinherit", "rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls"
@@ -5922,6 +6135,14 @@ def _existing_authority_topology_inventory(
         if not require_v7
         else ()
     )
+    fleet_migration_memberships = _fleet_migration_membership_inventory(
+        cur, login_role=topology.fleet_migration_login_role
+    )
+    if not require_v7 and fleet_migration_memberships:
+        raise RuntimeError(
+            "existing fleet migration capability memberships block authority upgrade: "
+            f"{fleet_migration_memberships!r}"
+        )
     if not require_v7:
         _reject_retired_role_ownership(cur, retired_admin_roles=topology.retired_admin_roles)
         _validate_existing_retired_memberships(
@@ -5941,12 +6162,35 @@ def _existing_authority_topology_inventory(
             cur, retired_admin_roles=topology.retired_admin_roles
         )
         _require_exact_canonical_import_memberships(cur, topology=topology)
+        _validate_fleet_migration_login_boundary(
+            cur,
+            login_role=topology.fleet_migration_login_role,
+            require_password_catalog=True,
+        )
         expected_final_attributes = {
             topology.database_owner_role: (True, False, False, False, False, False, False),
             topology.controller_role: (True, False, False, False, False, False, False),
             topology.verifier_role: (False, False, False, False, False, False, False),
             topology.migrator_role: (False, False, False, False, False, False, False),
             topology.backup_role: (True, False, False, False, False, False, False),
+            topology.fleet_migration_login_role: (
+                True,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+            ),
+            FLEET_MIGRATION_ROLE: (
+                False,
+                bool(_row_value(roles[FLEET_MIGRATION_ROLE], "rolinherit", 2)),
+                False,
+                False,
+                False,
+                False,
+                False,
+            ),
         }
         for role_name, expected in expected_final_attributes.items():
             actual = tuple(
@@ -5964,6 +6208,7 @@ def _existing_authority_topology_inventory(
         "retired_admin_memberships_before": memberships,
         "retired_admin_default_acl_dependencies": default_acl_dependencies,
         "legacy_capability_memberships_before": legacy_capability_memberships,
+        "fleet_migration_memberships": fleet_migration_memberships,
         "database_owner_password_present": _role_password_present(
             cur, topology.database_owner_role
         ),
@@ -6226,6 +6471,538 @@ def _reconcile_canonical_import_memberships(
     return _require_exact_canonical_import_memberships(cur, topology=topology)
 
 
+def _fleet_migration_membership_inventory(
+    cur, *, login_role: str = FLEET_MIGRATION_LOGIN_ROLE
+) -> tuple[dict[str, Any], ...]:
+    """Return every membership touching the fixed fleet migration capability."""
+    cur.execute(
+        "SELECT parent.rolname AS parent_role,member.rolname AS member_role,"
+        "grantor.rolname AS grantor_role,grantor.oid AS grantor_oid,"
+        "grantor.rolsuper AS grantor_is_superuser,membership.admin_option,"
+        "membership.inherit_option,membership.set_option "
+        "FROM pg_catalog.pg_auth_members membership "
+        "JOIN pg_catalog.pg_roles parent ON parent.oid=membership.roleid "
+        "JOIN pg_catalog.pg_roles member ON member.oid=membership.member "
+        "JOIN pg_catalog.pg_roles grantor ON grantor.oid=membership.grantor "
+        "WHERE parent.rolname=ANY(%s) OR member.rolname=ANY(%s) "
+        "ORDER BY parent.rolname,member.rolname,grantor.oid",
+        (
+            [FLEET_MIGRATION_ROLE, login_role],
+            [FLEET_MIGRATION_ROLE, login_role],
+        ),
+    )
+    return tuple(
+        {
+            "parent_role": _row_value(row, "parent_role"),
+            "member_role": _row_value(row, "member_role", 1),
+            "grantor_role": _row_value(row, "grantor_role", 2),
+            "grantor_oid": int(_row_value(row, "grantor_oid", 3)),
+            "grantor_is_superuser": bool(_row_value(row, "grantor_is_superuser", 4)),
+            "admin_option": bool(_row_value(row, "admin_option", 5)),
+            "inherit_option": bool(_row_value(row, "inherit_option", 6)),
+            "set_option": bool(_row_value(row, "set_option", 7)),
+        }
+        for row in cur.fetchall()
+    )
+
+
+def _fleet_migration_login_rollback_sql(
+    cur,
+    *,
+    topology: BootstrapTopology,
+    database_name: str,
+    capability_existed: bool,
+    capability_schema_privileges_before: tuple[dict[str, str], ...],
+) -> str:
+    """Remove the new LOGIN and restore only capability grants added by bootstrap."""
+    login_role = topology.fleet_migration_login_role
+    statements = [
+        _conditional_role_pair_statement(
+            cur,
+            first_role=FLEET_MIGRATION_ROLE,
+            second_role=login_role,
+            statement=sql.SQL("REVOKE {} FROM {} CASCADE")
+            .format(
+                sql.Identifier(FLEET_MIGRATION_ROLE),
+                sql.Identifier(login_role),
+            )
+            .as_string(cur.connection),
+        ),
+    ]
+    for statement in (
+        sql.SQL("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE {} FROM {}").format(
+            sql.Identifier(database_name), sql.Identifier(login_role)
+        ),
+        sql.SQL("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM {}").format(
+            sql.Identifier(login_role)
+        ),
+        sql.SQL("ALTER ROLE {} IN DATABASE {} RESET ALL").format(
+            sql.Identifier(login_role), sql.Identifier(database_name)
+        ),
+        sql.SQL("DROP ROLE {}").format(sql.Identifier(login_role)),
+    ):
+        statements.append(
+            _conditional_role_statement(
+                cur,
+                role_name=login_role,
+                statement=statement.as_string(cur.connection),
+            )
+        )
+
+    before = {
+        (item["schema_name"], item["privilege_type"])
+        for item in capability_schema_privileges_before
+    }
+    for schema_name in _user_schemas(cur):
+        for privilege in ("USAGE", "CREATE"):
+            if capability_existed and (schema_name, privilege) in before:
+                continue
+            statement = sql.SQL("REVOKE {} ON SCHEMA {} FROM {}").format(
+                sql.SQL(privilege),
+                sql.Identifier(schema_name),
+                sql.Identifier(FLEET_MIGRATION_ROLE),
+            )
+            statements.append(
+                _conditional_role_statement(
+                    cur,
+                    role_name=FLEET_MIGRATION_ROLE,
+                    statement=statement.as_string(cur.connection),
+                )
+            )
+    if not capability_existed:
+        statements.append(
+            _conditional_role_statement(
+                cur,
+                role_name=FLEET_MIGRATION_ROLE,
+                statement=sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} "
+                    "GRANT EXECUTE ON FUNCTIONS TO PUBLIC"
+                )
+                .format(sql.Identifier(FLEET_MIGRATION_ROLE))
+                .as_string(cur.connection),
+            )
+        )
+        statements.append(
+            _conditional_role_statement(
+                cur,
+                role_name=FLEET_MIGRATION_ROLE,
+                statement=sql.SQL("DROP ROLE {}")
+                .format(sql.Identifier(FLEET_MIGRATION_ROLE))
+                .as_string(cur.connection),
+            )
+        )
+    return "\n".join(statements) + "\n"
+
+
+def _require_exact_fleet_migration_membership(
+    cur, *, login_role: str = FLEET_MIGRATION_LOGIN_ROLE
+) -> tuple[dict[str, Any], ...]:
+    rows = _fleet_migration_membership_inventory(cur, login_role=login_role)
+    if not (
+        len(rows) == 1
+        and rows[0]["parent_role"] == FLEET_MIGRATION_ROLE
+        and rows[0]["member_role"] == login_role
+        and rows[0]["grantor_oid"] == 10
+        and rows[0]["grantor_is_superuser"]
+        and not rows[0]["admin_option"]
+        and not rows[0]["inherit_option"]
+        and rows[0]["set_option"]
+    ):
+        raise RuntimeError(
+            "fleet migration membership mismatch: expected the sole OID-10 SET-only "
+            f"{FLEET_MIGRATION_ROLE!r} edge to {login_role!r}, got {rows!r}"
+        )
+    return rows
+
+
+def _validate_fleet_migration_login_boundary(
+    cur,
+    *,
+    login_role: str = FLEET_MIGRATION_LOGIN_ROLE,
+    require_password_catalog: bool,
+) -> dict[str, Any]:
+    """Prove the dedicated fleet migration LOGIN/capability split exactly."""
+    cur.execute(
+        "SELECT rolname,rolcanlogin,rolinherit,rolsuper,rolcreatedb,rolcreaterole,"
+        "rolreplication,rolbypassrls,rolconnlimit FROM pg_catalog.pg_roles "
+        "WHERE rolname=ANY(%s) ORDER BY rolname",
+        ([FLEET_MIGRATION_ROLE, login_role],),
+    )
+    roles = {_row_value(row, "rolname"): row for row in cur.fetchall()}
+    if set(roles) != {FLEET_MIGRATION_ROLE, login_role}:
+        raise RuntimeError("fixed fleet migration capability/login roles are missing")
+    login = roles[login_role]
+    login_actual = tuple(
+        _row_value(login, name, index + 1)
+        for index, name in enumerate(
+            (
+                "rolcanlogin",
+                "rolinherit",
+                "rolsuper",
+                "rolcreatedb",
+                "rolcreaterole",
+                "rolreplication",
+                "rolbypassrls",
+                "rolconnlimit",
+            )
+        )
+    )
+    login_expected = (True, False, False, False, False, False, False, 1)
+    if login_actual != login_expected:
+        raise RuntimeError(
+            "fleet migration login attributes mismatch: "
+            f"expected={login_expected!r}, actual={login_actual!r}"
+        )
+    capability = roles[FLEET_MIGRATION_ROLE]
+    if bool(_row_value(capability, "rolcanlogin", 1)) or any(
+        bool(_row_value(capability, name, index))
+        for index, name in enumerate(
+            ("rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls"),
+            start=3,
+        )
+    ):
+        raise RuntimeError("fleet migration capability role is login/elevated")
+    memberships = _require_exact_fleet_migration_membership(
+        cur, login_role=login_role
+    )
+    direct_acls = _direct_acl_snapshot(cur, grantee=login_role)
+    expected_database_acl = (
+        {
+            "object_kind": "database",
+            "schema_name": cur.connection.info.dbname,
+            "object_name": None,
+            "arguments": None,
+            "privilege": "CONNECT",
+            "grantable": False,
+        },
+    )
+    if direct_acls != expected_database_acl:
+        raise RuntimeError(
+            "fleet migration login direct object ACLs must contain only target CONNECT: "
+            f"{direct_acls!r}"
+        )
+    cur.execute(
+        "SELECT database.datname,acl.privilege_type,acl.is_grantable "
+        "FROM pg_catalog.pg_database database "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(database.datacl) acl "
+        "JOIN pg_catalog.pg_roles role ON role.oid=acl.grantee "
+        "WHERE role.rolname=%s ORDER BY database.datname,acl.privilege_type",
+        (login_role,),
+    )
+    database_acls = tuple(
+        (
+            _row_value(row, "datname"),
+            _row_value(row, "privilege_type", 1),
+            bool(_row_value(row, "is_grantable", 2)),
+        )
+        for row in cur.fetchall()
+    )
+    if database_acls != ((cur.connection.info.dbname, "CONNECT", False),):
+        raise RuntimeError(
+            "fleet migration login database ACL must be exact target CONNECT: "
+            f"{database_acls!r}"
+        )
+    cur.execute(
+        "SELECT database.datname FROM pg_catalog.pg_database database "
+        "WHERE database.datallowconn AND NOT database.datistemplate "
+        "AND database.datname<>pg_catalog.current_database() "
+        "AND pg_catalog.has_database_privilege(%s,database.oid,'CONNECT') "
+        "ORDER BY database.datname",
+        (login_role,),
+    )
+    other_database_routes = tuple(_row_value(row, "datname") for row in cur.fetchall())
+    if other_database_routes:
+        raise RuntimeError(
+            "fleet migration login can connect to databases outside the pinned target: "
+            f"{other_database_routes!r}"
+        )
+    cur.execute(
+        "SELECT namespace.nspname,relation.relname,attribute.attname,acl.privilege_type "
+        "FROM pg_catalog.pg_attribute attribute "
+        "JOIN pg_catalog.pg_class relation ON relation.oid=attribute.attrelid "
+        "JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) acl "
+        "JOIN pg_catalog.pg_roles role ON role.oid=acl.grantee "
+        "WHERE role.rolname=%s ORDER BY namespace.nspname,relation.relname,"
+        "attribute.attnum,acl.privilege_type",
+        (login_role,),
+    )
+    direct_columns = tuple(cur.fetchall())
+    if direct_columns:
+        raise RuntimeError(
+            "fleet migration login must not hold direct column ACLs: "
+            f"{direct_columns!r}"
+        )
+    default_acls, _default_scopes = _default_acl_snapshot(cur, grantee=login_role)
+    if default_acls:
+        raise RuntimeError(
+            "fleet migration login must not receive default ACL privileges: "
+            f"{default_acls!r}"
+        )
+    cur.execute(
+        "SELECT routine.oid='pg_catalog.pg_control_system()'::pg_catalog.regprocedure AS allowed_identity,"
+        "acl.privilege_type,acl.is_grantable "
+        "FROM pg_catalog.pg_proc routine "
+        "JOIN pg_catalog.pg_namespace namespace ON namespace.oid=routine.pronamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(routine.proacl) acl "
+        "JOIN pg_catalog.pg_roles role ON role.oid=acl.grantee "
+        "WHERE role.rolname=%s "
+        "ORDER BY namespace.nspname,routine.proname,routine.oid,acl.privilege_type",
+        (login_role,),
+    )
+    direct_routines = tuple(
+        (
+            bool(_row_value(row, "allowed_identity")),
+            _row_value(row, "privilege_type", 1),
+            bool(_row_value(row, "is_grantable", 2)),
+        )
+        for row in cur.fetchall()
+    )
+    if direct_routines != ((True, "EXECUTE", False),):
+        raise RuntimeError(
+            "fleet migration login direct routine ACL must be pg_control_system only: "
+            f"{direct_routines!r}"
+        )
+    cur.execute(
+        "SELECT count(*) AS count FROM ("
+        "SELECT acl.grantee FROM pg_catalog.pg_namespace object "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(object.nspacl) acl "
+        "WHERE object.nspname~'^pg_' UNION ALL "
+        "SELECT acl.grantee FROM pg_catalog.pg_class object "
+        "JOIN pg_catalog.pg_namespace namespace ON namespace.oid=object.relnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(object.relacl) acl "
+        "WHERE namespace.nspname~'^pg_' UNION ALL "
+        "SELECT acl.grantee FROM pg_catalog.pg_type object "
+        "JOIN pg_catalog.pg_namespace namespace ON namespace.oid=object.typnamespace "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(object.typacl) acl "
+        "WHERE namespace.nspname~'^pg_' UNION ALL "
+        "SELECT acl.grantee FROM pg_catalog.pg_parameter_acl object "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(object.paracl) acl UNION ALL "
+        "SELECT acl.grantee FROM pg_catalog.pg_largeobject_metadata object "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(object.lomacl) acl"
+        ") direct JOIN pg_catalog.pg_roles role ON role.oid=direct.grantee "
+        "WHERE role.rolname=%s",
+        (login_role,),
+    )
+    if int(_row_value(cur.fetchone(), "count")) != 0:
+        raise RuntimeError("fleet migration login has forbidden direct system-object ACLs")
+    cur.execute(
+        "SELECT dependency.classid::pg_catalog.regclass::pg_catalog.text AS class_name,"
+        "dependency.objid FROM pg_catalog.pg_shdepend dependency "
+        "JOIN pg_catalog.pg_roles role ON role.oid=dependency.refobjid "
+        "WHERE dependency.refclassid='pg_catalog.pg_authid'::pg_catalog.regclass "
+        "AND dependency.deptype='o' AND role.rolname=%s "
+        "ORDER BY dependency.classid,dependency.objid LIMIT 1",
+        (login_role,),
+    )
+    if cur.fetchone() is not None:
+        raise RuntimeError("fleet migration login must not own database objects")
+    cur.execute(
+        "SELECT pg_catalog.has_database_privilege(%s,pg_catalog.current_database(),'CONNECT') AS connect,"
+        "pg_catalog.has_database_privilege(%s,pg_catalog.current_database(),'CREATE') AS create,"
+        "pg_catalog.has_database_privilege(%s,pg_catalog.current_database(),'TEMPORARY') AS temporary,"
+        "pg_catalog.has_function_privilege(%s,'pg_catalog.pg_control_system()','EXECUTE') AS target_read",
+        (login_role, login_role, login_role, login_role),
+    )
+    privileges = cur.fetchone()
+    if tuple(
+        bool(_row_value(privileges, name, index))
+        for index, name in enumerate(("connect", "create", "temporary", "target_read"))
+    ) != (True, False, False, True):
+        raise RuntimeError("fleet migration login direct target privileges are not CONNECT/read-only")
+    cur.execute(
+        "SELECT database.datname AS database_name,value.setting "
+        "FROM pg_catalog.pg_db_role_setting settings "
+        "JOIN pg_catalog.pg_roles role ON role.oid=settings.setrole "
+        "LEFT JOIN pg_catalog.pg_database database ON database.oid=settings.setdatabase "
+        "CROSS JOIN LATERAL pg_catalog.unnest(settings.setconfig) value(setting) "
+        "WHERE role.rolname=%s ORDER BY database.datname NULLS FIRST,value.setting",
+        (login_role,),
+    )
+    settings = tuple(
+        (
+            _row_value(row, "database_name"),
+            _row_value(row, "setting", 1),
+        )
+        for row in cur.fetchall()
+    )
+    expected_settings = ((cur.connection.info.dbname, "search_path=pg_catalog, pg_temp"),)
+    if settings != expected_settings:
+        raise RuntimeError(
+            "fleet migration login role settings mismatch: "
+            f"expected={expected_settings!r}, actual={settings!r}"
+        )
+    if require_password_catalog:
+        cur.execute(
+            "SELECT rolpassword LIKE 'SCRAM-SHA-256$%%' AS scram,"
+            "(rolvaliduntil IS NULL OR rolvaliduntil='infinity'::pg_catalog.timestamptz) AS no_expiry "
+            "FROM pg_catalog.pg_authid WHERE rolname=%s",
+            (login_role,),
+        )
+        password = cur.fetchone()
+        if not bool(_row_value(password, "scram")) or not bool(
+            _row_value(password, "no_expiry", 1)
+        ):
+            raise RuntimeError(
+                "fleet migration login must use a non-expiring SCRAM verifier"
+            )
+    return {
+        "login_role": login_role,
+        "capability_role": FLEET_MIGRATION_ROLE,
+        "memberships": memberships,
+        "connection_limit": 1,
+        "owned_objects": 0,
+        "role_settings": settings,
+        "pg_control_system_execute": True,
+    }
+
+
+def validate_fleet_migration_principal(conn) -> dict[str, Any]:
+    """Validate a freshly authenticated dedicated fleet-migration connection.
+
+    The read-only gate deliberately runs before ``SET ROLE`` or any migration
+    lock/DDL. A provider superuser can assume the capability role, but it can
+    never pass this session-identity boundary.
+    """
+    if conn.info.transaction_status.name != "IDLE":
+        raise RuntimeError("fleet migration identity validation requires an idle connection")
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT session_user AS session_name,current_user AS current_name,"
+            "pg_catalog.current_database() AS database_name"
+        )
+        identity = cur.fetchone()
+        if (
+            _row_value(identity, "session_name") != FLEET_MIGRATION_LOGIN_ROLE
+            or _row_value(identity, "current_name", 1) != FLEET_MIGRATION_LOGIN_ROLE
+        ):
+            raise RuntimeError(
+                "fleet migration DSN must authenticate as the fixed dedicated login"
+            )
+        _require_pg18_authority_catalog(cur)
+        cur.execute("SET LOCAL search_path=pg_catalog")
+        boundary = _validate_fleet_migration_login_boundary(
+            cur,
+            login_role=FLEET_MIGRATION_LOGIN_ROLE,
+            require_password_catalog=False,
+        )
+    return {
+        **boundary,
+        "session_user": FLEET_MIGRATION_LOGIN_ROLE,
+        "current_user": FLEET_MIGRATION_LOGIN_ROLE,
+        "database_name": _row_value(identity, "database_name", 2),
+    }
+
+
+def _reconcile_fleet_migration_login(
+    cur,
+    *,
+    database_name: str,
+    password_verifier: str,
+    login_role: str = FLEET_MIGRATION_LOGIN_ROLE,
+) -> dict[str, Any]:
+    """Create/reconcile the fixed LOGIN with one non-inheriting SET edge."""
+    cur.execute("SELECT rolname,rolsuper FROM pg_catalog.pg_roles WHERE oid=10")
+    bootstrap_role = cur.fetchone()
+    if bootstrap_role is None or not bool(_row_value(bootstrap_role, "rolsuper", 1)):
+        raise RuntimeError("fleet migration membership grantor OID 10 must remain a superuser")
+    grantor = sql.Identifier(_row_value(bootstrap_role, "rolname"))
+    if not _role_exists(cur, FLEET_MIGRATION_ROLE):
+        cur.execute(
+            sql.SQL(
+                "CREATE ROLE {} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS"
+            ).format(sql.Identifier(FLEET_MIGRATION_ROLE))
+        )
+    else:
+        cur.execute(
+            sql.SQL(
+                "ALTER ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS"
+            ).format(sql.Identifier(FLEET_MIGRATION_ROLE))
+        )
+    if not _role_exists(cur, login_role):
+        cur.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1"
+            ).format(sql.Identifier(login_role))
+        )
+    else:
+        cur.execute(
+            sql.SQL(
+                "ALTER ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1"
+            ).format(sql.Identifier(login_role))
+        )
+    _set_role_password_verifier(
+        cur, role_name=login_role, password_verifier=password_verifier
+    )
+    cur.execute(
+        sql.SQL("ALTER ROLE {} VALID UNTIL 'infinity'").format(sql.Identifier(login_role))
+    )
+    _reconcile_role_memberships(cur, role_name=FLEET_MIGRATION_ROLE)
+    _reconcile_role_memberships(cur, role_name=login_role)
+    cur.execute(
+        sql.SQL(
+            "GRANT {} TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE GRANTED BY {}"
+        ).format(
+            sql.Identifier(FLEET_MIGRATION_ROLE),
+            sql.Identifier(login_role),
+            grantor,
+        )
+    )
+    _reconcile_role_memberships(
+        cur,
+        role_name=FLEET_MIGRATION_ROLE,
+        approved_grantee_roles=(login_role,),
+    )
+    _reconcile_role_memberships(
+        cur,
+        role_name=login_role,
+        approved_parent_roles=(FLEET_MIGRATION_ROLE,),
+    )
+    database = sql.Identifier(database_name)
+    login = sql.Identifier(login_role)
+    cur.execute(sql.SQL("REVOKE ALL PRIVILEGES ON DATABASE {} FROM {}").format(database, login))
+    cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(database, login))
+    cur.execute(
+        sql.SQL("GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO {}").format(login)
+    )
+    cur.execute(
+        "SELECT settings.setdatabase,database.datname FROM pg_catalog.pg_db_role_setting settings "
+        "LEFT JOIN pg_catalog.pg_database database ON database.oid=settings.setdatabase "
+        "JOIN pg_catalog.pg_roles role ON role.oid=settings.setrole WHERE role.rolname=%s "
+        "ORDER BY settings.setdatabase",
+        (login_role,),
+    )
+    for setting in cur.fetchall():
+        setting_database = _row_value(setting, "datname", 1)
+        if setting_database is None:
+            cur.execute(sql.SQL("ALTER ROLE {} RESET ALL").format(login))
+        else:
+            cur.execute(
+                sql.SQL("ALTER ROLE {} IN DATABASE {} RESET ALL").format(
+                    login, sql.Identifier(setting_database)
+                )
+            )
+    cur.execute(
+        sql.SQL("ALTER ROLE {} IN DATABASE {} SET search_path TO pg_catalog, pg_temp").format(
+            login, database
+        )
+    )
+    if "public" not in _user_schemas(cur):
+        raise RuntimeError("fleet migration requires the public application schema")
+    cur.execute(
+        sql.SQL("GRANT USAGE, CREATE ON SCHEMA public TO {}").format(
+            sql.Identifier(FLEET_MIGRATION_ROLE)
+        )
+    )
+    return _validate_fleet_migration_login_boundary(
+        cur, login_role=login_role, require_password_catalog=True
+    )
+
+
 def _existing_capability_memberships(
     cur,
     *,
@@ -6415,6 +7192,13 @@ def ensure_fleet_worker_role(
                     cur,
                     topology=topology,
                 )
+                fleet_migration_boundary_preflight = (
+                    _validate_fleet_migration_login_boundary(
+                        cur,
+                        login_role=topology.fleet_migration_login_role,
+                        require_password_catalog=True,
+                    )
+                )
             except RuntimeError as exc:
                 raise RuntimeError(
                     "complete role bootstrap or existing-topology authority upgrade before worker reconciliation: "
@@ -6446,6 +7230,9 @@ def ensure_fleet_worker_role(
                 "worker_id": effective_worker,
                 "contract": effective_contract,
                 "backup_role_boundary_preflight": backup_boundary_preflight,
+                "fleet_migration_login_boundary_preflight": (
+                    fleet_migration_boundary_preflight
+                ),
                 "prepared_at": prepared_at,
             }
             _write_preparation_evidence(
@@ -6520,6 +7307,13 @@ def ensure_fleet_worker_role(
                 topology=topology,
             )
             evidence_inventory["backup_role_boundary"] = backup_boundary
+            evidence_inventory["fleet_migration_login_boundary"] = (
+                _validate_fleet_migration_login_boundary(
+                    cur,
+                    login_role=topology.fleet_migration_login_role,
+                    require_password_catalog=True,
+                )
+            )
         conn.commit()
         return RoleReconciliationReceipt(
             role_name=role,

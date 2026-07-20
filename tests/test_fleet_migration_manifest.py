@@ -1121,12 +1121,68 @@ def _load_authority_migrator_wrapper():
 
 def test_private_wrapper_applies_to_explicit_target_and_never_leaks(migration_pg, capsys, monkeypatch):
     wrapper = _load_authority_migrator_wrapper()
+    login_role = pg_roles.FLEET_MIGRATION_LOGIN_ROLE
+    login_password = "disposable-separated-fleet-migrator-password"
+    public_database_privileges: tuple[str, ...] = ()
     # Start from a clean authority slate: the migration_pg fixture rebuilds the
     # ledger per test but leaves migration-created relations behind, and the
     # first migration's CREATE TABLE is not idempotent.
-    with psycopg.connect(migration_pg, autocommit=True) as admin:
+    with psycopg.connect(migration_pg, autocommit=True, row_factory=dict_row) as admin:
+        database_name = conninfo_to_dict(migration_pg)["dbname"]
+        public_database_privileges = tuple(
+            row["privilege_type"]
+            for row in admin.execute(
+                "SELECT acl.privilege_type FROM pg_database database "
+                "CROSS JOIN LATERAL aclexplode(COALESCE(database.datacl,"
+                "acldefault('d',database.datdba))) acl "
+                "WHERE database.datname=current_database() AND acl.grantee=0 "
+                "ORDER BY acl.privilege_type"
+            ).fetchall()
+        )
+        admin.execute(
+            sql.SQL(
+                "REVOKE CONNECT,CREATE,TEMPORARY ON DATABASE {} FROM PUBLIC"
+            ).format(sql.Identifier(database_name))
+        )
         admin.execute("DROP TABLE IF EXISTS fleet_application_alias CASCADE")
         admin.execute("DROP TABLE IF EXISTS fleet_application_authority CASCADE")
+        if admin.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname=%s", (login_role,)
+        ).fetchone() is not None:
+            admin.execute(sql.SQL("DROP OWNED BY {} CASCADE").format(sql.Identifier(login_role)))
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(login_role)))
+        admin.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 1 PASSWORD {}"
+            ).format(sql.Identifier(login_role), sql.Literal(login_password))
+        )
+        admin.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(database_name),
+                sql.Identifier(login_role),
+            )
+        )
+        admin.execute(
+            sql.SQL("GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO {}").format(
+                sql.Identifier(login_role)
+            )
+        )
+        admin.execute(
+            sql.SQL("ALTER ROLE {} IN DATABASE {} SET search_path TO pg_catalog, pg_temp").format(
+                sql.Identifier(login_role),
+                sql.Identifier(conninfo_to_dict(migration_pg)["dbname"]),
+            )
+        )
+        grantor = admin.execute(
+            "SELECT rolname FROM pg_roles WHERE oid=10"
+        ).fetchone()["rolname"]
+        admin.execute(
+            sql.SQL(
+                "GRANT applypilot_fleet_migrator TO {} "
+                "WITH ADMIN FALSE, INHERIT FALSE, SET TRUE GRANTED BY {}"
+            ).format(sql.Identifier(login_role), sql.Identifier(grantor))
+        )
     with psycopg.connect(migration_pg, row_factory=dict_row) as conn:
         identity = conn.execute(
             "SELECT current_database() AS db,"
@@ -1135,27 +1191,66 @@ def test_private_wrapper_applies_to_explicit_target_and_never_leaks(migration_pg
     password = psycopg.conninfo.conninfo_to_dict(migration_pg).get("password")
     assert password, "the disposable test DSN is expected to carry a password to redact"
 
-    monkeypatch.setenv("AUTHORITY_MIGRATOR_IT_DSN", migration_pg)
+    login_params = conninfo_to_dict(migration_pg)
+    login_params.update(
+        user=login_role,
+        password=login_password,
+        sslmode="disable",
+    )
+    login_dsn = make_conninfo(**login_params)
+    monkeypatch.setenv("AUTHORITY_MIGRATOR_IT_DSN", login_dsn)
     base = dict(
         target_dsn_env="AUTHORITY_MIGRATOR_IT_DSN",
         expected_database_name=identity["db"],
         expected_system_identifier=identity["sysid"],
+        expected_private_host=login_params["host"],
+        allow_disposable_loopback=True,
         repository_root=str(REPO_ROOT),
         package_manifest=str(REPO_ROOT / "deploy" / "authority-migrator" / "package-manifest.json"),
     )
 
-    # The explicit, matching target applies exactly the three real migrations.
-    assert wrapper.run(argparse.Namespace(**base)) == 0
-    out = capsys.readouterr().out
-    assert "applied=3" in out
-    assert password not in out
-    assert "AUTHORITY_MIGRATOR_IT_DSN" not in out  # the value, not the name, stays private
+    try:
+        provider_params = conninfo_to_dict(migration_pg)
+        provider_params["sslmode"] = "disable"
+        monkeypatch.setenv(
+            "AUTHORITY_MIGRATOR_IT_PROVIDER_DSN", make_conninfo(**provider_params)
+        )
+        provider_attempt = argparse.Namespace(
+            **{**base, "target_dsn_env": "AUTHORITY_MIGRATOR_IT_PROVIDER_DSN"}
+        )
+        with pytest.raises(wrapper.TargetError):
+            wrapper.run(provider_attempt)
+        with psycopg.connect(migration_pg) as unchanged:
+            assert unchanged.execute(
+                "SELECT to_regclass('public.fleet_application_authority')"
+            ).fetchone()[0] is None
 
-    # A mismatched declared database fails closed before touching the schema, and
-    # still never surfaces the DSN/password.
-    wrong = argparse.Namespace(**{**base, "expected_database_name": "not_the_declared_target"})
-    with pytest.raises(wrapper.TargetError, match="database name does not match"):
-        wrapper.run(wrong)
-    leaked = capsys.readouterr()
-    assert password not in leaked.out
-    assert password not in leaked.err
+        # The explicit, matching dedicated login applies exactly the three real migrations.
+        assert wrapper.run(argparse.Namespace(**base)) == 0
+        out = capsys.readouterr().out
+        assert "applied=3" in out
+        assert password not in out
+        assert login_password not in out
+        assert "AUTHORITY_MIGRATOR_IT_DSN" not in out
+
+        # A mismatched declared database fails closed before touching the schema, and
+        # still never surfaces the DSN/password.
+        wrong = argparse.Namespace(**{**base, "expected_database_name": "not_the_declared_target"})
+        with pytest.raises(wrapper.TargetError, match="database name does not match"):
+            wrapper.run(wrong)
+        leaked = capsys.readouterr()
+        assert password not in leaked.out
+        assert password not in leaked.err
+        assert login_password not in leaked.out
+        assert login_password not in leaked.err
+    finally:
+        with psycopg.connect(migration_pg, autocommit=True) as admin:
+            admin.execute(sql.SQL("DROP OWNED BY {} CASCADE").format(sql.Identifier(login_role)))
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(login_role)))
+            for privilege in public_database_privileges:
+                admin.execute(
+                    sql.SQL("GRANT {} ON DATABASE {} TO PUBLIC").format(
+                        sql.SQL(privilege),
+                        sql.Identifier(conninfo_to_dict(migration_pg)["dbname"]),
+                    )
+                )

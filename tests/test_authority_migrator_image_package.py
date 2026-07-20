@@ -113,6 +113,7 @@ def _railway_entrypoint_argv() -> list[str]:
     )
     argv = tokens[2:]  # drop `python3 <entrypoint>`
     substitutions = {
+        "${AUTHORITY_MIGRATOR_EXPECTED_PRIVATE_HOST}": "postgres.railway.internal",
         "${AUTHORITY_MIGRATOR_EXPECTED_DB}": "appdb",
         "${AUTHORITY_MIGRATOR_EXPECTED_SYSID}": "1234567890",
     }

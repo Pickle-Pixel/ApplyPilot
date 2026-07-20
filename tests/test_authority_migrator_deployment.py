@@ -132,6 +132,7 @@ def test_absent_target_arguments_fail_closed(capsys) -> None:
     os.environ.pop(env_name, None)
     code = wrapper.main([
         "--target-dsn-env", env_name,
+        "--expected-private-host", "postgres.railway.internal",
         "--expected-database-name", "appdb",
         "--expected-system-identifier", "123",
     ])
@@ -148,11 +149,53 @@ def test_hostile_target_strings_fail_closed() -> None:
         "",  # empty
     ):
         with pytest.raises(wrapper.TargetError):
-            wrapper.validate_target(hostile)
+            wrapper.validate_target(
+                hostile,
+                expected_private_host="postgres.railway.internal",
+            )
 
     for bad_env in ("lower_case", "1LEADING_DIGIT", "HAS-DASH", ""):
         with pytest.raises(wrapper.TargetError):
-            wrapper._resolve_target_dsn(bad_env)
+            wrapper._resolve_target_dsn(
+                bad_env,
+                expected_private_host="postgres.railway.internal",
+            )
+
+
+def test_private_migrator_target_requires_exact_login_host_password_and_tls(
+    monkeypatch,
+) -> None:
+    for name in wrapper._pgqueue.LIBPQ_CONNECTION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    accepted = wrapper.validate_target(
+        "postgresql://applypilot_fleet_migrator_login:separate-secret@"
+        "postgres.railway.internal/appdb?sslmode=require",
+        expected_private_host="postgres.railway.internal",
+    )
+    assert "applypilot_fleet_migrator_login" in accepted
+    assert "separate-secret" in accepted
+
+    rejected = (
+        "postgresql://applypilot_fleet_migrator_login:secret@evil.example/appdb"
+        "?sslmode=verify-full&sslrootcert=system",
+        "hostaddr=203.0.113.9 dbname=appdb user=applypilot_fleet_migrator_login "
+        "password=secret sslmode=require",
+        "host=postgres.railway.internal dbname=appdb user=postgres password=secret "
+        "sslmode=require",
+        "host=postgres.railway.internal dbname=appdb "
+        "user=applypilot_fleet_migrator_login sslmode=require",
+        "host=postgres.railway.internal dbname=appdb "
+        "user=applypilot_fleet_migrator_login password=secret sslmode=disable",
+        "host=other.railway.internal dbname=appdb "
+        "user=applypilot_fleet_migrator_login password=secret sslmode=require",
+    )
+    for dsn in rejected:
+        with pytest.raises(wrapper.TargetError):
+            wrapper.validate_target(
+                dsn,
+                expected_private_host="postgres.railway.internal",
+            )
 
 
 def test_hostile_target_env_value_fails_closed_without_leaking(capsys) -> None:
@@ -162,6 +205,7 @@ def test_hostile_target_env_value_fails_closed_without_leaking(capsys) -> None:
     try:
         code = wrapper.main([
             "--target-dsn-env", env_name,
+            "--expected-private-host", "postgres.railway.internal",
             "--expected-database-name", "appdb",
             "--expected-system-identifier", "123",
         ])
@@ -234,8 +278,9 @@ def test_railway_config_targets_the_migrator_dockerfile() -> None:
     assert config["build"]["dockerfilePath"] == "Dockerfile.authority-migrator"
     assert config["deploy"]["restartPolicyType"] == "never"
     start = config["deploy"]["startCommand"]
-    # The three explicit target parameters are named, not baked.
+    # The four explicit target parameters are named, not baked.
     assert "--target-dsn-env AUTHORITY_MIGRATOR_TARGET_DSN" in start
+    assert "--expected-private-host ${AUTHORITY_MIGRATOR_EXPECTED_PRIVATE_HOST}" in start
     assert "--expected-database-name ${AUTHORITY_MIGRATOR_EXPECTED_DB}" in start
     assert "--expected-system-identifier ${AUTHORITY_MIGRATOR_EXPECTED_SYSID}" in start
 
