@@ -515,6 +515,13 @@ sudo systemctl enable --now demo-worker.timer.bak
         ("printf '[Service]' > /etc/systemd/system/demo.service\n", "unsupported shell systemd generator"),
         ("install unit.service /etc/systemd/system/demo.service\n", "unsupported shell systemd generator"),
         ("cp unit.timer /etc/systemd/system/demo.timer\n", "unsupported shell systemd generator"),
+        ("echo '[Service]' > /etc/systemd/system/demo.service\n", "unsupported shell systemd generator"),
+        ("tee /etc/systemd/system/demo.service < unit.service\n", "unsupported shell systemd generator"),
+        ("sed 's/x/y/' unit.service > /etc/systemd/system/demo.service\n", "unsupported shell systemd generator"),
+        (
+            "cp unit.service \\\n  /etc/systemd/system/demo.service\n",
+            "unsupported shell systemd generator",
+        ),
         (
             "cat worker.plist > $HOME/Library/LaunchAgents/com.demo.worker.plist\n",
             "unsupported inline launchd generator",
@@ -662,6 +669,63 @@ def test_powershell_generated_systemd_unit_fails_closed(tmp_path):
         tmp_path / "install.ps1",
         "$unit = '[Service] ExecStart=/opt/demo'\n"
         "Set-Content -Path '/etc/systemd/system/demo.service' -Value $unit\n",
+    )
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="unsupported PowerShell systemd generator"):
+        authority.discover(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "dest='/etc/systemd/system/demo.service'\necho '[Service]' > \"$dest\"\n",
+        "dest='$ROOT/demo.service'\ncp unit.service \"$dest\"\n",
+        "cp unit.service \"$UNRESOLVED_DESTINATION\"\n",
+        "echo '[Service]' \\\n  > /etc/systemd/system/demo.service\n",
+        "/bin/cp unit.service /etc/systemd/system/demo.service\n",
+    ],
+)
+def test_shell_alias_indirection_and_nonliteral_systemd_destinations_fail_closed(
+    tmp_path, script
+):
+    _minimal_repo(tmp_path)
+    _write(tmp_path / "install.sh", "#!/bin/sh\n" + script)
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="unsupported shell systemd generator"):
+        authority.discover(tmp_path)
+
+
+def test_powershell_variable_destination_systemd_unit_fails_closed(tmp_path):
+    _minimal_repo(tmp_path)
+    _write(
+        tmp_path / "install.ps1",
+        "$dest = '/etc/systemd/system/demo.service'\n"
+        "$unit = '[Service] ExecStart=/opt/demo'\n"
+        "Set-Content -Path $dest -Value $unit\n"
+        "$dest = 'C:\\safe-after-the-write.txt'\n",
+    )
+    _init_git_repo(tmp_path)
+    with pytest.raises(authority.AuthorityError, match="unsupported PowerShell systemd generator"):
+        authority.discover(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        "Add-Content -Path '/etc/systemd/system/demo.service' -Value $unit",
+        "sc -Path '/etc/systemd/system/demo.service' -Value $unit",
+        "Set-Content -Path $unknownDestination -Value $unit",
+        "$unit | Out-File -FilePath $unknownDestination",
+        "$unit > $unknownDestination",
+    ],
+)
+def test_powershell_alias_and_nonliteral_systemd_destinations_fail_closed(
+    tmp_path, writer
+):
+    _minimal_repo(tmp_path)
+    _write(
+        tmp_path / "install.ps1",
+        "$unit = '[Service]'\n" + writer + "\n",
     )
     _init_git_repo(tmp_path)
     with pytest.raises(authority.AuthorityError, match="unsupported PowerShell systemd generator"):

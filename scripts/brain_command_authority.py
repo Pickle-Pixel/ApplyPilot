@@ -994,7 +994,7 @@ def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
     heredoc and committed launchd-template forms.  Other common writers must
     not silently degrade to an ordinary launcher row.
     """
-    shell_writer = re.compile(r"(?i)\b(?:cat|printf|install|cp)\b")
+    shell_writer = re.compile(r"(?i)\b(?:cat|printf|echo|install|cp|tee|sed)\b")
     systemd_destination = re.compile(
         r"(?i)/etc/systemd/system/[^\s\"']+\.(?:service|timer)\b"
     )
@@ -1002,11 +1002,55 @@ def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
         r"(?i)(?:\$HOME|~)/Library/LaunchAgents/[^\s\"']+\.plist\b"
     )
     for relative in _repo_files(tree, (".sh",)):
-        for line in tree.read_text(relative).splitlines():
+        text = tree.read_text(relative)
+        assignments = _shell_assignments(text, relative)
+        systemd_destination_variables: set[str] = set()
+        ambiguous_unit_destination_variables: set[str] = set()
+        unit_content_variables = {
+            name
+            for name, value in assignments.items()
+            if re.search(r"(?i)\[(?:Service|Timer)\]", value)
+        }
+        for name, value in assignments.items():
+            try:
+                resolved = _static_shell_value(
+                    value, assignments, f"service-writer destination in {relative}"
+                )
+            except AuthorityError:
+                resolved = value
+            if systemd_destination.search(resolved):
+                systemd_destination_variables.add(name)
+            elif "$" in resolved and re.search(r"(?i)\.(?:service|timer)\b", resolved):
+                ambiguous_unit_destination_variables.add(name)
+        supported_tee_headers = {
+            match.group(0).splitlines()[0].strip()
+            for match in _HEREDOC_RE.finditer(text)
+            if bool(re.search(r"(?m)^\s*\[Service\]\s*$", match.group("body")))
+            ^ bool(re.search(r"(?m)^\s*\[Timer\]\s*$", match.group("body")))
+        }
+        for line in _shell_logical_lines(text):
             stripped = line.strip()
             if not stripped or stripped.startswith("#") or not shell_writer.search(stripped):
                 continue
-            if systemd_destination.search(stripped):
+            if stripped in supported_tee_headers:
+                continue
+            referenced_variables = set(
+                re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", stripped)
+            )
+            static_or_ambiguous_destination = bool(
+                referenced_variables
+                & (systemd_destination_variables | ambiguous_unit_destination_variables)
+            )
+            unit_bearing_write = bool(
+                re.search(r"(?i)(?:\.(?:service|timer)\b|\[(?:Service|Timer)\])", stripped)
+                or referenced_variables & unit_content_variables
+            )
+            unresolved_variables = referenced_variables - set(assignments)
+            if (
+                systemd_destination.search(stripped)
+                or static_or_ambiguous_destination
+                or (unit_bearing_write and unresolved_variables)
+            ):
                 raise AuthorityError(
                     f"unsupported shell systemd generator in {relative!r}"
                 )
@@ -1016,17 +1060,89 @@ def _reject_unsupported_service_generators(tree: "_RepoTree") -> None:
                 )
 
     powershell_writer = re.compile(
-        r"(?i)\b(?:Set-Content|Out-File|WriteAllText)\b"
+        r"(?i)\b(?:Set-Content|Add-Content|Out-File|WriteAllText|Write-Output|echo|sc|ac)\b"
+    )
+    powershell_assignment = re.compile(
+        r"(?im)(?:^|[;\r\n])\s*\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*=\s*"
+        r"(?P<quote>[\"'])(?P<value>[^\"'\r\n]*)(?P=quote)\s*(?=;|\r?$)"
     )
     for relative in _repo_files(tree, (".ps1", ".psm1")):
-        for line in tree.read_text(relative).splitlines():
+        text = tree.read_text(relative)
+        assignment_candidates: dict[str, list[str]] = {}
+        for match in powershell_assignment.finditer(text):
+            assignment_candidates.setdefault(match.group("name").lower(), []).append(
+                match.group("value")
+            )
+        systemd_destination_variables = {
+            name
+            for name, values in assignment_candidates.items()
+            if any(systemd_destination.search(value) for value in values)
+        }
+        ambiguous_unit_destination_variables = {
+            name
+            for name, values in assignment_candidates.items()
+            if any(
+                "$" in value and re.search(r"(?i)\.(?:service|timer)\b", value)
+                for value in values
+            )
+        }
+        unit_content_variables = {
+            name
+            for name, values in assignment_candidates.items()
+            if any(re.search(r"(?i)\[(?:Service|Timer)\]", value) for value in values)
+        }
+        for line in text.splitlines():
             stripped = line.strip()
-            if not stripped or stripped.startswith("#") or not powershell_writer.search(stripped):
+            is_writer = bool(
+                powershell_writer.search(stripped)
+                or re.search(r"(?:^|[^>])>{1,2}\s*[^=]", stripped)
+            )
+            if not stripped or stripped.startswith("#") or not is_writer:
                 continue
-            if systemd_destination.search(stripped):
+            referenced_variables = {
+                name.lower()
+                for name in re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_:]*)\}?", stripped)
+            }
+            variable_destination = bool(
+                referenced_variables
+                & (systemd_destination_variables | ambiguous_unit_destination_variables)
+            )
+            unit_bearing_write = bool(
+                re.search(r"(?i)(?:\.(?:service|timer)\b|\[(?:Service|Timer)\])", stripped)
+                or referenced_variables & unit_content_variables
+            )
+            unresolved_variables = referenced_variables - set(assignment_candidates)
+            if (
+                systemd_destination.search(stripped)
+                or variable_destination
+                or (unit_bearing_write and unresolved_variables)
+            ):
                 raise AuthorityError(
                     f"unsupported PowerShell systemd generator in {relative!r}"
                 )
+
+
+def _shell_logical_lines(text: str) -> list[str]:
+    """Join POSIX backslash continuations before security-sensitive scanning.
+
+    The structural service scanner does not otherwise parse shell syntax.  A
+    physical-line scan is unsafe here because a writer and its privileged
+    destination can be split at the shell's continuation boundary.
+    """
+    logical: list[str] = []
+    pending = ""
+    for physical in text.splitlines():
+        candidate = pending + physical
+        stripped = candidate.rstrip()
+        trailing_backslashes = len(stripped) - len(stripped.rstrip("\\"))
+        if trailing_backslashes % 2 == 1:
+            pending = stripped[:-1] + " "
+            continue
+        logical.append(candidate)
+        pending = ""
+    if pending:
+        logical.append(pending)
+    return logical
 
 
 def _discover_generated_systemd_units(tree: "_RepoTree") -> list[dict[str, Any]]:
