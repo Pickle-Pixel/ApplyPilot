@@ -231,6 +231,8 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     results: list[dict] = []
     error_count = 0
 
+    saved = 0
+
     for job in jobs:
         completed += 1
         try:
@@ -262,6 +264,17 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             }
             results.append(result)
 
+            # Commit immediately -- if the process crashes or is interrupted,
+            # already-generated cover letters are safely persisted.
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
+                "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
+                (result["path"], now, result["url"]),
+            )
+            conn.commit()
+            saved += 1
+
             elapsed = time.time() - t0
             rate = completed / elapsed if elapsed > 0 else 0
             log.info(
@@ -275,25 +288,15 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             }
             error_count += 1
             results.append(result)
-            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
 
-    # Persist to DB: increment attempt counter for ALL, save path only for successes
-    now = datetime.now(timezone.utc).isoformat()
-    saved = 0
-    for r in results:
-        if r.get("path"):
-            conn.execute(
-                "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
-                "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (r["path"], now, r["url"]),
-            )
-            saved += 1
-        else:
+            now = datetime.now(timezone.utc).isoformat()
             conn.execute(
                 "UPDATE jobs SET cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (r["url"],),
+                (job["url"],),
             )
-    conn.commit()
+            conn.commit()
+
+            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
 
     elapsed = time.time() - t0
     log.info("Cover letters done in %.1fs: %d generated, %d errors", elapsed, saved, error_count)

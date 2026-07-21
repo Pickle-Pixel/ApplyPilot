@@ -544,6 +544,23 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
         results.append(result)
         stats[result.get("status", "error")] = stats.get(result.get("status", "error"), 0) + 1
 
+        # Commit immediately -- if the process crashes or is interrupted,
+        # already-tailored jobs are safely persisted and won't be redone.
+        now = datetime.now(timezone.utc).isoformat()
+        _success_statuses = {"approved", "approved_with_judge_warning"}
+        if result["status"] in _success_statuses:
+            conn.execute(
+                "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
+                "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+                (result["path"], now, result["url"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE jobs SET tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+                (result["url"],),
+            )
+        conn.commit()
+
         elapsed = time.time() - t0
         rate = completed / elapsed if elapsed > 0 else 0
         log.info(
@@ -554,23 +571,6 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             rate * 60,
             result["title"][:40],
         )
-
-    # Persist to DB: increment attempt counter for ALL, save path only for approved
-    now = datetime.now(timezone.utc).isoformat()
-    _success_statuses = {"approved", "approved_with_judge_warning"}
-    for r in results:
-        if r["status"] in _success_statuses:
-            conn.execute(
-                "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
-                "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-                (r["path"], now, r["url"]),
-            )
-        else:
-            conn.execute(
-                "UPDATE jobs SET tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-                (r["url"],),
-            )
-    conn.commit()
 
     elapsed = time.time() - t0
     log.info(
