@@ -36,8 +36,6 @@ blocked_sso:
 # Used by detail enrichment to resolve relative URLs scraped from sites.
 # Sites not listed here (or with null) cannot have relative URLs resolved.
 base_urls:
-  "Job Bank Canada": "https://www.jobbank.gc.ca"
-  "CareerJet Canada": "https://www.careerjet.ca"
   "BuiltIn Remote": "https://builtin.com"
   "Hacker News Jobs": "https://news.ycombinator.com/"
   "RemoteOK": null
@@ -51,29 +49,21 @@ base_urls:
   "Arc.dev": "https://arc.dev"
   "Himalayas": "https://himalayas.app"
   "Techstars Jobs": "https://www.techstars.com"
-  "Randstad Canada": "https://www.randstad.ca/jobs/search/"
+  "Weedmaps": "https://job-boards.greenhouse.io"
+  "Amtrak": "https://careers.amtrak.com"
+  "Delta Air Lines": "https://delta.avature.net"
+  "JPMorganChase": "https://jpmc.fa.oraclecloud.com"
+  "GEICO": "https://careers.geico.com"
+  "Liberty Mutual": "https://searchjobs.libertymutualgroup.com"
+  "Allstate": "https://www.allstate.jobs"
+  "AT&T": "https://www.att.jobs"
+  "Verizon": "https://mycareer.verizon.com"
+  "KPMG": "https://www.kpmguscareers.com"
 
 sites:
   # ── Searchable sites (URL includes query + location params) ──────────
-  # Canada-specific
-  - name: "Eluta"
-    url: "https://www.eluta.ca/search?q={query_encoded}&l={location_encoded}"
-    type: search
-
   - name: "Talent.com"
     url: "https://www.talent.com/jobs?k={query_encoded}&l={location_encoded}"
-    type: search
-
-  - name: "Randstad Canada"
-    url: "https://www.randstad.ca/jobs/?keywords={query_encoded}&location={location_encoded}"
-    type: search
-
-  - name: "CareerJet Canada"
-    url: "https://www.careerjet.ca/search/jobs?s={query_encoded}&l={location_encoded}"
-    type: search
-
-  - name: "Job Bank Canada"
-    url: "https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring={query_encoded}&locationstring={location_encoded}&fage=2&sort=D"
     type: search
 
   # General tech (with search)
@@ -153,7 +143,7 @@ sites:
     type: static
 
   - name: "Wellfound"
-    url: "https://wellfound.com/role/l/software-engineer/canada"
+    url: "https://wellfound.com/role/l/software-engineer/usa"
     type: static
 
   - name: "Arc.dev"
@@ -179,3 +169,44 @@ sites:
   - name: "Otta"
     url: "https://otta.com/jobs/all?title=software+engineer&remote=true"
     type: search
+
+  # Company career sites
+  - name: "Weedmaps"
+    url: "https://job-boards.greenhouse.io/weedmaps77"
+    type: static
+
+  - name: "Amtrak"
+    url: "https://careers.amtrak.com/go/View-All-Jobs-at-Amtrak/400419/?q={query_encoded}"
+    type: search
+
+  - name: "Delta Air Lines"
+    url: "https://delta.avature.net/en_US/careers/SearchJobs/"
+    type: static
+
+  - name: "JPMorganChase"
+    url: "https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/requisitions?keyword={query_encoded}"
+    type: search
+
+  - name: "GEICO"
+    url: "https://careers.geico.com/us/en/"
+    type: static
+
+  - name: "Liberty Mutual"
+    url: "https://searchjobs.libertymutualgroup.com/careers"
+    type: static
+
+  - name: "Allstate"
+    url: "https://www.allstate.jobs/job-search-results/"
+    type: static
+
+  - name: "AT&T"
+    url: "https://www.att.jobs/search-jobs"
+    type: static
+
+  - name: "Verizon"
+    url: "https://mycareer.verizon.com/jobs/"
+    type: static
+
+  - name: "KPMG"
+    url: "https://www.kpmguscareers.com/job-search/"
+    type: static
