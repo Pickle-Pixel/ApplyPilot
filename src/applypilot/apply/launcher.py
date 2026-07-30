@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -111,7 +112,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 FROM jobs
                 WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
                   AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND (apply_status IS NULL OR apply_status != 'in_progress')
                 LIMIT 1
             """, (target_url, target_url, like, like)).fetchone()
         else:
@@ -321,9 +322,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
     mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
 
-    # Build claude command
+    # Build claude command. Resolve the full path so Windows can spawn the
+    # `claude.cmd` shim -- subprocess/CreateProcess won't find a bare "claude"
+    # name (no PATHEXT resolution), causing WinError 2.
+    claude_exe = shutil.which("claude") or "claude"
     cmd = [
-        "claude",
+        claude_exe,
         "--model", model,
         "-p",
         "--mcp-config", str(mcp_config_path),
@@ -465,7 +469,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         def _clean_reason(s: str) -> str:
             return re.sub(r'[*`"]+$', '', s).strip()
 
-        for result_status in ["APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
+        for result_status in ["DRY_RUN", "APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
             if f"RESULT:{result_status}" in output:
                 add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
                 update_state(worker_id, status=result_status.lower(),
@@ -608,6 +612,13 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
                 continue
+            elif result == "dry_run":
+                # Preview only -- never record as applied or failed. Clear the
+                # in_progress lock so the job stays available for a real apply.
+                release_lock(job["url"])
+                add_event(f"[W{worker_id}] DRY RUN done: {job['title'][:30]}")
+                update_state(worker_id, status="dry_run",
+                             last_action=f"dry run ({duration_ms // 1000}s)")
             elif result == "applied":
                 mark_result(job["url"], "applied", duration_ms=duration_ms)
                 applied += 1
