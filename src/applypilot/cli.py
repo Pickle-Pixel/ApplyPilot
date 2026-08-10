@@ -382,6 +382,8 @@ def doctor() -> None:
     import os
     has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
+    has_claude_cli = bool(os.environ.get("USE_CLAUDE_CLI"))
+    has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
     has_local = bool(os.environ.get("LLM_URL"))
     if has_gemini:
         model = os.environ.get("LLM_MODEL", "gemini-2.0-flash")
@@ -389,6 +391,12 @@ def doctor() -> None:
     elif has_openai:
         model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
         results.append(("LLM API key", ok_mark, f"OpenAI ({model})"))
+    elif has_claude_cli:
+        model = os.environ.get("LLM_MODEL", "haiku")
+        results.append(("LLM API key", ok_mark, f"Claude CLI ({model})"))
+    elif has_anthropic:
+        model = os.environ.get("LLM_MODEL", "claude-haiku-4-5")
+        results.append(("LLM API key", ok_mark, f"Anthropic ({model})"))
     elif has_local:
         results.append(("LLM API key", ok_mark, f"Local: {os.environ.get('LLM_URL')}"))
     else:

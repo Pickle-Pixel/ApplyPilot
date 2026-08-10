@@ -4,13 +4,18 @@ Unified LLM client for ApplyPilot.
 Auto-detects provider from environment:
   GEMINI_API_KEY  -> Google Gemini (default: gemini-2.0-flash)
   OPENAI_API_KEY  -> OpenAI (default: gpt-4o-mini)
+  ANTHROPIC_API_KEY -> Anthropic Claude (default: claude-haiku-4-5)
+  USE_CLAUDE_CLI  -> Claude via the `claude` CLI (your Claude subscription,
+                     not a metered API key). Requires `claude` on PATH.
   LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
 """
 
+import json
 import logging
 import os
+import subprocess
 import time
 
 import httpx
@@ -29,6 +34,8 @@ def _detect_provider() -> tuple[str, str, str]:
     """
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    use_claude_cli = os.environ.get("USE_CLAUDE_CLI", "")
     local_url = os.environ.get("LLM_URL", "")
     model_override = os.environ.get("LLM_MODEL", "")
 
@@ -46,6 +53,20 @@ def _detect_provider() -> tuple[str, str, str]:
             openai_key,
         )
 
+    if use_claude_cli and not local_url:
+        return (
+            _CLAUDE_CLI_MARKER,
+            model_override or "haiku",
+            "",
+        )
+
+    if anthropic_key and not local_url:
+        return (
+            _ANTHROPIC_BASE,
+            model_override or "claude-haiku-4-5",
+            anthropic_key,
+        )
+
     if local_url:
         return (
             local_url.rstrip("/"),
@@ -55,7 +76,7 @@ def _detect_provider() -> tuple[str, str, str]:
 
     raise RuntimeError(
         "No LLM provider configured. "
-        "Set GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
+        "Set GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or LLM_URL in your environment."
     )
 
 
@@ -73,6 +94,9 @@ _RATE_LIMIT_BASE_WAIT = 10
 
 _GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 _GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+_CLAUDE_CLI_MARKER = "claude-cli"  # not a real URL — signals the subprocess path
+_CLAUDE_CLI_TIMEOUT = 120  # seconds
 
 
 class LLMClient:
@@ -92,6 +116,8 @@ class LLMClient:
         # True once we've confirmed the native Gemini API works for this model
         self._use_native_gemini: bool = False
         self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
+        self._is_anthropic: bool = base_url == _ANTHROPIC_BASE
+        self._is_claude_cli: bool = base_url == _CLAUDE_CLI_MARKER
 
     # -- Native Gemini API --------------------------------------------------
 
@@ -143,6 +169,88 @@ class LLMClient:
         resp.raise_for_status()
         data = resp.json()
         return data["candidates"][0]["content"]["parts"][0]["text"]
+
+    # -- Anthropic Messages API ----------------------------------------------
+
+    def _chat_anthropic(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Call the Anthropic Messages API.
+
+        Anthropic takes `system` as a top-level field rather than a message
+        role, so split it out of the OpenAI-style messages list.
+        """
+        system_text = "\n".join(msg.get("content", "") for msg in messages if msg["role"] == "system")
+        turns = [msg for msg in messages if msg["role"] != "system"]
+
+        payload: dict = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": turns,
+        }
+        if system_text:
+            payload["system"] = system_text
+
+        resp = self._client.post(
+            f"{self.base_url}/messages",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["content"][0]["text"]
+
+    # -- Claude CLI (subscription, not a metered API key) --------------------
+
+    def _chat_claude_cli(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Call the `claude` CLI in print mode.
+
+        Uses whatever the `claude` CLI is already logged into (a Claude
+        subscription), instead of a separate metered ANTHROPIC_API_KEY.
+        `claude -p` takes a single prompt string, not a chat history, so
+        multi-turn messages are flattened (this app's LLM calls are all
+        single-turn). `--disallowedTools *` keeps this a pure text
+        completion — no file/bash access.
+        """
+        system_text = "\n".join(msg.get("content", "") for msg in messages if msg["role"] == "system")
+        turns = [msg for msg in messages if msg["role"] != "system"]
+        prompt = (
+            turns[-1]["content"]
+            if len(turns) == 1
+            else "\n\n".join(f"{msg['role']}: {msg['content']}" for msg in turns)
+        )
+
+        cmd = ["claude", "-p", "--model", self.model, "--output-format", "json", "--disallowedTools", "*"]
+        if system_text:
+            cmd += ["--system-prompt", system_text]
+        cmd.append(prompt)
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_CLAUDE_CLI_TIMEOUT,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr[:300]}")
+        data = json.loads(result.stdout)
+        if data.get("is_error"):
+            raise RuntimeError(f"claude CLI error: {data.get('result', 'unknown')}")
+        return data["result"]
 
     # -- OpenAI-compat API --------------------------------------------------
 
@@ -205,6 +313,12 @@ class LLMClient:
                 if self._use_native_gemini:
                     return self._chat_native_gemini(messages, temperature, max_tokens)
 
+                if self._is_anthropic:
+                    return self._chat_anthropic(messages, temperature, max_tokens)
+
+                if self._is_claude_cli:
+                    return self._chat_claude_cli(messages, temperature, max_tokens)
+
                 return self._chat_compat(messages, temperature, max_tokens)
 
             except _GeminiCompatForbidden as exc:
@@ -228,7 +342,7 @@ class LLMClient:
 
             except httpx.HTTPStatusError as exc:
                 resp = exc.response
-                if resp.status_code in (429, 503) and attempt < _MAX_RETRIES - 1:
+                if resp.status_code in (429, 503, 529) and attempt < _MAX_RETRIES - 1:
                     # Respect Retry-After header if provided (Gemini sends this).
                     retry_after = (
                         resp.headers.get("Retry-After")
