@@ -137,6 +137,23 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     errors = 0
     results: list[dict] = []
 
+    # Flush to DB every BATCH_SIZE jobs (instead of one commit for the whole
+    # run) so an interrupt partway through only loses the in-progress batch,
+    # not everything already scored.
+    BATCH_SIZE = 5
+    pending: list[dict] = []
+
+    def _flush(batch: list[dict]) -> None:
+        if not batch:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        for r in batch:
+            conn.execute(
+                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
+            )
+        conn.commit()
+
     for job in jobs:
         result = score_job(resume_text, job)
         result["url"] = job["url"]
@@ -146,20 +163,16 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
             errors += 1
 
         results.append(result)
+        pending.append(result)
 
         log.info(
             "[%d/%d] score=%d  %s",
             completed, len(jobs), result["score"], job.get("title", "?")[:60],
         )
 
-    # Write scores to DB
-    now = datetime.now(timezone.utc).isoformat()
-    for r in results:
-        conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-            (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
-        )
-    conn.commit()
+        if len(pending) >= BATCH_SIZE or completed == len(jobs):
+            _flush(pending)
+            pending = []
 
     elapsed = time.time() - t0
     log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
