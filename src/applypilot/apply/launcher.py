@@ -247,29 +247,56 @@ def gen_prompt(target_url: str, min_score: int = 7,
     return prompt_file
 
 
-def mark_job(url: str, status: str, reason: str | None = None) -> None:
+def mark_job(url: str, status: str, reason: str | None = None) -> str:
     """Manually mark a job's apply status in the database.
 
     Args:
         url: Job URL to mark.
         status: Either 'applied' or 'failed'.
         reason: Failure reason (only for status='failed').
+
+    Returns:
+        The canonical job URL that was updated.
+
+    Raises:
+        LookupError: No job matches the supplied canonical or application URL.
+        ValueError: The status is invalid or an application URL matches multiple jobs.
     """
+    if status not in {"applied", "failed"}:
+        raise ValueError("status must be 'applied' or 'failed'")
+
     conn = get_connection()
+    row = conn.execute("SELECT url FROM jobs WHERE url = ?", (url,)).fetchone()
+    if row is None:
+        rows = conn.execute(
+            "SELECT url FROM jobs WHERE application_url = ? ORDER BY url LIMIT 2",
+            (url,),
+        ).fetchall()
+        if not rows:
+            raise LookupError(f"No job found for URL: {url}")
+        if len(rows) > 1:
+            raise ValueError(
+                "Application URL matches multiple jobs; use the canonical job URL instead."
+            )
+        canonical_url = rows[0]["url"]
+    else:
+        canonical_url = row["url"]
+
     now = datetime.now(timezone.utc).isoformat()
     if status == "applied":
         conn.execute("""
             UPDATE jobs SET apply_status = 'applied', applied_at = ?,
                            apply_error = NULL, agent_id = NULL
             WHERE url = ?
-        """, (now, url))
+        """, (now, canonical_url))
     else:
         conn.execute("""
             UPDATE jobs SET apply_status = 'failed', apply_error = ?,
                            apply_attempts = 99, agent_id = NULL
             WHERE url = ?
-        """, (reason or "manual", url))
+        """, (reason or "manual", canonical_url))
     conn.commit()
+    return canonical_url
 
 
 def reset_failed() -> int:

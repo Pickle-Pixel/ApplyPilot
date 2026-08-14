@@ -168,14 +168,25 @@ def apply(
 
     if mark_applied:
         from applypilot.apply.launcher import mark_job
-        mark_job(mark_applied, "applied")
-        console.print(f"[green]Marked as applied:[/green] {mark_applied}")
+        try:
+            canonical_url = mark_job(mark_applied, "applied")
+        except (LookupError, ValueError) as exc:
+            console.print(f"[red]Could not mark job as applied:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        console.print(f"[green]Marked as applied:[/green] {canonical_url}")
         return
 
     if mark_failed:
         from applypilot.apply.launcher import mark_job
-        mark_job(mark_failed, "failed", reason=fail_reason)
-        console.print(f"[yellow]Marked as failed:[/yellow] {mark_failed} ({fail_reason or 'manual'})")
+        try:
+            canonical_url = mark_job(mark_failed, "failed", reason=fail_reason)
+        except (LookupError, ValueError) as exc:
+            console.print(f"[red]Could not mark job as failed:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        console.print(
+            f"[yellow]Marked as failed:[/yellow] {canonical_url} "
+            f"({fail_reason or 'manual'})"
+        )
         return
 
     if reset_failed:

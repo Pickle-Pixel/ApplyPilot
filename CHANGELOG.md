@@ -5,6 +5,13 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Manual application status accuracy** - `apply --mark-applied` and `--mark-failed`
+  now accept canonical or application URLs and fail clearly instead of reporting success
+  when no database row was updated.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added
