@@ -272,21 +272,21 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
 
     # Experience
     lines.append("EXPERIENCE")
-    for entry in data.get("experience", []):
+    for entry in data.get("experience") or []:
         lines.append(sanitize_text(entry.get("header", "")))
         if entry.get("subtitle"):
             lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
+        for b in entry.get("bullets") or []:
             lines.append(f"- {sanitize_text(b)}")
         lines.append("")
 
     # Projects
     lines.append("PROJECTS")
-    for entry in data.get("projects", []):
+    for entry in data.get("projects") or []:
         lines.append(sanitize_text(entry.get("header", "")))
         if entry.get("subtitle"):
             lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
+        for b in entry.get("bullets") or []:
             lines.append(f"- {sanitize_text(b)}")
         lines.append("")
 

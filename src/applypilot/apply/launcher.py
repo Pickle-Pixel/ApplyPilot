@@ -111,7 +111,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 FROM jobs
                 WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
                   AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND (apply_status IS NULL OR apply_status != 'in_progress')
                 LIMIT 1
             """, (target_url, target_url, like, like)).fetchone()
         else:
@@ -327,6 +327,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         "--model", model,
         "-p",
         "--mcp-config", str(mcp_config_path),
+        # WARNING: Using bypassPermissions poses a significant security risk as Claude Code
+        # will have unprompted access to the system. For production use, Docker isolation
+        # is highly recommended.
         "--permission-mode", "bypassPermissions",
         "--no-session-persistence",
         "--disallowedTools", (

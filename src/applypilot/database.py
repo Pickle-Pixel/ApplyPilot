@@ -406,7 +406,7 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
     elif "?" in where:
         params.append(7)  # default min_score
 
-    if min_score is not None and "fit_score" not in where and stage in ("scored", "tailored", "applied"):
+    if min_score is not None and stage in ("scored", "tailored", "applied"):
         where += " AND fit_score >= ?"
         params.append(min_score)
 

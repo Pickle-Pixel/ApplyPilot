@@ -223,6 +223,9 @@ def apply(
         mcp_path = _profile_path.parent / ".mcp-apply-0.json"
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
         console.print(f"\n[bold]Run manually:[/bold]")
+        # WARNING: Using bypassPermissions poses a significant security risk as Claude Code
+        # will have unprompted access to the system. For production use, Docker isolation
+        # is highly recommended.
         console.print(
             f"  claude --model {model} -p "
             f"--mcp-config {mcp_path} "
