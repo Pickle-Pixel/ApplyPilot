@@ -468,7 +468,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         def _clean_reason(s: str) -> str:
             return re.sub(r'[*`"]+$', '', s).strip()
 
-        for result_status in ["APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
+        for result_status in ["DRY_RUN_COMPLETE", "APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
             if f"RESULT:{result_status}" in output:
                 add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
                 update_state(worker_id, status=result_status.lower(),
@@ -607,7 +607,15 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             result, duration_ms = run_job(job, port=port, worker_id=worker_id,
                                             model=model, dry_run=dry_run)
 
-            if result == "skipped":
+            # A dry run is observational: never write APPLIED/FAILED state,
+            # even if an agent returns an incorrect result token. Releasing the
+            # acquisition lock leaves the real queue exactly as it was.
+            if dry_run:
+                release_lock(job["url"])
+                add_event(f"[W{worker_id}] DRY RUN complete: {job['title'][:30]}")
+                update_state(worker_id, status="dry_run_complete",
+                             last_action="not submitted")
+            elif result == "skipped":
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
                 continue
@@ -784,10 +792,16 @@ def main(limit: int = 1, target_url: str | None = None,
             live.update(render_full())
 
         totals = get_totals()
-        console.print(
-            f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
-            f"(${totals['cost']:.3f})[/bold]"
-        )
+        if dry_run:
+            console.print(
+                f"\n[bold]Dry run done: 0 submitted, {total_failed} execution errors "
+                f"(${totals['cost']:.3f})[/bold]"
+            )
+        else:
+            console.print(
+                f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
+                f"(${totals['cost']:.3f})[/bold]"
+            )
         console.print(f"Logs: {config.LOG_DIR}")
 
     except KeyboardInterrupt:

@@ -161,7 +161,7 @@ def apply(
     """Launch auto-apply to submit job applications."""
     _bootstrap()
 
-    from applypilot.config import check_tier, PROFILE_PATH as _profile_path
+    from applypilot.config import check_tier, PROFILE_PATH as _profile_path, validate_profile_for_application
     from applypilot.database import get_connection
 
     # --- Utility modes (no Chrome/Claude needed) ---
@@ -195,6 +195,12 @@ def apply(
             "[red]Profile not found.[/red]\n"
             "Run [bold]applypilot init[/bold] to create your profile first."
         )
+        raise typer.Exit(code=1)
+
+    try:
+        validate_profile_for_application()
+    except (ValueError, KeyError) as error:
+        console.print(f"[red]Unsafe or incomplete profile.[/red] {error}\nRun [bold]applypilot init[/bold] and review every field before applying.")
         raise typer.Exit(code=1)
 
     # Check 3: Tailored resumes exist (skip for --gen with --url)
@@ -341,7 +347,7 @@ def doctor() -> None:
     import shutil
     from applypilot.config import (
         load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
+        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path, profile_safety_reasons,
     )
 
     load_env()
@@ -355,7 +361,14 @@ def doctor() -> None:
     # --- Tier 1 checks ---
     # Profile
     if PROFILE_PATH.exists():
-        results.append(("profile.json", ok_mark, str(PROFILE_PATH)))
+        try:
+            profile_reasons = profile_safety_reasons()
+        except Exception as error:
+            profile_reasons = [str(error)]
+        if profile_reasons:
+            results.append(("profile.json", "[red]UNSAFE[/red]", "; ".join(profile_reasons)))
+        else:
+            results.append(("profile.json", ok_mark, str(PROFILE_PATH)))
     else:
         results.append(("profile.json", fail_mark, "Run 'applypilot init' to create"))
 

@@ -101,6 +101,36 @@ def load_profile() -> dict:
     return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
 
 
+def profile_safety_reasons(profile: dict | None = None) -> list[str]:
+    """Return reasons a profile must not be used for an external application."""
+    data = profile if profile is not None else load_profile()
+    personal = data.get("personal") if isinstance(data, dict) else None
+    reasons: list[str] = []
+    if not isinstance(personal, dict):
+        reasons.append("legacy/incomplete profile schema; rerun applypilot init")
+        personal = data if isinstance(data, dict) else {}
+    name = str(personal.get("full_name") or personal.get("name") or "").strip().lower()
+    email = str(personal.get("email") or "").strip().lower()
+    if not name or not email:
+        reasons.append("full legal name and email are required")
+    if any(token in name for token in ("sample", "test candidate", "firstname lastname", "your_legal_name")):
+        reasons.append("name contains a sample/test placeholder")
+    if email.startswith("youremail@") or email.endswith("@example.com") or email.endswith("@example.invalid"):
+        reasons.append("email contains a sample/test placeholder")
+    for section in ("work_authorization", "compensation", "experience", "resume_facts"):
+        if not isinstance(data.get(section), dict):
+            reasons.append(f"required profile section missing: {section}")
+    return list(dict.fromkeys(reasons))
+
+
+def validate_profile_for_application(profile: dict | None = None) -> dict:
+    data = profile if profile is not None else load_profile()
+    reasons = profile_safety_reasons(data)
+    if reasons:
+        raise ValueError("Profile is unsafe for application: " + "; ".join(reasons))
+    return data
+
+
 def load_search_config() -> dict:
     """Load search configuration from ~/.applypilot/searches.yaml."""
     import yaml
