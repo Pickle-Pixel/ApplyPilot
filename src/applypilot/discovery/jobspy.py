@@ -12,7 +12,12 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from jobspy import scrape_jobs
+try:
+    from jobspy import scrape_jobs
+    _JOBSPY_INSTALLED = True
+except ImportError:
+    _JOBSPY_INSTALLED = False
+    scrape_jobs = None
 
 from applypilot import config
 from applypilot.database import get_connection, init_db, store_jobs
@@ -300,6 +305,9 @@ def search_jobs(
     country_indeed: str = "usa",
 ) -> dict:
     """Run a single job search via JobSpy and store results in DB."""
+    if not _JOBSPY_INSTALLED:
+        raise ImportError("python-jobspy is required for this module. Please install it with: pip install python-jobspy --no-deps")
+
     if sites is None:
         sites = ["indeed", "linkedin", "zip_recruiter"]
 
@@ -453,6 +461,9 @@ def run_discovery(cfg: dict | None = None) -> dict:
     Returns:
         Dict with stats: new, existing, errors, db_total, queries.
     """
+    if not _JOBSPY_INSTALLED:
+        raise ImportError("python-jobspy is required for this module. Please install it with: pip install python-jobspy --no-deps")
+
     if cfg is None:
         cfg = config.load_search_config()
 

@@ -668,12 +668,14 @@ def extract_json(text: str) -> dict:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    while text.endswith("}") or text.endswith("]"):
+    
+    match = re.search(r'([\{\[].*[\}\]])', text, re.DOTALL)
+    if match:
         try:
-            return json.loads(text)
+            return json.loads(match.group(1))
         except json.JSONDecodeError:
-            text = text[:-1].rstrip()
-    raise json.JSONDecodeError("Could not parse JSON", text, 0)
+            pass
+    return None
 
 
 # -- JSON path resolution ---------------------------------------------------
