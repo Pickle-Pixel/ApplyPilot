@@ -318,9 +318,9 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
 
     stats["ready_to_apply"] = conn.execute(
         "SELECT COUNT(*) FROM jobs "
-        "WHERE tailored_resume_path IS NOT NULL "
+        "WHERE (tailored_resume_path IS NOT NULL OR fit_score >= 7) "
         "AND applied_at IS NULL "
-        "AND application_url IS NOT NULL"
+        "AND (application_url IS NOT NULL OR url IS NOT NULL)"
     ).fetchone()[0]
 
     return stats

@@ -110,10 +110,30 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
                 WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
-                  AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND (apply_status IS NULL OR apply_status != 'in_progress')
                 LIMIT 1
             """, (target_url, target_url, like, like)).fetchone()
+
+            if not row:
+                from urllib.parse import urlparse
+                parsed = urlparse(target_url)
+                site = parsed.netloc.replace("www.", "") or "Custom"
+                path_parts = [p for p in parsed.path.split('/') if p]
+                title = path_parts[-1].replace('-', ' ').replace('_', ' ').title() if path_parts else "Job Application"
+                now = datetime.now(timezone.utc).isoformat()
+
+                conn.execute("""
+                    INSERT OR IGNORE INTO jobs (url, application_url, title, site, fit_score, strategy, discovered_at)
+                    VALUES (?, ?, ?, ?, 10, 'manual_url', ?)
+                """, (target_url, target_url, title, site, now))
+                conn.commit()
+
+                row = conn.execute("""
+                    SELECT url, title, site, application_url, tailored_resume_path,
+                           fit_score, location, full_description, cover_letter_path
+                    FROM jobs
+                    WHERE url = ?
+                """, (target_url,)).fetchone()
         else:
             blocked_sites, blocked_patterns = _load_blocked()
             # Build parameterized filters to avoid SQL injection
@@ -131,13 +151,12 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
-                WHERE tailored_resume_path IS NOT NULL
-                  AND (apply_status IS NULL OR apply_status = 'failed')
+                WHERE (apply_status IS NULL OR apply_status = 'failed')
                   AND (apply_attempts IS NULL OR apply_attempts < ?)
                   AND fit_score >= ?
                   {site_clause}
                   {url_clauses}
-                ORDER BY fit_score DESC, url
+                ORDER BY (CASE WHEN tailored_resume_path IS NOT NULL THEN 0 ELSE 1 END), fit_score DESC, url
                 LIMIT 1
             """, [config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
 
@@ -221,12 +240,14 @@ def gen_prompt(target_url: str, min_score: int = 7,
     if not job:
         return None
 
-    # Read resume text
+    # Read resume text (tailored or main master resume fallback)
     resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
+    txt_path = Path(resume_path).with_suffix(".txt") if resume_path and Path(resume_path).exists() else None
     resume_text = ""
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
+    elif config.RESUME_PATH.exists():
+        resume_text = config.RESUME_PATH.read_text(encoding="utf-8")
 
     prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text)
 
@@ -303,12 +324,14 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         'applied', 'expired', 'captcha', 'login_issue',
         'failed:reason', or 'skipped'.
     """
-    # Read tailored resume text
+    # Read tailored resume text (or main master resume fallback)
     resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
+    txt_path = Path(resume_path).with_suffix(".txt") if resume_path and Path(resume_path).exists() else None
     resume_text = ""
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
+    elif config.RESUME_PATH.exists():
+        resume_text = config.RESUME_PATH.read_text(encoding="utf-8")
 
     # Build the prompt
     agent_prompt = prompt_mod.build_prompt(
@@ -317,48 +340,85 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         dry_run=dry_run,
     )
 
-    # Write per-worker MCP config
-    mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
-    mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
+    # Detect configured agent CLI
+    agent_info = config.get_agent_cli_info()
+    if not agent_info:
+        raise RuntimeError("No browser agent CLI found. Please install Claude Code CLI or Antigravity CLI (agy).")
 
-    # Build claude command
-    cmd = [
-        "claude",
-        "--model", model,
-        "-p",
-        "--mcp-config", str(mcp_config_path),
-        "--permission-mode", "bypassPermissions",
-        "--no-session-persistence",
-        "--disallowedTools", (
-            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
-            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
-            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
-            "mcp__gmail__create_label,mcp__gmail__update_label,"
-            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
-            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
-            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
-            "mcp__gmail__delete_filter"
-        ),
-        "--output-format", "stream-json",
-        "--verbose", "-",
-    ]
+    agent_type, agent_exec = agent_info
+
+    # Worker directory
+    worker_dir = reset_worker_dir(worker_id)
+    mcp_data = _make_mcp_config(port)
+
+    # Write per-worker MCP configs
+    mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
+    mcp_config_path.write_text(json.dumps(mcp_data), encoding="utf-8")
+    # Also write mcp_config.json into worker_dir for Antigravity (agy)
+    (worker_dir / "mcp_config.json").write_text(json.dumps(mcp_data), encoding="utf-8")
+
+    # For agy: update the global playwright MCP server to point at the correct CDP port
+    if agent_type == "antigravity":
+        try:
+            subprocess.run(
+                [
+                    agent_exec, "mcp", "add",
+                    "playwright",
+                    "npx", "@playwright/mcp@latest",
+                    f"--cdp-endpoint=http://localhost:{port}",
+                    f"--viewport-size={config.DEFAULTS['viewport']}",
+                ],
+                check=False, capture_output=True, timeout=10,
+            )
+        except Exception as e:
+            logger.warning("Could not update agy playwright MCP config: %s", e)
+
+    # Build agent command
+    if agent_type == "antigravity":
+        cmd = [
+            agent_exec,
+            "--dangerously-skip-permissions",
+            "--output-format", "stream-json",
+            "-p", agent_prompt,
+        ]
+        if model and model not in ("sonnet", "haiku"):
+            cmd.extend(["--model", model])
+    else:
+        cmd = [
+            agent_exec,
+            "--model", model,
+            "-p",
+            "--mcp-config", str(mcp_config_path),
+            "--permission-mode", "bypassPermissions",
+            "--no-session-persistence",
+            "--disallowedTools", (
+                "mcp__gmail__draft_email,mcp__gmail__modify_email,"
+                "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
+                "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
+                "mcp__gmail__create_label,mcp__gmail__update_label,"
+                "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
+                "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
+                "mcp__gmail__list_filters,mcp__gmail__get_filter,"
+                "mcp__gmail__delete_filter"
+            ),
+            "--output-format", "stream-json",
+            "--verbose", "-",
+        ]
 
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
-    worker_dir = reset_worker_dir(worker_id)
-
     update_state(worker_id, status="applying", job_title=job["title"],
                  company=job.get("site", ""), score=job.get("fit_score", 0),
                  start_time=time.time(), actions=0, last_action="starting")
-    add_event(f"[W{worker_id}] Starting: {job['title'][:40]} @ {job.get('site', '')}")
+    add_event(f"[W{worker_id}] Starting [{agent_type}]: {job['title'][:40]} @ {job.get('site', '')}")
 
     worker_log = config.LOG_DIR / f"worker-{worker_id}.log"
     ts_header = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_header = (
         f"\n{'=' * 60}\n"
-        f"[{ts_header}] {job['title']} @ {job.get('site', '')}\n"
+        f"[{ts_header}] [{agent_type}] {job['title']} @ {job.get('site', '')}\n"
         f"URL: {job.get('application_url') or job['url']}\n"
         f"Score: {job.get('fit_score', 'N/A')}/10\n"
         f"{'=' * 60}\n"
@@ -383,7 +443,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         with _claude_lock:
             _claude_procs[worker_id] = proc
 
-        proc.stdin.write(agent_prompt)
+        if agent_type == "claude":
+            proc.stdin.write(agent_prompt)
         proc.stdin.close()
 
         text_parts: list[str] = []
@@ -397,6 +458,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 try:
                     msg = json.loads(line)
                     msg_type = msg.get("type")
+                    event = msg.get("event")
+
+                    # Claude Code JSON stream format
                     if msg_type == "assistant":
                         for block in msg.get("message", {}).get("content", []):
                             bt = block.get("type")
@@ -437,6 +501,27 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                             "turns": msg.get("num_turns", 0),
                         }
                         text_parts.append(msg.get("result", ""))
+
+                    # Antigravity (agy) JSON stream format
+                    elif event == "step_update":
+                        su = msg.get("step_update", {})
+                        text_delta = su.get("text_delta")
+                        if text_delta:
+                            text_parts.append(text_delta)
+                            lf.write(text_delta)
+                    elif event == "result":
+                        res = msg.get("result", {})
+                        if isinstance(res, dict):
+                            usage = res.get("usage", {})
+                            stats = {
+                                "input_tokens": usage.get("input_tokens", 0),
+                                "output_tokens": usage.get("output_tokens", 0),
+                                "cache_read": usage.get("cache_read_tokens", 0),
+                                "turns": res.get("num_turns", 0),
+                            }
+                            resp_text = res.get("response", "")
+                            text_parts.append(resp_text)
+                            lf.write(resp_text + "\n")
                 except json.JSONDecodeError:
                     text_parts.append(line)
                     lf.write(line + "\n")

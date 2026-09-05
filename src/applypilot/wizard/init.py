@@ -280,26 +280,52 @@ def _setup_ai_features() -> None:
 # ---------------------------------------------------------------------------
 
 def _setup_auto_apply() -> None:
-    """Configure autonomous job application (requires Claude Code CLI)."""
+    """Configure autonomous job application (requires Claude Code CLI or Antigravity CLI)."""
     console.print(Panel(
         "[bold]Step 5: Auto-Apply (optional)[/bold]\n"
         "ApplyPilot can autonomously fill and submit job applications\n"
-        "using Claude Code as the browser agent."
+        "using Claude Code or Antigravity as the browser agent."
     ))
 
     if not Confirm.ask("Enable autonomous job applications?", default=True):
         console.print("[dim]You can apply manually using the tailored resumes ApplyPilot generates.[/dim]")
         return
 
-    # Check for Claude Code CLI
-    if shutil.which("claude"):
+    # Check for Agent CLIs
+    claude_bin = shutil.which("claude")
+    agy_bin = shutil.which("agy") or shutil.which("antigravity")
+
+    chosen_agent = None
+
+    if claude_bin and agy_bin:
+        console.print("[green]Both Claude Code CLI and Antigravity CLI detected.[/green]")
+        choice = Prompt.ask(
+            "Which browser agent CLI would you like to use?",
+            choices=["antigravity", "claude"],
+            default="antigravity",
+        )
+        chosen_agent = choice
+    elif agy_bin:
+        console.print("[green]Antigravity CLI (agy) detected.[/green]")
+        chosen_agent = "antigravity"
+    elif claude_bin:
         console.print("[green]Claude Code CLI detected.[/green]")
+        chosen_agent = "claude"
     else:
         console.print(
-            "[yellow]Claude Code CLI not found on PATH.[/yellow]\n"
-            "Install it from: [bold]https://claude.ai/code[/bold]\n"
-            "Auto-apply won't work until Claude Code is installed."
+            "[yellow]No browser agent CLI found on PATH.[/yellow]\n"
+            "Install Claude Code CLI from: [bold]https://claude.ai/code[/bold] or Antigravity CLI (agy).\n"
+            "Auto-apply won't work until an agent CLI is installed."
         )
+
+    if chosen_agent:
+        # Save to .env
+        env_content = ""
+        if ENV_PATH.exists():
+            env_content = ENV_PATH.read_text(encoding="utf-8")
+        if "AGENT_CLI" not in env_content:
+            env_content = env_content.rstrip() + f"\nAGENT_CLI={chosen_agent}\n"
+            ENV_PATH.write_text(env_content, encoding="utf-8")
 
     # Optional: CapSolver for CAPTCHAs
     console.print("\n[dim]Some job sites use CAPTCHAs. CapSolver can handle them automatically.[/dim]")
@@ -318,6 +344,7 @@ def _setup_auto_apply() -> None:
         console.print("[green]CapSolver key saved.[/green]")
     else:
         console.print("[dim]Skipped. Add CAPSOLVER_API_KEY to .env later if needed.[/dim]")
+
 
 
 # ---------------------------------------------------------------------------
