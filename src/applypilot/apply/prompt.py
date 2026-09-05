@@ -440,13 +440,33 @@ def build_prompt(job: dict, tailored_resume: str,
     personal = profile["personal"]
 
     # --- Resolve resume PDF path ---
-    resume_path = job.get("tailored_resume_path")
-    if not resume_path:
-        raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
+    src_pdf: Path | None = None
+    tailored_path = job.get("tailored_resume_path")
+    if tailored_path:
+        cand = Path(tailored_path).with_suffix(".pdf").resolve()
+        if cand.exists():
+            src_pdf = cand
 
-    src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
-    if not src_pdf.exists():
-        raise ValueError(f"Resume PDF not found: {src_pdf}")
+    if src_pdf is None:
+        if config.RESUME_PDF_PATH.exists():
+            src_pdf = config.RESUME_PDF_PATH.resolve()
+        elif config.RESUME_PATH.exists():
+            cand_pdf = config.RESUME_PATH.with_suffix(".pdf").resolve()
+            if cand_pdf.exists():
+                src_pdf = cand_pdf
+            else:
+                try:
+                    from applypilot.scoring.pdf import convert_to_pdf
+                    src_pdf = convert_to_pdf(config.RESUME_PATH, config.RESUME_PDF_PATH).resolve()
+                except Exception as e:
+                    logger.warning("Could not convert main resume to PDF: %s", e)
+
+    if not src_pdf or not src_pdf.exists():
+        raise ValueError(f"No resume (tailored or main master) found for job: {job.get('title', 'unknown')}")
+
+    # Fall back to main master resume text if tailored_resume string is empty
+    if not tailored_resume and config.RESUME_PATH.exists():
+        tailored_resume = config.RESUME_PATH.read_text(encoding="utf-8")
 
     # Copy to a clean filename for upload (recruiters see the filename)
     full_name = personal["full_name"]

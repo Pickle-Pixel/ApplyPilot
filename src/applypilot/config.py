@@ -197,12 +197,43 @@ TIER_COMMANDS: dict[int, list[str]] = {
 }
 
 
+def get_agent_cli_info() -> tuple[str, str] | None:
+    """Detect available browser agent CLI (Claude Code CLI or Antigravity CLI).
+
+    Returns:
+        Tuple of (agent_type, executable_path), e.g. ("claude", "C:\\...\\claude.exe")
+        or ("antigravity", "C:\\...\\agy.exe"), or None if neither is found.
+    """
+    load_env()
+    override = os.environ.get("AGENT_CLI") or os.environ.get("APPLYPILOT_AGENT_CLI")
+    if override:
+        ov = override.strip().lower()
+        if ov in ("claude", "claude-code"):
+            bin_path = shutil.which("claude")
+            if bin_path:
+                return ("claude", bin_path)
+        elif ov in ("antigravity", "agy"):
+            bin_path = shutil.which("agy") or shutil.which("antigravity")
+            if bin_path:
+                return ("antigravity", bin_path)
+
+    claude_bin = shutil.which("claude")
+    agy_bin = shutil.which("agy") or shutil.which("antigravity")
+
+    if claude_bin:
+        return ("claude", claude_bin)
+    if agy_bin:
+        return ("antigravity", agy_bin)
+
+    return None
+
+
 def get_tier() -> int:
     """Detect the current tier based on available dependencies.
 
     Tier 1 (Discovery):            Python + pip
     Tier 2 (AI Scoring & Tailoring): + LLM API key
-    Tier 3 (Full Auto-Apply):       + Claude Code CLI + Chrome
+    Tier 3 (Full Auto-Apply):       + Agent CLI (Claude Code or Antigravity) + Chrome
     """
     load_env()
 
@@ -210,14 +241,14 @@ def get_tier() -> int:
     if not has_llm:
         return 1
 
-    has_claude = shutil.which("claude") is not None
+    has_agent = get_agent_cli_info() is not None
     try:
         get_chrome_path()
         has_chrome = True
     except FileNotFoundError:
         has_chrome = False
 
-    if has_claude and has_chrome:
+    if has_agent and has_chrome:
         return 3
 
     return 2
@@ -241,8 +272,8 @@ def check_tier(required: int, feature: str) -> None:
     if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
         missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
     if required >= 3:
-        if not shutil.which("claude"):
-            missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
+        if get_agent_cli_info() is None:
+            missing.append("Browser Agent CLI — install Claude Code CLI (https://claude.ai/code) or Antigravity CLI (agy)")
         try:
             get_chrome_path()
         except FileNotFoundError:
@@ -258,3 +289,4 @@ def check_tier(required: int, feature: str) -> None:
             _console.print(f"  - {m}")
     _console.print()
     raise SystemExit(1)
+

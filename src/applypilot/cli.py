@@ -49,6 +49,40 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _ensure_custom_url(url: str) -> str:
+    """Ensure a user-provided job URL exists in the database, inserting it if missing."""
+    from urllib.parse import urlparse
+    from datetime import datetime, timezone
+    from applypilot.database import get_connection
+
+    cleaned_url = url.strip()
+    if not cleaned_url.startswith(("http://", "https://")):
+        cleaned_url = "https://" + cleaned_url
+
+    conn = get_connection()
+    like = f"%{cleaned_url.split('?')[0].rstrip('/')}%"
+    row = conn.execute(
+        "SELECT url FROM jobs WHERE url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?",
+        (cleaned_url, cleaned_url, like, like)
+    ).fetchone()
+
+    if not row:
+        parsed = urlparse(cleaned_url)
+        site_name = parsed.netloc.replace("www.", "") or "Custom URL"
+        path_parts = [p for p in parsed.path.split('/') if p]
+        title = path_parts[-1].replace('-', ' ').replace('_', ' ').title() if path_parts else "Job Application"
+        now = datetime.now(timezone.utc).isoformat()
+
+        conn.execute("""
+            INSERT OR IGNORE INTO jobs (url, application_url, title, site, fit_score, strategy, discovered_at)
+            VALUES (?, ?, ?, ?, 10, 'manual_url', ?)
+        """, (cleaned_url, cleaned_url, title, site_name, now))
+        conn.commit()
+        console.print(f"[cyan]Added custom job URL to database:[/cyan] {title} ({site_name})")
+
+    return cleaned_url
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -147,7 +181,8 @@ def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel browser workers."),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for job selection."),
-    model: str = typer.Option("haiku", "--model", "-m", help="Claude model name."),
+    model: str = typer.Option("haiku", "--model", "-m", help="Claude/LLM model name."),
+    agent_cli: Optional[str] = typer.Option(None, "--agent-cli", "-a", help="Browser agent CLI to use ('claude' or 'antigravity'/'agy')."),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
@@ -161,7 +196,11 @@ def apply(
     """Launch auto-apply to submit job applications."""
     _bootstrap()
 
-    from applypilot.config import check_tier, PROFILE_PATH as _profile_path
+    import os
+    if agent_cli:
+        os.environ["AGENT_CLI"] = agent_cli
+
+    from applypilot.config import check_tier, get_agent_cli_info, PROFILE_PATH as _profile_path
     from applypilot.database import get_connection
 
     # --- Utility modes (no Chrome/Claude needed) ---
@@ -186,7 +225,10 @@ def apply(
 
     # --- Full apply mode ---
 
-    # Check 1: Tier 3 required (Claude Code CLI + Chrome)
+    if url:
+        url = _ensure_custom_url(url)
+
+    # Check 1: Tier 3 required (Browser Agent CLI + Chrome)
     check_tier(3, "auto-apply")
 
     # Check 2: Profile exists
@@ -197,18 +239,48 @@ def apply(
         )
         raise typer.Exit(code=1)
 
-    # Check 3: Tailored resumes exist (skip for --gen with --url)
+    # Check 3: Resume exists (tailored or main master resume)
+    from applypilot.config import RESUME_PATH as _resume_path, RESUME_PDF_PATH as _resume_pdf_path
     if not (gen and url):
+        has_main_resume = _resume_path.exists() or _resume_pdf_path.exists()
         conn = get_connection()
-        ready = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL AND applied_at IS NULL"
+        ready_tailored = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL AND applied_at IS NULL AND (apply_status IS NULL OR apply_status = 'failed')"
         ).fetchone()[0]
-        if ready == 0:
+
+        if ready_tailored == 0:
+            if not has_main_resume:
+                console.print(
+                    "[red]No tailored resumes ready and no master resume found.[/red]\n"
+                    "Run [bold]applypilot init[/bold] to set up your master resume, or run [bold]applypilot run score tailor[/bold] first."
+                )
+                raise typer.Exit(code=1)
+
+            # Check if there are any jobs to apply to using the main resume
+            if url:
+                like = f"%{url.split('?')[0].rstrip('/')}%"
+                target_count = conn.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?) AND (apply_status IS NULL OR apply_status != 'in_progress')",
+                    (url, url, like, like),
+                ).fetchone()[0]
+                if target_count == 0:
+                    console.print(f"[red]Job not found for URL:[/red] {url}")
+                    raise typer.Exit(code=1)
+            else:
+                ready_total = conn.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE (apply_status IS NULL OR apply_status = 'failed') AND (apply_attempts IS NULL OR apply_attempts < 5) AND fit_score >= ?",
+                    (min_score,),
+                ).fetchone()[0]
+                if ready_total == 0:
+                    console.print(
+                        f"[yellow]No eligible jobs ready to apply (fit_score >= {min_score}).[/yellow]\n"
+                        "Run [bold]applypilot run[/bold] to discover and score jobs first."
+                    )
+                    raise typer.Exit(code=1)
+
             console.print(
-                "[red]No tailored resumes ready.[/red]\n"
-                "Run [bold]applypilot run score tailor[/bold] first to prepare applications."
+                "[yellow]No tailored resumes ready. Proceeding with main master resume...[/yellow]\n"
             )
-            raise typer.Exit(code=1)
 
     if gen:
         from applypilot.apply.launcher import gen_prompt, BASE_CDP_PORT
@@ -223,18 +295,29 @@ def apply(
         mcp_path = _profile_path.parent / ".mcp-apply-0.json"
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
         console.print(f"\n[bold]Run manually:[/bold]")
-        console.print(
-            f"  claude --model {model} -p "
-            f"--mcp-config {mcp_path} "
-            f"--permission-mode bypassPermissions < {prompt_file}"
-        )
+        agent_info = get_agent_cli_info()
+        agent_name = agent_info[0] if agent_info else "claude"
+        if agent_name == "antigravity":
+            console.print(
+                f"  agy --dangerously-skip-permissions --output-format stream-json -p \"$(cat {prompt_file})\""
+            )
+        else:
+            console.print(
+                f"  claude --model {model} -p "
+                f"--mcp-config {mcp_path} "
+                f"--permission-mode bypassPermissions < {prompt_file}"
+            )
         return
 
     from applypilot.apply.launcher import main as apply_main
 
     effective_limit = limit if limit is not None else (0 if continuous else 1)
 
+    agent_info = get_agent_cli_info()
+    agent_desc = f"{agent_info[0]} ({agent_info[1]})" if agent_info else "unknown"
+
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
+    console.print(f"  Agent CLI: {agent_desc}")
     console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
     console.print(f"  Workers:  {workers}")
     console.print(f"  Model:    {model}")
@@ -334,52 +417,49 @@ def dashboard() -> None:
 
 @app.command()
 def doctor() -> None:
-    """Check your setup and diagnose missing requirements."""
-    import shutil
-    from applypilot.config import (
-        load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
-    )
+    """Check required dependencies and environment setup."""
+    _bootstrap()
 
-    load_env()
+    import os, shutil
+    from applypilot.config import get_chrome_path
 
-    ok_mark = "[green]OK[/green]"
-    fail_mark = "[red]MISSING[/red]"
-    warn_mark = "[yellow]WARN[/yellow]"
+    ok_mark = "[bold green]OK[/bold green]"
+    fail_mark = "[bold red]MISSING[/bold red]"
+    warn_mark = "[bold yellow]WARN[/bold yellow]"
 
-    results: list[tuple[str, str, str]] = []  # (check, status, note)
+    results: list[tuple[str, str, str]] = []
 
     # --- Tier 1 checks ---
-    # Profile
+    # profile.json
+    from applypilot.config import PROFILE_PATH, SEARCH_CONFIG_PATH, RESUME_PATH, RESUME_PDF_PATH
     if PROFILE_PATH.exists():
         results.append(("profile.json", ok_mark, str(PROFILE_PATH)))
     else:
-        results.append(("profile.json", fail_mark, "Run 'applypilot init' to create"))
+        results.append(("profile.json", fail_mark, "Run 'applypilot init' to create profile"))
 
-    # Resume
+    # resume
     if RESUME_PATH.exists():
         results.append(("resume.txt", ok_mark, str(RESUME_PATH)))
     elif RESUME_PDF_PATH.exists():
         results.append(("resume.txt", warn_mark, "Only PDF found — plain-text needed for AI stages"))
     else:
-        results.append(("resume.txt", fail_mark, "Run 'applypilot init' to add your resume"))
+        results.append(("resume.txt", fail_mark, "Add resume.txt to ~/.applypilot/"))
 
-    # Search config
+    # searches.yaml
     if SEARCH_CONFIG_PATH.exists():
         results.append(("searches.yaml", ok_mark, str(SEARCH_CONFIG_PATH)))
     else:
-        results.append(("searches.yaml", warn_mark, "Will use example config — run 'applypilot init'"))
+        results.append(("searches.yaml", warn_mark, "Using package default searches"))
 
-    # jobspy (discovery dep installed separately)
+    # python-jobspy
     try:
         import jobspy  # noqa: F401
-        results.append(("python-jobspy", ok_mark, "Job board scraping available"))
+        results.append(("python-jobspy", ok_mark, "Job scraper library installed"))
     except ImportError:
         results.append(("python-jobspy", warn_mark,
                         "pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex"))
 
     # --- Tier 2 checks ---
-    import os
     has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
     has_local = bool(os.environ.get("LLM_URL"))
@@ -396,13 +476,22 @@ def doctor() -> None:
                         "Set GEMINI_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
 
     # --- Tier 3 checks ---
-    # Claude Code CLI
+    # Browser Agent CLI (Claude Code or Antigravity)
     claude_bin = shutil.which("claude")
+    agy_bin = shutil.which("agy") or shutil.which("antigravity")
+
     if claude_bin:
         results.append(("Claude Code CLI", ok_mark, claude_bin))
     else:
-        results.append(("Claude Code CLI", fail_mark,
-                        "Install from https://claude.ai/code (needed for auto-apply)"))
+        results.append(("Claude Code CLI", "[dim]optional[/dim]", "Install from https://claude.ai/code"))
+
+    if agy_bin:
+        results.append(("Antigravity CLI", ok_mark, agy_bin))
+    else:
+        results.append(("Antigravity CLI", "[dim]optional[/dim]", "Install agy CLI"))
+
+    if not claude_bin and not agy_bin:
+        results.append(("Agent CLI", fail_mark, "Install Claude Code CLI (https://claude.ai/code) or Antigravity CLI (agy)"))
 
     # Chrome
     try:
@@ -446,9 +535,9 @@ def doctor() -> None:
 
     if tier == 1:
         console.print("[dim]  → Tier 2 unlocks: scoring, tailoring, cover letters (needs LLM API key)[/dim]")
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI or Antigravity CLI + Chrome + Node.js)[/dim]")
     elif tier == 2:
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI or Antigravity CLI + Chrome + Node.js)[/dim]")
 
     console.print()
 
