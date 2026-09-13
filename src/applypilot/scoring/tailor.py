@@ -68,53 +68,29 @@ def _build_tailor_prompt(profile: dict) -> str:
     education = profile.get("experience", {})
     education_level = education.get("education_level", "")
 
-    return f"""You are a senior technical recruiter rewriting a resume to get this person an interview.
+    return f"""You are a senior technical recruiter providing strategic resume modifications for a target job.
+    
+Take the base resume and job description. Return a 'Tailoring Delta Report' as a JSON object.
 
-Take the base resume and job description. Return a tailored resume as a JSON object.
+## STRATEGY: 
+Instead of a full rewrite, identify the 2-3 most critical changes needed to match this job's seniority and domain.
 
-## RECRUITER SCAN (6 seconds):
-1. Title -- matches what they're hiring?
-2. Summary -- 2 sentences proving you've done this work
-3. First 3 bullets of most recent role -- verbs and outcomes match?
-4. Skills -- must-haves visible immediately?
-
-## SKILLS BOUNDARY (real skills only):
-{skills_block}
-
-You MAY add 2-3 closely related tools (Kubernetes if Docker, Terraform if AWS, Redis if PostgreSQL). No unrelated languages/frameworks.
-
-## TAILORING RULES:
-
-TITLE: Match the target role. Keep seniority (Senior/Lead/Staff). Drop company suffixes and team names.
-
-SUMMARY: Rewrite from scratch. Lead with the 1-2 skills that matter most for THIS role. Sound like someone who's done this job.
-
-SKILLS: Reorder each category so the job's must-haves appear first.
-
-Reframe EVERY bullet for this role. Same real work, different angle. Every bullet must be reworded. Never copy verbatim.
-
-PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
-
-BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, Designed, Implemented, Reduced, Automated, Deployed, Operated, Optimized). Most relevant first. Max 4 per section.
+## REQUIRED JSON FIELDS:
+- target_keywords: 3-5 must-have ATS terms for this role.
+- summary_pivot: Exactly 2 sentences replacing the current summary to lead with the job's priority skills.
+- experience_tweaks: A list of 2-3 specific recommendations for existing bullets (e.g., "In Role X, change Bullet 2 to focus on [Skill] instead of [Skill]").
+- overall_strategy: 1 sentence on the 'voice' or 'angle' for this application.
 
 ## VOICE:
-- Write like a real engineer. Short, direct.
-- GOOD: "Automated financial reporting with Python + API integrations, cut processing time from 10 hours to 2"
-- BAD: "Leveraged cutting-edge AI technologies to drive transformative operational efficiencies"
-- BANNED WORDS (using ANY of these = validation failure — do not use them even once):
-  {banned_str}
-- No em dashes. Use commas, periods, or hyphens.
+- Direct, engineering-led. No buzzwords.
+- GOOD: "Emphasize high-scale orchestration over generic backend work."
 
 ## HARD RULES:
-- Do NOT invent work, companies, degrees, or certifications
-- Do NOT change real numbers ({metrics_str})
-- Preserved companies: {companies_str} -- names stay as-is
-- Preserved school: {school}
-- Must fit 1 page.
+- Do NOT invent metrics or degrees.
+- Preserved Companies: {companies_str}
 
-## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
-
-{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":"{school} | {education_level}"}}"""
+## OUTPUT: Return ONLY valid JSON.
+{{"target_keywords":["..."],"summary_pivot":"...","experience_tweaks":["..."],"overall_strategy":"..."}}"""
 
 
 def _build_judge_prompt(profile: dict) -> str:
@@ -220,81 +196,60 @@ def extract_json(raw: str) -> dict:
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
-def assemble_resume_text(data: dict, profile: dict) -> str:
-    """Convert JSON resume data to formatted plain text.
+def _is_section_header(line: str) -> bool:
+    """Heuristic: a resume section header is a non-empty, non-bullet line
+    that's entirely uppercase letters/punctuation/whitespace (e.g. "SUMMARY",
+    "TECHNICAL SKILLS", "WORK EXPERIENCE")."""
+    s = line.strip()
+    if not s or s.startswith(("•", "-", "–", "*")):
+        return False
+    letters = [c for c in s if c.isalpha()]
+    return bool(letters) and all(c.isupper() for c in letters)
 
-    Header (name, location, contact) is ALWAYS code-injected from the profile,
-    never LLM-generated. All text fields are sanitized.
 
-    Args:
-        data: Parsed JSON resume from the LLM.
-        profile: User profile dict from load_profile().
+def assemble_resume_text(data: dict, profile: dict, resume_text: str) -> str:
+    """Assemble a complete, real, submittable resume for this job.
 
-    Returns:
-        Formatted resume text.
+    BUG FIX: this used to return only the LLM's meta "Tailoring Delta Report"
+    (a short list of *suggestions* like "In the <Company X> role, reframe the
+    bullet on microservices...") with no contact header, no skills, no work
+    experience -- effectively a near-blank page. That text/PDF is exactly what
+    apply/prompt.py uploads as the candidate's actual resume to real employers.
+
+    The LLM here only ever returns high-level guidance (a 2-sentence summary
+    pivot + short textual tweak suggestions), never full rewritten bullets --
+    so anything beyond the summary must come from the real base resume, not be
+    invented from those suggestions. Fix: keep the entire original resume
+    (header, skills, experience, education, honors, patents) verbatim, and
+    only replace the SUMMARY section with the tailored `summary_pivot`, with
+    the job's ATS `target_keywords` surfaced as a "Core Competencies" line
+    right after it.
     """
-    personal = profile.get("personal", {})
-    lines: list[str] = []
+    summary_pivot = sanitize_text(data.get("summary_pivot", "")).strip()
+    keywords = [k for k in (data.get("target_keywords") or []) if k]
 
-    # Header -- always code-injected from profile
-    lines.append(personal.get("full_name", ""))
-    lines.append(sanitize_text(data.get("title", "Software Engineer")))
+    lines = resume_text.splitlines()
+    try:
+        start = next(i for i, l in enumerate(lines) if l.strip().upper() == "SUMMARY")
+    except StopIteration:
+        start = None
 
-    # Location from search config or profile -- leave blank if not available
-    # The location line is optional; the original used a hardcoded city.
-    # We omit it here; the LLM prompt can include it if the user sets it.
+    if start is None or not summary_pivot:
+        # No recognizable SUMMARY section (or the LLM gave nothing usable) --
+        # return the original resume untouched rather than risk producing a
+        # broken/incomplete document.
+        return resume_text
 
-    # Contact line
-    contact_parts: list[str] = []
-    if personal.get("email"):
-        contact_parts.append(personal["email"])
-    if personal.get("phone"):
-        contact_parts.append(personal["phone"])
-    if personal.get("github_url"):
-        contact_parts.append(personal["github_url"])
-    if personal.get("linkedin_url"):
-        contact_parts.append(personal["linkedin_url"])
-    if contact_parts:
-        lines.append(" | ".join(contact_parts))
-    lines.append("")
+    end = start + 1
+    while end < len(lines) and not _is_section_header(lines[end]):
+        end += 1
 
-    # Summary
-    lines.append("SUMMARY")
-    lines.append(sanitize_text(data["summary"]))
-    lines.append("")
+    new_summary_block = [summary_pivot]
+    if keywords:
+        new_summary_block.append("Core Competencies (this role): " + ", ".join(keywords))
 
-    # Technical Skills
-    lines.append("TECHNICAL SKILLS")
-    if isinstance(data["skills"], dict):
-        for cat, val in data["skills"].items():
-            lines.append(f"{cat}: {sanitize_text(str(val))}")
-    lines.append("")
-
-    # Experience
-    lines.append("EXPERIENCE")
-    for entry in data.get("experience", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            lines.append(f"- {sanitize_text(b)}")
-        lines.append("")
-
-    # Projects
-    lines.append("PROJECTS")
-    for entry in data.get("projects", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            lines.append(f"- {sanitize_text(b)}")
-        lines.append("")
-
-    # Education
-    lines.append("EDUCATION")
-    lines.append(sanitize_text(str(data.get("education", ""))))
-
-    return "\n".join(lines)
+    new_lines = lines[: start + 1] + new_summary_block + lines[end:]
+    return "\n".join(new_lines)
 
 
 # ── LLM Judge ────────────────────────────────────────────────────────────
@@ -419,12 +374,12 @@ def tailor_resume(
             if attempt < max_retries:
                 continue
             # Last attempt — assemble whatever we got
-            tailored = assemble_resume_text(data, profile)
+            tailored = assemble_resume_text(data, profile, resume_text)
             report["status"] = "failed_validation"
             return tailored, report
 
         # Assemble text (header injected by code, em dashes auto-fixed)
-        tailored = assemble_resume_text(data, profile)
+        tailored = assemble_resume_text(data, profile, resume_text)
 
         # Layer 2: LLM judge (catches subtle fabrication) — skipped in lenient mode
         if validation_mode == "lenient":

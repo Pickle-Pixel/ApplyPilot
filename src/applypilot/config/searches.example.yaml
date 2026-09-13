@@ -97,6 +97,13 @@ boards:
 defaults:
   results_per_site: 100  # Max results per board per query
   hours_old: 72          # Only jobs posted within this many hours
+  # REQUIRED if you're searching outside the US and have "indeed" in `boards` above:
+  # jobspy's Indeed scraper defaults to the US Indeed index regardless of your
+  # `location`/`country` settings above, and silently returns 0 rows (no error) for
+  # every non-US location query. Set this to your target country, e.g. "india",
+  # "canada", "uk". Confirmed live: identical query returned 10 real rows at
+  # country_indeed="india" vs 0 rows at the "usa" default for an India location.
+  country_indeed: "usa"
 
 # Negative keywords -- skip jobs with these in the title (case-insensitive)
 exclude_titles:

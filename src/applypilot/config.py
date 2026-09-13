@@ -132,6 +132,17 @@ def is_manual_ats(url: str | None) -> bool:
     return any(domain in url_lower for domain in domains)
 
 
+def load_excluded_companies() -> list[str]:
+    """Load the "never apply here" company list from searches.yaml (exclude_companies).
+
+    Case-insensitive substring match against the `company` column, enforced in
+    apply/launcher.py -> acquire_job() so a blocked employer is never picked from the
+    apply queue -- not just filtered from the dashboard.
+    """
+    cfg = load_search_config()
+    return [c.strip() for c in (cfg.get("exclude_companies") or []) if c and c.strip()]
+
+
 def load_blocked_sites() -> tuple[set[str], list[str]]:
     """Load blocked sites and URL patterns from sites.yaml.
 

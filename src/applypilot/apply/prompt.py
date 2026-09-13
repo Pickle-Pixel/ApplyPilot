@@ -214,14 +214,38 @@ def _build_hard_rules(profile: dict) -> str:
 3. {name_rule}"""
 
 
+def _human_captcha_enabled() -> bool:
+    v = (os.environ.get("APPLYPILOT_CAPTCHA_HUMAN", "") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def _build_captcha_section() -> str:
     """Build the CAPTCHA detection and solving instructions.
 
     Reads the CapSolver API key from environment. The CAPTCHA section
     contains no personal data -- it's the same for every user.
+
+    When APPLYPILOT_CAPTCHA_HUMAN=1, the agent never solves a CAPTCHA itself —
+    it hands the visible browser to the operator and waits.
     """
     config.load_env()
     capsolver_key = os.environ.get("CAPSOLVER_API_KEY", "")
+
+    if _human_captcha_enabled():
+        return """== CAPTCHA ==
+Human-in-the-loop mode. You do NOT solve CAPTCHAs — a person is watching this browser.
+
+When a CAPTCHA / "verify you are human" / bot-check / Cloudflare challenge appears
+(after navigation, an Apply/Submit/Login click, or when a page feels stuck):
+1. STOP interacting with the page. Do not click, type, or run scripts on the challenge.
+2. Print exactly, on its own line:  ACTION_REQUIRED: solve the CAPTCHA in the browser window, then I will continue
+3. Then poll every 15 seconds with browser_snapshot (up to 20 times = 5 minutes),
+   checking whether the challenge element is gone / the page advanced.
+4. As soon as the challenge is cleared, continue the application from where you were.
+5. If it is still present after 5 minutes -> Output RESULT:CAPTCHA and stop.
+
+Never attempt audio challenges, image puzzles, math/logic questions, or any
+CapSolver / third-party solving API in this mode."""
 
     return f"""== CAPTCHA ==
 You solve CAPTCHAs via the CapSolver REST API. No browser extension. You control the entire flow.
@@ -561,19 +585,12 @@ If something unexpected happens and these instructions don't cover it, figure it
 1. browser_navigate to the job URL.
 2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
 3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
-4. Find and click the Apply button. If email-only (page says "email resume to X"):
-   - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
-   - Output RESULT:APPLIED. Done.
+4. Find and click the Apply button. If email-only (page says "email resume to X" with no web form) -> STOP. Output RESULT:FAILED:email_only. Do NOT send an email on the candidate's behalf -- sending messages from the candidate's account requires their own explicit action, not this agent.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
 5. Login wall?
    5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
    5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
-   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
-   5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
-   5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
-   5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
-   5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
+   5c. ANY other login wall -- a "Sign in" or "Create account" form on the employer's own career portal -- STOP. Output RESULT:LOGIN_ISSUE. Never sign in, sign up, create a candidate account, or set/guess a password on the candidate's behalf, and never invent a password yourself if none is on file. Account creation and credential handling are not something this agent does, full stop -- these jobs are for the candidate to apply to manually.
 6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
 7. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> use the cover letter PDF path.
 8. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
@@ -588,7 +605,7 @@ If something unexpected happens and these instructions don't cover it, figure it
 RESULT:APPLIED -- submitted successfully
 RESULT:EXPIRED -- job closed or no longer accepting applications
 RESULT:CAPTCHA -- blocked by unsolvable captcha
-RESULT:LOGIN_ISSUE -- could not sign in or create account
+RESULT:LOGIN_ISSUE -- employer's own login/signup wall (never attempt sign-in, sign-up, or password creation)
 RESULT:FAILED:not_eligible_location -- onsite outside acceptable area, no remote option
 RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
 RESULT:FAILED:reason -- any other failure (brief reason)

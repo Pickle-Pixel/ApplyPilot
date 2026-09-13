@@ -43,6 +43,11 @@ def _load_blocked():
     from applypilot.config import load_blocked_sites
     return load_blocked_sites()
 
+
+def _load_excluded_companies():
+    from applypilot.config import load_excluded_companies
+    return load_excluded_companies()
+
 # How often to poll the DB when the queue is empty (seconds)
 POLL_INTERVAL = config.DEFAULTS["poll_interval"]
 
@@ -64,7 +69,19 @@ if platform.system() != "Windows":
 # ---------------------------------------------------------------------------
 
 def _make_mcp_config(cdp_port: int) -> dict:
-    """Build MCP config dict for a specific CDP port."""
+    """Build MCP config dict for a specific CDP port.
+
+    SAFETY FIX: this used to also register a "gmail" MCP server, and the apply
+    prompt instructed the agent to send an email application (with the resume
+    attached) as a fallback when a job posting was email-only, and to search/
+    read the candidate's inbox for a verification code as part of an
+    autonomous sign-in/sign-up flow. Sending a message or reading a real
+    inbox on the candidate's behalf, unsupervised, is not something this
+    agent should ever do -- removed entirely so it isn't reachable regardless
+    of what any future prompt change says. Email-only postings and login
+    walls are now reported as FAILED for the candidate to handle manually
+    (see apply/prompt.py).
+    """
     return {
         "mcpServers": {
             "playwright": {
@@ -74,10 +91,6 @@ def _make_mcp_config(cdp_port: int) -> dict:
                     f"--cdp-endpoint=http://localhost:{cdp_port}",
                     f"--viewport-size={config.DEFAULTS['viewport']}",
                 ],
-            },
-            "gmail": {
-                "command": "npx",
-                "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
             },
         }
     }
@@ -104,18 +117,32 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
         conn.execute("BEGIN IMMEDIATE")
 
         if target_url:
-            like = f"%{target_url.split('?')[0].rstrip('/')}%"
+            # Exact match only. The previous version fell back to a LIKE pattern built
+            # from the URL with its query string stripped
+            # (f"%{target_url.split('?')[0]}%") -- but on Indeed/LinkedIn the query
+            # string *is* the job identity (?jk=..., currentJobId=...), so the pattern
+            # collapsed to e.g. "%indeed.com/viewjob%", matching every Indeed job in
+            # the DB. OR'd into one query with LIMIT 1 and no ORDER BY, SQLite could
+            # return an arbitrary row -- i.e. `apply --url <job A>` could silently
+            # target and submit to job B. No safe substring fallback replaces it: if
+            # the exact URL isn't found, that's a real "no match", not a hint to guess.
+            #
+            # `apply_status != 'in_progress'` was also NULL-unsafe: for a job that has
+            # never been touched (apply_status IS NULL), `NULL != 'in_progress'`
+            # evaluates to NULL (not true) in SQL, so the row was excluded here -- the
+            # one case this branch most needs to find.
             row = conn.execute("""
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
-                WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
+                WHERE (url = ? OR application_url = ?)
                   AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND (apply_status IS NULL OR apply_status = 'failed')
                 LIMIT 1
-            """, (target_url, target_url, like, like)).fetchone()
+            """, (target_url, target_url)).fetchone()
         else:
             blocked_sites, blocked_patterns = _load_blocked()
+            excluded_companies = _load_excluded_companies()
             # Build parameterized filters to avoid SQL injection
             params: list = [min_score]
             site_clause = ""
@@ -127,19 +154,42 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             if blocked_patterns:
                 url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
+            company_clause = ""
+            if excluded_companies:
+                # Case-insensitive substring exclusion (e.g. "Google" also blocks "Google
+                # Cloud"). company can be NULL for some rows (e.g. some Workday postings)
+                # -- those are never excluded here, matching the LinkedIn bot's behavior.
+                company_clause = " ".join(
+                    "AND (company IS NULL OR LOWER(company) NOT LIKE ?)" for _ in excluded_companies
+                )
+                params.extend(f"%{c.lower()}%" for c in excluded_companies)
+            # A job stays 'in_progress' only while a worker is actively on it, released
+            # back to NULL on completion (release_lock / mark_result). If the process
+            # is killed mid-job (Ctrl+C, crash, SIGTERM) that release never happens,
+            # and the job was previously invisible to every future run forever --
+            # confirmed live: a Ctrl+C during a stuck PwC attempt left it wedged in
+            # 'in_progress' with no path back to the retry queue. Treat an in_progress
+            # row whose last_attempted_at is older than 3x the per-job timeout as
+            # abandoned and eligible again, rather than a permanent lock.
+            stale_after_s = config.DEFAULTS["apply_timeout"] * 3
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
                 WHERE tailored_resume_path IS NOT NULL
-                  AND (apply_status IS NULL OR apply_status = 'failed')
+                  AND (
+                    apply_status IS NULL
+                    OR apply_status = 'failed'
+                    OR (apply_status = 'in_progress' AND last_attempted_at < datetime('now', '-' || ? || ' seconds'))
+                  )
                   AND (apply_attempts IS NULL OR apply_attempts < ?)
                   AND fit_score >= ?
                   {site_clause}
                   {url_clauses}
+                  {company_clause}
                 ORDER BY fit_score DESC, url
                 LIMIT 1
-            """, [config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
+            """, [stale_after_s, config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
 
         if not row:
             conn.rollback()
@@ -322,6 +372,14 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
 
     # Build claude command
+    #
+    # NOTE: this used to also pass --disallowedTools blocking a list of Gmail
+    # *management* actions (labels, filters, deletion) -- but never blocked
+    # mcp__gmail__send_email or mcp__gmail__search_emails/read_email, i.e. the
+    # actually sensitive operations (sending mail, reading the inbox) were the
+    # ones left reachable while only administrative actions were blocked. Now
+    # moot: the "gmail" MCP server is no longer registered in _make_mcp_config
+    # at all (see its docstring), so none of these tool names exist to call.
     cmd = [
         "claude",
         "--model", model,
@@ -329,16 +387,6 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         "--mcp-config", str(mcp_config_path),
         "--permission-mode", "bypassPermissions",
         "--no-session-persistence",
-        "--disallowedTools", (
-            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
-            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
-            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
-            "mcp__gmail__create_label,mcp__gmail__update_label,"
-            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
-            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
-            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
-            "mcp__gmail__delete_filter"
-        ),
         "--output-format", "stream-json",
         "--verbose", "-",
     ]
@@ -367,6 +415,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     start = time.time()
     stats: dict = {}
     proc = None
+    watchdog = None
+    # Hard per-job ceiling. `for line in proc.stdout` below has no read timeout, so
+    # a hung agent (frozen browser, unsolvable CAPTCHA loop) would block the worker
+    # forever — proc.wait(timeout=300) is never reached. This kills the subprocess;
+    # the stdout loop then hits EOF and run_job returns "skipped".
+    JOB_HARD_TIMEOUT_S = int(os.environ.get("APPLYPILOT_JOB_TIMEOUT_S", "720"))
 
     try:
         proc = subprocess.Popen(
@@ -382,6 +436,16 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         )
         with _claude_lock:
             _claude_procs[worker_id] = proc
+
+        _pid = proc.pid
+
+        def _watchdog_kill() -> None:
+            add_event(f"[W{worker_id}] WATCHDOG kill after {JOB_HARD_TIMEOUT_S}s")
+            _kill_process_tree(_pid)
+
+        watchdog = threading.Timer(JOB_HARD_TIMEOUT_S, _watchdog_kill)
+        watchdog.daemon = True
+        watchdog.start()
 
         proc.stdin.write(agent_prompt)
         proc.stdin.close()
@@ -509,6 +573,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         update_state(worker_id, status="failed", last_action=f"ERROR: {str(e)[:25]}")
         return f"failed:{str(e)[:100]}", duration_ms
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
         with _claude_lock:
             _claude_procs.pop(worker_id, None)
         if proc is not None and proc.poll() is None:
@@ -608,6 +674,15 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
                 continue
+            elif result == "applied" and dry_run:
+                # Per the dry-run prompt instructions the agent reports RESULT:APPLIED
+                # for a successful *preview* too. Writing apply_status='applied' here
+                # would permanently remove the job from the real queue even though
+                # nothing was submitted -- release the lock instead so it's still
+                # eligible for a real run.
+                release_lock(job["url"])
+                add_event(f"[W{worker_id}] DRY RUN OK (not marked applied): {job['title'][:30]}")
+                update_state(worker_id, jobs_done=applied + failed)
             elif result == "applied":
                 mark_result(job["url"], "applied", duration_ms=duration_ms)
                 applied += 1

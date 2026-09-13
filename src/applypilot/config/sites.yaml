@@ -4,10 +4,37 @@
 # Use {query_encoded} placeholder for search terms (URL-encoded).
 
 # ── Manual-Only ATS Domains ──────────────────────────────────────────────
-# These ATS platforms have unsolvable CAPTCHAs. Jobs routing through them
-# are flagged as "manual" during apply — bot skips, user applies by hand.
+# These ATS platforms have unsolvable CAPTCHAs, or require creating a real
+# candidate-portal account with a real password before an application can even
+# start. Jobs routing through them are flagged "manual" during apply — bot
+# skips (never attempts account creation or CAPTCHA-solving), user applies by
+# hand.
 manual_ats:
   - "ibegin.tcsapps.com"       # TCS iBegin — unsolvable CAPTCHA every time
+  - "myworkdayjobs.com"        # Every Workday tenant's candidate portal (e.g.
+                               # pwc.wd3.myworkdayjobs.com, salesforce.wd12...,
+                               # mastercard.wd1..., nvidia.wd5..., cisco.wd5...)
+                               # requires "Create Account/Sign In" as literally
+                               # step 1 -- a real account + real password, or
+                               # employer SSO (nvidia.wd5 confirmed failing with
+                               # sso_required). Confirmed live: repeated
+                               # automated account-creation attempts (one per
+                               # PwC job posting) got the candidate account
+                               # locked out. Substring-matches every tenant
+                               # subdomain, so this one entry covers all of
+                               # them, present and future. Account creation and
+                               # password entry are never something this bot
+                               # should do unsupervised -- flag for manual
+                               # application instead, same as an unsolvable
+                               # CAPTCHA.
+  - "taleo.net"                # Oracle Taleo -- same "create candidate account
+                               # first" pattern as Workday, same lockout risk.
+                               # Not yet triggered live, blocked proactively
+                               # before it recurs on a different ATS.
+  - "oraclecloud.com"          # Oracle Fusion Cloud Recruiting (Taleo's
+                               # successor product, same vendor/pattern) --
+                               # e.g. *.fa.ca3.oraclecloud.com candidate
+                               # portals. Same account-creation risk.
 
 # ── Blocked sites — too problematic for automation ───────────────────────
 blocked:
@@ -17,12 +44,22 @@ blocked:
     - "accenture"
     - "AccentureCareers"
     - "Workopolis"
+    # LinkedIn-sourced jobs have application_url == the LinkedIn job-view page
+    # itself (not the employer's real ATS), which requires an authenticated
+    # LinkedIn session to progress past. This apply agent has no LinkedIn
+    # login (that's the separate, dedicated LinkedIn Easy Apply bot) -- every
+    # one of these was a guaranteed 100% failure (confirmed: 10/10 failed,
+    # all hitting LinkedIn's sign-in wall). Discovery via jobspy's "linkedin"
+    # board is still fine for scoring/dashboard visibility; just excluded
+    # from the auto-apply queue.
+    - "linkedin"
   url_patterns:
     - "%glassdoor%"
     - "%google.com/about/careers%"
     - "%google.jobs%"
     - "%accenture%"
     - "%workopolis.com/out%"
+    - "%linkedin.com/jobs/view%"
 
 # ── Blocked SSO domains — cannot authenticate through these ──────────────
 blocked_sso:

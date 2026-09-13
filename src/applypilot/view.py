@@ -17,10 +17,17 @@ from pathlib import Path
 
 from rich.console import Console
 
-from applypilot.config import APP_DIR, DB_PATH
+from applypilot.config import APP_DIR, DB_PATH, load_search_config
 from applypilot.database import get_connection
 
 console = Console()
+
+
+def _priority_companies() -> list[str]:
+    try:
+        return [str(c).lower() for c in (load_search_config().get("priority_companies") or [])]
+    except Exception:
+        return []
 
 
 def generate_dashboard(output_path: str | None = None) -> str:
@@ -35,6 +42,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
     out = Path(output_path) if output_path else APP_DIR / "dashboard.html"
 
     conn = get_connection()
+    priority = _priority_companies()
 
     # Stats
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -72,15 +80,25 @@ def generate_dashboard(output_path: str | None = None) -> str:
         FROM jobs GROUP BY site ORDER BY high_fit DESC, total DESC
     """).fetchall()
 
-    # All scored jobs (5+), ordered by score desc
-    jobs = conn.execute("""
-        SELECT url, title, salary, description, location, site, strategy,
-               full_description, application_url, detail_error,
-               fit_score, score_reasoning
-        FROM jobs
-        WHERE fit_score >= 5
-        ORDER BY fit_score DESC, site, title
-    """).fetchall()
+    # Scored jobs (5+) plus, when nothing is scored yet, everything discovered —
+    # otherwise the table reads "Showing 0 of 0 jobs" while the header says N jobs.
+    if scored:
+        jobs = conn.execute("""
+            SELECT url, title, salary, description, location, site, company, strategy,
+                   full_description, application_url, detail_error,
+                   fit_score, score_reasoning
+            FROM jobs
+            WHERE fit_score >= 5 OR fit_score IS NULL
+            ORDER BY (fit_score IS NULL), fit_score DESC, site, title
+        """).fetchall()
+    else:
+        jobs = conn.execute("""
+            SELECT url, title, salary, description, location, site, company, strategy,
+                   full_description, application_url, detail_error,
+                   fit_score, score_reasoning
+            FROM jobs
+            ORDER BY discovered_at DESC, site, title
+        """).fetchall()
 
     # Color map per site
     colors = {
@@ -132,15 +150,19 @@ def generate_dashboard(output_path: str | None = None) -> str:
         if score != current_score:
             if current_score is not None:
                 job_sections += "</div>"
-            score_color = "#10b981" if score >= 7 else "#f59e0b"
+            score_color = "#10b981" if score >= 7 else ("#f59e0b" if score >= 1 else "#64748b")
             score_label = {
                 10: "Perfect Match", 9: "Excellent Fit", 8: "Strong Fit",
-                7: "Good Fit", 6: "Moderate+", 5: "Moderate",
+                7: "Good Fit", 6: "Moderate+", 5: "Moderate", 0: "Not yet scored",
             }.get(score, f"Score {score}")
-            count_at_score = score_dist.get(score, 0)
+            count_at_score = (
+                sum(1 for jj in jobs if (jj["fit_score"] or 0) == score)
+                if score == 0 else score_dist.get(score, 0)
+            )
+            badge = "&mdash;" if score == 0 else str(score)
             job_sections += f"""
             <h2 class="score-header" style="border-color:{score_color}">
-              <span class="score-badge" style="background:{score_color}">{score}</span>
+              <span class="score-badge" style="background:{score_color}">{badge}</span>
               {score_label} ({count_at_score} jobs)
             </h2>
             <div class="job-grid">"""
@@ -153,6 +175,13 @@ def generate_dashboard(output_path: str | None = None) -> str:
         site = escape(j["site"] or "")
         site_color = colors.get(j["site"] or "", "#6b7280")
         apply_url = escape(j["application_url"] or "")
+        # Company: jobspy rows (linkedin/indeed) carry it in `company`; Workday rows
+        # have `site` == the employer name and no separate `company`.
+        company_name = escape((j["company"] or j["site"] or "Unknown company").strip())
+        # Only show the source board as a secondary tag when it differs from the company
+        # (e.g. "linkedin" board vs. the actual hiring company) — otherwise it's redundant.
+        board_label = site if j["company"] and site.lower() != company_name.lower() else ""
+        is_priority = any(p in company_name.lower() for p in priority)
 
         # Parse keywords and reasoning from score_reasoning
         reasoning_raw = j["score_reasoning"] or ""
@@ -166,8 +195,12 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
         meta_parts = []
         meta_parts.append(
-            f'<span class="meta-tag site-tag" style="background:{site_color}33;color:{site_color}">{site}</span>'
+            f'<span class="meta-tag company-tag" style="background:{site_color}33;color:{site_color}">{company_name}</span>'
         )
+        if is_priority:
+            meta_parts.append('<span class="meta-tag priority-tag">&#9733; Must-Apply</span>')
+        if board_label:
+            meta_parts.append(f'<span class="meta-tag board-tag">via {board_label}</span>')
         if salary:
             meta_parts.append(f'<span class="meta-tag salary">{salary}</span>')
         if location:
@@ -179,10 +212,13 @@ def generate_dashboard(output_path: str | None = None) -> str:
             apply_html = f'<a href="{apply_url}" class="apply-link" target="_blank">Apply</a>'
 
         job_sections += f"""
-        <div class="job-card" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}">
+        <div class="job-card{' priority-card' if is_priority else ''}" data-score="{score}" data-site="{escape(j['site'] or '')}" data-company="{company_name.lower()}" data-location="{location.lower()}" data-priority="{'1' if is_priority else '0'}">
           <div class="card-header">
             <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
-            <a href="{url}" class="job-title" target="_blank">{title}</a>
+            <div class="title-block">
+              <div class="company-name">{'&#9733; ' if is_priority else ''}{company_name}</div>
+              <a href="{url}" class="job-title" target="_blank">{title}</a>
+            </div>
           </div>
           <div class="meta-row">{meta_html}</div>
           {f'<div class="keywords-row">{escape(keywords)}</div>' if keywords else ''}
@@ -261,16 +297,22 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .job-card[data-score="6"] {{ border-left-color: #f59e0b; }}
   .job-card[data-score="5"] {{ border-left-color: #f59e0b88; }}
 
-  .card-header {{ display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }}
-  .score-pill {{ display: inline-flex; align-items: center; justify-content: center; min-width: 1.6rem; height: 1.6rem; border-radius: 6px; color: #0f172a; font-weight: 700; font-size: 0.8rem; flex-shrink: 0; }}
+  .card-header {{ display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.5rem; }}
+  .score-pill {{ display: inline-flex; align-items: center; justify-content: center; min-width: 1.6rem; height: 1.6rem; border-radius: 6px; color: #0f172a; font-weight: 700; font-size: 0.8rem; flex-shrink: 0; margin-top: 0.1rem; }}
+  .title-block {{ display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }}
+  .company-name {{ font-weight: 700; font-size: 0.8rem; color: #cbd5e1; letter-spacing: 0.01em; }}
 
   .job-title {{ color: #e2e8f0; text-decoration: none; font-weight: 600; font-size: 0.95rem; }}
   .job-title:hover {{ color: #60a5fa; }}
 
   .meta-row {{ display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.4rem; }}
   .meta-tag {{ font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: #334155; color: #94a3b8; }}
+  .meta-tag.company-tag {{ font-weight: 600; }}
+  .meta-tag.board-tag {{ background: #1e293b; color: #64748b; font-style: italic; }}
+  .meta-tag.priority-tag {{ background: #78350f; color: #fbbf24; font-weight: 700; }}
   .meta-tag.salary {{ background: #064e3b; color: #6ee7b7; }}
   .meta-tag.location {{ background: #1e3a5f; color: #93c5fd; }}
+  .job-card.priority-card {{ border: 1px solid #fbbf2455; }}
 
   .keywords-row {{ font-size: 0.75rem; color: #10b981; margin-bottom: 0.3rem; line-height: 1.4; }}
   .reasoning-row {{ font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.5rem; font-style: italic; line-height: 1.4; }}
@@ -313,10 +355,12 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
 <div class="filters">
   <span class="filter-label">Score:</span>
-  <button class="filter-btn active" onclick="filterScore(0)">All 5+</button>
+  <button class="filter-btn active" onclick="filterScore(0)">All</button>
+  <button class="filter-btn" onclick="filterScore(5)">5+ Scored</button>
   <button class="filter-btn" onclick="filterScore(7)">7+ Strong</button>
   <button class="filter-btn" onclick="filterScore(8)">8+ Excellent</button>
   <button class="filter-btn" onclick="filterScore(9)">9+ Perfect</button>
+  <button class="filter-btn" id="priority-btn" onclick="togglePriority()" style="margin-left:0.5rem">&#9733; Must-Apply only</button>
   <span class="filter-label" style="margin-left:1rem">Search:</span>
   <input type="text" class="search-input" placeholder="Filter by title, site..." oninput="filterText(this.value)">
 </div>
@@ -339,11 +383,18 @@ def generate_dashboard(output_path: str | None = None) -> str:
 <script>
 let minScore = 0;
 let searchText = '';
+let priorityOnly = false;
 
 function filterScore(min) {{
   minScore = min;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.filter-btn').forEach(b => {{ if (b.id !== 'priority-btn') b.classList.remove('active'); }});
   event.target.classList.add('active');
+  applyFilters();
+}}
+
+function togglePriority() {{
+  priorityOnly = !priorityOnly;
+  document.getElementById('priority-btn').classList.toggle('active', priorityOnly);
   applyFilters();
 }}
 
@@ -359,9 +410,10 @@ function applyFilters() {{
     total++;
     const score = parseInt(card.dataset.score) || 0;
     const text = card.textContent.toLowerCase();
-    const scoreMatch = score >= (minScore || 5);
+    const scoreMatch = score >= minScore;
+    const priorityMatch = !priorityOnly || card.dataset.priority === '1';
     const textMatch = !searchText || text.includes(searchText);
-    if (scoreMatch && textMatch) {{
+    if (scoreMatch && priorityMatch && textMatch) {{
       card.classList.remove('hidden');
       shown++;
     }} else {{

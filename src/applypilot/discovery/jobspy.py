@@ -8,6 +8,7 @@ search configuration YAML (searches.yaml) rather than being hardcoded.
 """
 
 import logging
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -86,33 +87,42 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
     return accept, reject
 
 
+# Set once by run_discovery() from searches.yaml (home_country / country).
+_HOME_COUNTRY: str | None = None
+
+_JS_REMOTE_TOKENS = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+
+
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter.
 
-    Remote jobs are always accepted. Non-remote jobs must match an accept
-    pattern and not match a reject pattern.
+    Reject wins over accept. A named region not on the accept list is rejected
+    even if it says "remote" ("remote" usually means remote *within that
+    country*). Only geography-free remote ("Remote", "Anywhere") or
+    "<home_country>, Remote" always passes.
     """
     if not location:
         return True  # unknown location -- keep it, let scorer decide
 
     loc = location.lower()
+    _remote_tokens = _JS_REMOTE_TOKENS
+    place_accepts = [a.lower() for a in accept if a.lower() not in _remote_tokens]
 
-    # Remote jobs always OK
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
+    if any(r.lower() in loc for r in reject):
+        return False
+    if any(a in loc for a in place_accepts):
         return True
 
-    # Reject non-remote matches
-    for r in reject:
-        if r.lower() in loc:
-            return False
+    stripped = loc
+    for t in _remote_tokens:
+        stripped = stripped.replace(t, " ")
+    if _HOME_COUNTRY and any(t in loc for t in _remote_tokens):
+        stripped = re.sub(r"\b" + re.escape(_HOME_COUNTRY.lower()) + r"\b", " ", stripped)
+    stripped = re.sub(r"[,/|()\-–—:;.\s]+", " ", stripped).strip()
+    if not stripped:
+        return True  # location-agnostic remote (incl. "<home_country>, Remote")
 
-    # Accept matches
-    for a in accept:
-        if a.lower() in loc:
-            return True
-
-    # No match -- reject unknown
-    return False
+    return not place_accepts  # named unknown place: reject if the user gave an accept list
 
 
 # -- DB storage (JobSpy DataFrame -> SQLite) ---------------------------------
@@ -123,14 +133,23 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
     new = 0
     existing = 0
 
+    def _clean(v) -> str | None:
+        """str(v) but treats pandas NaN *and* Python None as "no value" instead
+        of storing the literal text "nan" / "None" (root cause of the broken
+        "file:///.../None" apply links)."""
+        if v is None:
+            return None
+        s = str(v).strip()
+        return None if s.lower() in ("", "nan", "none") else s
+
     for _, row in df.iterrows():
         url = str(row.get("job_url", ""))
         if not url or url == "nan":
             continue
 
-        title = str(row.get("title", "")) if str(row.get("title", "")) != "nan" else None
-        company = str(row.get("company", "")) if str(row.get("company", "")) != "nan" else None
-        location_str = str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None
+        title = _clean(row.get("title"))
+        company = _clean(row.get("company"))
+        location_str = _clean(row.get("location"))
 
         # Build salary string from min/max
         salary = None
@@ -163,15 +182,16 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
             full_description = description
             detail_scraped_at = now
 
-        # Extract apply URL if JobSpy provided it
-        apply_url = str(row.get("job_url_direct", "")) if str(row.get("job_url_direct", "")) != "nan" else None
+        # Extract apply URL if JobSpy provided a direct one; otherwise the listing's
+        # own URL *is* the apply link (LinkedIn/Indeed users apply from that page).
+        apply_url = _clean(row.get("job_url_direct")) or url
 
         try:
             conn.execute(
-                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at, "
-                "full_description, application_url, detail_scraped_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (url, title, salary, description, location_str, site_label, strategy, now,
+                "INSERT INTO jobs (url, title, salary, description, location, site, company, strategy, "
+                "discovered_at, full_description, application_url, detail_scraped_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (url, title, salary, description, location_str, site_label, company, strategy, now,
                  full_description, apply_url, detail_scraped_at),
             )
             new += 1
@@ -378,6 +398,9 @@ def _full_crawl(
     glassdoor_map = search_cfg.get("glassdoor_location_map", {})
     accept_locs, reject_locs = _load_location_config(search_cfg)
 
+    global _HOME_COUNTRY
+    _HOME_COUNTRY = search_cfg.get("home_country") or search_cfg.get("country")
+
     if tiers:
         queries = [q for q in queries if q.get("tier") in tiers]
     if locations:
@@ -461,7 +484,13 @@ def run_discovery(cfg: dict | None = None) -> dict:
         return {"new": 0, "existing": 0, "errors": 0, "db_total": 0, "queries": 0}
 
     proxy = cfg.get("proxy")
-    sites = cfg.get("sites")
+    # BUG FIX: searches.yaml's actual key is "boards" (see the shipped example and
+    # every user config), not "sites" -- this always returned None, silently falling
+    # back to _full_crawl's hardcoded ["indeed", "linkedin", "zip_recruiter"] default
+    # and ignoring the user's configured board list entirely. Confirmed live: a
+    # config of `boards: [indeed, linkedin]` still hammered ZipRecruiter 17 times
+    # (all 403s) while "indeed" never ran at all.
+    sites = cfg.get("boards") or cfg.get("sites")
     results_per_site = cfg.get("defaults", {}).get("results_per_site", 100)
     hours_old = cfg.get("defaults", {}).get("hours_old", 72)
     tiers = cfg.get("tiers")

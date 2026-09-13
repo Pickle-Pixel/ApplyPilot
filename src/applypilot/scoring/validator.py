@@ -97,66 +97,73 @@ def sanitize_text(text: str) -> str:
 # ── JSON Field Validation ─────────────────────────────────────────────────
 
 def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dict:
-    """Validate individual JSON fields from an LLM-generated tailored resume.
-
-    Args:
-        data:    Parsed JSON from the LLM (title, summary, skills, experience, projects, education).
-        profile: User profile dict from load_profile().
-        mode:    Validation strictness — "strict", "normal", or "lenient".
-                 strict  → banned words are errors (trigger retries)
-                 normal  → banned words are warnings (no retry)
-                 lenient → banned words ignored entirely
-
-    Returns:
-        {"passed": bool, "errors": list[str], "warnings": list[str]}
-    """
+    """Validate Delta Report JSON fields."""
     errors: list[str] = []
     warnings: list[str] = []
 
-    # Required keys — always checked regardless of mode
-    for key in ("title", "summary", "skills", "experience", "projects", "education"):
+    # Required keys for Delta Report
+    for key in ("target_keywords", "summary_pivot", "experience_tweaks", "overall_strategy"):
         if key not in data or not data[key]:
-            errors.append(f"Missing required field: {key}")
+            errors.append(f"Missing required Delta field: {key}")
     if errors:
         return {"passed": False, "errors": errors, "warnings": warnings}
 
-    # Collect all text for bulk checks
-    all_text_parts: list[str] = [data["summary"]]
+    # Collect all text for bulk checks. The Delta-Report schema (target_keywords,
+    # summary_pivot, experience_tweaks, overall_strategy) doesn't carry the
+    # full-resume keys below — read them defensively so a Delta Report doesn't
+    # KeyError here. The full resume text is checked separately by
+    # validate_tailored_resume().
+    all_text_parts: list[str] = []
+    for _k in ("summary", "summary_pivot", "overall_strategy"):
+        _v = data.get(_k)
+        if isinstance(_v, str) and _v:
+            all_text_parts.append(_v)
+    for _k in ("target_keywords", "experience_tweaks"):
+        _v = data.get(_k)
+        if isinstance(_v, (list, tuple)):
+            all_text_parts.extend(str(x) for x in _v)
+        elif isinstance(_v, str) and _v:
+            all_text_parts.append(_v)
 
     # Skills: check for fabrication (always enforced)
-    if isinstance(data["skills"], dict):
-        skills_text = " ".join(str(v) for v in data["skills"].values()).lower()
+    _skills = data.get("skills")
+    if isinstance(_skills, dict):
+        skills_text = " ".join(str(v) for v in _skills.values()).lower()
         for fake in FABRICATION_WATCHLIST:
             if len(fake) <= 2:
                 continue
             if fake in skills_text:
                 errors.append(f"Fabricated skill: '{fake}'")
 
-    # Experience: preserved companies must be present (always enforced)
+    # Experience: preserved companies must be present (only when the payload
+    # actually carries a structured experience list).
     resume_facts = profile.get("resume_facts", {})
     preserved_companies = resume_facts.get("preserved_companies", [])
 
-    if isinstance(data["experience"], list):
+    _experience = data.get("experience")
+    if isinstance(_experience, list):
         for company in preserved_companies:
             has_company = any(
                 company.lower() in str(e.get("header", "")).lower()
-                for e in data["experience"]
+                for e in _experience
             )
             if not has_company:
                 errors.append(f"Company '{company}' missing from experience")
-        for entry in data["experience"]:
+        for entry in _experience:
             for b in entry.get("bullets", []):
                 all_text_parts.append(b)
 
     # Projects: collect bullets
-    if isinstance(data["projects"], list):
-        for entry in data["projects"]:
+    _projects = data.get("projects")
+    if isinstance(_projects, list):
+        for entry in _projects:
             for b in entry.get("bullets", []):
                 all_text_parts.append(b)
 
-    # Education: preserved school must be present (always enforced)
+    # Education: preserved school must be present — only when the payload carries
+    # an education field (Delta Reports don't; the full resume text handles this).
     preserved_school = resume_facts.get("preserved_school", "")
-    if preserved_school:
+    if preserved_school and "education" in data:
         edu = str(data.get("education", ""))
         if preserved_school.lower() not in edu.lower():
             errors.append(f"Education '{preserved_school}' missing")

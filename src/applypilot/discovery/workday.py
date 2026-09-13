@@ -45,30 +45,90 @@ def _load_location_filter(search_cfg: dict | None = None):
     if search_cfg is None:
         search_cfg = config.load_search_config()
 
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
+    accept = list(search_cfg.get("location_accept", []))
+    reject = list(search_cfg.get("location_reject_non_remote", []))
     return accept, reject
 
 
-def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
-    """Check if a job location passes the user's location filter."""
-    if not location:
+_WD_REMOTE_TOKENS = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+
+# Set once by run_workday_discovery() from searches.yaml (home_country / country).
+# "<home_country>, Remote" then counts as location-agnostic remote.
+_HOME_COUNTRY: str | None = None
+
+
+def _location_from_path(external_path: str | None) -> str:
+    """Recover a location from a Workday externalPath when locationsText is empty.
+
+    "/job/Warsaw---Poland/Senior-AI-Engineer_R19416" -> "Warsaw, Poland"
+    "/job/Bangalore-India/..."                        -> "Bangalore India"
+    """
+    if not external_path:
+        return ""
+    m = re.search(r"/job/([^/]+)/", external_path)
+    if not m:
+        return ""
+    seg = m.group(1).replace("---", ", ")
+    seg = re.sub(r"[-_]+", " ", seg)
+    return re.sub(r"\s+", " ", seg).strip()
+
+
+def _location_ok(
+    location: str | None,
+    accept: list[str],
+    reject: list[str],
+    home_country: str | None = None,
+) -> bool:
+    """Check if a job location passes the user's location filter.
+
+    Note: a reject pattern wins even when the location says "remote" (e.g.
+    "Canada, Remote" is still rejected when `reject` contains "Canada"),
+    unless the location also matches an accept pattern. This matters for
+    non-US searches where "remote" usually means "remote *within that country*".
+    An empty/unknown location is rejected when the user gave an accept list
+    (Workday's search API sometimes omits locationsText — do not let those
+    through unfiltered; callers should fall back to _location_from_path first).
+    """
+    loc = (location or "").lower()
+    _remote_tokens = _WD_REMOTE_TOKENS
+    if home_country is None:
+        home_country = _HOME_COUNTRY
+    # Real place-name accepts only — not the "remote"/"anywhere" tokens, otherwise
+    # "Canada, Remote" would count as an accepted location.
+    place_accepts = [a.lower() for a in accept if a.lower() not in _remote_tokens]
+
+    if not loc:
+        return not place_accepts
+
+    # Reject wins over accept: an explicitly rejected region is out even if it also
+    # contains a broad accept term ("Bangalore, India" with accept=["India"],
+    # reject=["Bangalore"]) or says "remote" ("Canada, Remote").
+    if any(r.lower() in loc for r in reject):
+        return False
+
+    if any(a in loc for a in place_accepts):
         return True
 
-    loc = location.lower()
-
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
+    # Strip remote/work-style tokens (and the home country, if given) and
+    # separators. If nothing geographic remains it's location-agnostic remote —
+    # "Remote", "Anywhere", or "<home_country>, Remote" — → accept. A specific
+    # non-accepted city ("Bhopal, India") leaves a name behind → does not pass here.
+    stripped = loc
+    for t in _remote_tokens:
+        stripped = stripped.replace(t, " ")
+    if home_country:
+        _is_remote = any(t in loc for t in _remote_tokens)
+        if _is_remote:
+            stripped = re.sub(
+                r"\b" + re.escape(home_country.lower()) + r"\b", " ", stripped
+            )
+    stripped = re.sub(r"[,/|()\-–—:;.\s]+", " ", stripped).strip()
+    if not stripped:
         return True
 
-    for r in reject:
-        if r.lower() in loc:
-            return False
-
-    for a in accept:
-        if a.lower() in loc:
-            return True
-
-    return False
+    # A specific place is named but it's neither accepted nor rejected. If the user
+    # gave an accept list at all, treat unknown geography as out-of-scope.
+    return not place_accepts
 
 
 # -- HTML stripper -----------------------------------------------------------
@@ -220,7 +280,7 @@ def search_employer(
             break
 
         for j in postings:
-            loc = j.get("locationsText", "")
+            loc = j.get("locationsText", "") or _location_from_path(j.get("externalPath", ""))
             if location_filter and accept_locs is not None and reject_locs is not None:
                 if not _location_ok(loc, accept_locs, reject_locs):
                     continue
@@ -493,6 +553,9 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
     search_cfg = config.load_search_config()
     queries_cfg = search_cfg.get("queries", [])
     accept_locs, reject_locs = _load_location_filter(search_cfg)
+
+    global _HOME_COUNTRY
+    _HOME_COUNTRY = search_cfg.get("home_country") or search_cfg.get("country")
 
     # Default to tier 1-2 queries for workday scraping
     max_tier = search_cfg.get("workday_max_tier", 2)

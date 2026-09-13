@@ -39,3 +39,6 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Local run notes (contain personal details)
+AUTOAPPLY_*.md

@@ -63,12 +63,37 @@ def _detect_provider() -> tuple[str, str, str]:
 # Client
 # ---------------------------------------------------------------------------
 
-_MAX_RETRIES = 5
+import os as _os
+import threading as _threading
+
+_MAX_RETRIES = int(_os.environ.get("APPLYPILOT_LLM_MAX_RETRIES", "7"))
 _TIMEOUT = 120  # seconds
 
 # Base wait on first 429/503 (doubles each retry, caps at 60s).
 # Gemini free tier is 15 RPM = 4s minimum between requests; 10s gives headroom.
 _RATE_LIMIT_BASE_WAIT = 10
+
+# Client-side pacing: keep at least this many seconds between requests so we
+# self-throttle under the provider's RPM limit instead of firing a burst and
+# eating 429s (which was making `run tailor` fail every job right after a big
+# `run score`). Gemini free tier = 15 RPM → 4s; 0 disables. Override with
+# APPLYPILOT_LLM_MIN_INTERVAL_S.
+_MIN_REQUEST_INTERVAL = float(_os.environ.get("APPLYPILOT_LLM_MIN_INTERVAL_S", "4.5"))
+_pace_lock = _threading.Lock()
+_last_request_ts = 0.0
+
+
+def _pace() -> None:
+    """Block until _MIN_REQUEST_INTERVAL has elapsed since the last request."""
+    global _last_request_ts
+    if _MIN_REQUEST_INTERVAL <= 0:
+        return
+    with _pace_lock:
+        import time as _t
+        gap = _t.monotonic() - _last_request_ts
+        if gap < _MIN_REQUEST_INTERVAL:
+            _t.sleep(_MIN_REQUEST_INTERVAL - gap)
+        _last_request_ts = _t.monotonic()
 
 
 _GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -201,6 +226,7 @@ class LLMClient:
 
         for attempt in range(_MAX_RETRIES):
             try:
+                _pace()
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
                     return self._chat_native_gemini(messages, temperature, max_tokens)

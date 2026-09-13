@@ -5,6 +5,7 @@ and exports to PDF using headless Chromium via Playwright.
 """
 
 import logging
+import re
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
@@ -95,14 +96,33 @@ def parse_skills(text: str) -> list[tuple[str, str]]:
 
     Returns:
         List of (category_name, skills_string) tuples.
+
+    BUG FIX: a long skill line word-wraps across multiple physical lines in the
+    source text (e.g. "AI & Machine Learning: LLM Orchestration, ..., ReAct
+    Patterns,\nRAG, Model Context Protocol (MCP), ...\n& Guardrails, ..."). The
+    old version treated every physical line independently and only kept lines
+    containing ":" -- every wrapped continuation line (no colon) was silently
+    dropped, truncating the bullet mid-sentence. Now continuation lines (no
+    colon, and not itself starting a new "Category:" bullet) are appended to
+    the previous category's value instead of discarded.
     """
     skills: list[tuple[str, str]] = []
-    for line in text.strip().split("\n"):
-        line = line.strip()
+    for raw_line in text.strip().split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
         if ":" in line:
             cat, val = line.split(":", 1)
             skills.append((cat.strip(), val.strip()))
+        elif skills:
+            # Wrapped continuation of the previous bullet's value.
+            cat, val = skills[-1]
+            skills[-1] = (cat, f"{val} {line}".strip())
     return skills
+
+
+_JOB_HEADER_RE = re.compile(r"\b(19|20)\d{2}\b|\bpresent\b", re.IGNORECASE)
+_BULLET_PREFIXES = ("- ", "\u2022 ", "\u2013 ", "\u2014 ")  # "- ", "\u2022 ", "\u2013 ", "\u2014 "
 
 
 def parse_entries(text: str) -> list[dict]:
@@ -113,32 +133,58 @@ def parse_entries(text: str) -> list[dict]:
 
     Returns:
         List of {"title": str, "subtitle": str, "bullets": list[str]} dicts.
+
+    BUG FIX (two bugs):
+    1. Only "- " and "\u2022 " (bullet) were recognized as bullet markers; the
+       en-dash "\u2013 " sub-bullets this resume format actually uses for nested
+       points were not, so every sub-bullet fell through to the "new entry"
+       branch below.
+    2. Any non-bulleted line was treated as a brand-new job entry once the
+       current entry already had bullets -- but a bullet that word-wraps across
+       physical lines produces exactly that shape (bullet line, then a
+       continuation line with no bullet prefix). Confirmed live: wrapped bullet
+       continuations rendered as bogus bold "job title" headers scattered
+       through the middle of a real job's bullet list. A line is now only
+       treated as a new entry if it looks like an actual job header (contains a
+       four-digit year or "Present", as every entry in this resume format
+       does) -- anything else non-bulleted is appended to whatever the
+       previous line was (bullet, subtitle, or title).
     """
     entries: list[dict] = []
     lines = text.strip().split("\n")
     current: dict | None = None
+    last_line_kind: str | None = None  # "title" | "subtitle" | "bullet"
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("- ") or stripped.startswith("\u2022 "):
+        bullet_prefix = next((p for p in _BULLET_PREFIXES if stripped.startswith(p)), None)
+        if bullet_prefix:
             if current:
-                current["bullets"].append(stripped[2:].strip())
+                current["bullets"].append(stripped[len(bullet_prefix):].strip())
+                last_line_kind = "bullet"
         elif current is None or (
-            not stripped.startswith("-")
-            and not stripped.startswith("\u2022")
-            and len(current.get("bullets", [])) > 0
+            len(current.get("bullets", [])) == 0 or _JOB_HEADER_RE.search(stripped)
         ):
-            # New entry
+            # New entry: either nothing parsed yet, or this line looks like a
+            # genuine job header (has a year/"Present", same as every real
+            # entry title in this format).
             if current:
                 entries.append(current)
             current = {"title": stripped, "subtitle": "", "bullets": []}
-        elif current and not current["subtitle"]:
+            last_line_kind = "title"
+        elif current and not current["subtitle"] and last_line_kind == "title":
             current["subtitle"] = stripped
+            last_line_kind = "subtitle"
         else:
-            if current:
-                current["bullets"].append(stripped)
+            # Wrapped continuation of whatever came before.
+            if current and last_line_kind == "bullet" and current["bullets"]:
+                current["bullets"][-1] = f"{current['bullets'][-1]} {stripped}".strip()
+            elif current and last_line_kind == "subtitle":
+                current["subtitle"] = f"{current['subtitle']} {stripped}".strip()
+            elif current:
+                current["title"] = f"{current['title']} {stripped}".strip()
 
     if current:
         entries.append(current)
@@ -159,10 +205,32 @@ def build_html(resume: dict) -> str:
     """
     sections = resume["sections"]
 
+    # BUG FIX: this used to look up sections by an exact hardcoded key
+    # ("EXPERIENCE", "PROJECTS", "EDUCATION", "TECHNICAL SKILLS", "SUMMARY") --
+    # but parse_resume() keys sections by whatever ALL-CAPS header text the
+    # resume actually uses, e.g. "WORK EXPERIENCE" rather than "EXPERIENCE".
+    # `"EXPERIENCE" in sections` is an exact-key dict lookup, not a substring
+    # match, so it silently matched nothing and the entire experience section
+    # (along with any other differently-named or unrecognized section, e.g.
+    # "HONORS & AWARDS", "PATENTS & TECHNICAL INNOVATION") was dropped from
+    # every generated resume with no error. Confirmed live against the shipped
+    # resume format. Now matches by substring so header wording doesn't matter,
+    # and any section that isn't one of the specially-formatted ones below is
+    # still rendered generically instead of silently discarded.
+    def _find_section(*name_fragments: str) -> str | None:
+        for key in sections:
+            if any(frag in key.upper() for frag in name_fragments):
+                return key
+        return None
+
+    consumed_keys: set[str] = set()
+
     # Skills
     skills_html = ""
-    if "TECHNICAL SKILLS" in sections:
-        skills = parse_skills(sections["TECHNICAL SKILLS"])
+    skills_key = _find_section("TECHNICAL SKILLS", "SKILLS")
+    if skills_key:
+        consumed_keys.add(skills_key)
+        skills = parse_skills(sections[skills_key])
         rows = ""
         for cat, val in skills:
             rows += f'<div class="skill-row"><span class="skill-cat">{cat}:</span> {val}</div>\n'
@@ -170,8 +238,10 @@ def build_html(resume: dict) -> str:
 
     # Experience
     exp_html = ""
-    if "EXPERIENCE" in sections:
-        entries = parse_entries(sections["EXPERIENCE"])
+    exp_key = _find_section("EXPERIENCE")
+    if exp_key:
+        consumed_keys.add(exp_key)
+        entries = parse_entries(sections[exp_key])
         items = ""
         for e in entries:
             bullets = "".join(f"<li>{b}</li>" for b in e["bullets"])
@@ -181,8 +251,10 @@ def build_html(resume: dict) -> str:
 
     # Projects
     proj_html = ""
-    if "PROJECTS" in sections:
-        entries = parse_entries(sections["PROJECTS"])
+    proj_key = _find_section("PROJECTS")
+    if proj_key:
+        consumed_keys.add(proj_key)
+        entries = parse_entries(sections[proj_key])
         items = ""
         for e in entries:
             bullets = "".join(f"<li>{b}</li>" for b in e["bullets"])
@@ -192,14 +264,31 @@ def build_html(resume: dict) -> str:
 
     # Education
     edu_html = ""
-    if "EDUCATION" in sections:
-        edu_text = sections["EDUCATION"].strip()
+    edu_key = _find_section("EDUCATION")
+    if edu_key:
+        consumed_keys.add(edu_key)
+        edu_text = sections[edu_key].strip()
         edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
 
     # Summary
     summary_html = ""
-    if "SUMMARY" in sections:
-        summary_html = f'<div class="section"><div class="section-title">Summary</div><div class="summary">{sections["SUMMARY"].strip()}</div></div>'
+    summary_key = _find_section("SUMMARY")
+    if summary_key:
+        consumed_keys.add(summary_key)
+        summary_html = f'<div class="section"><div class="section-title">Summary</div><div class="summary">{sections[summary_key].strip()}</div></div>'
+
+    # Any remaining section (e.g. "HONORS & AWARDS", "PATENTS & TECHNICAL
+    # INNOVATION", or anything else the resume happens to contain) -- render it
+    # generically in its original order rather than silently dropping it.
+    extra_html_parts = []
+    for key, body in sections.items():
+        if key in consumed_keys or not body.strip():
+            continue
+        title = key.title()
+        extra_html_parts.append(
+            f'<div class="section"><div class="section-title">{title}</div><div class="edu">{body.strip()}</div></div>'
+        )
+    extra_html = "".join(extra_html_parts)
 
     # Contact line parsing
     contact = resume["contact"]
@@ -327,6 +416,7 @@ li {{
 {exp_html}
 {proj_html}
 {edu_html}
+{extra_html}
 </body>
 </html>"""
 
