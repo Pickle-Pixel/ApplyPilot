@@ -5,6 +5,17 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Select Claude Code or Antigravity CLI as the auto-apply browser agent during
+  `applypilot init`, with `--agent` available as a per-run override.
+- Antigravity stream parsing and automatic Playwright/Gmail MCP registration.
+
+### Fixed
+- Isolate browser-agent subprocesses so skipping a job does not terminate ApplyPilot.
+- Keep dry runs from changing application status or attempt counts.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added

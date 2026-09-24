@@ -1,7 +1,7 @@
-"""Apply orchestration: acquire jobs, spawn Claude Code sessions, track results.
+"""Apply orchestration: acquire jobs, spawn browser-agent sessions, track results.
 
 This is the main entry point for the apply pipeline. It pulls jobs from
-the database, launches Chrome + Claude Code for each one, parses the
+the database, launches Chrome plus the selected agent for each one, parses the
 result, and updates the database. Supports parallel workers via --workers.
 """
 
@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -24,17 +25,25 @@ from rich.console import Console
 from rich.live import Live
 
 from applypilot import config
-from applypilot.database import get_connection
-from applypilot.apply import chrome, dashboard, prompt as prompt_mod
+from applypilot.apply import prompt as prompt_mod
 from applypilot.apply.chrome import (
-    launch_chrome, cleanup_worker, kill_all_chrome,
-    reset_worker_dir, cleanup_on_exit, _kill_process_tree,
     BASE_CDP_PORT,
+    _kill_process_tree,
+    cleanup_on_exit,
+    cleanup_worker,
+    kill_all_chrome,
+    launch_chrome,
+    reset_worker_dir,
 )
 from applypilot.apply.dashboard import (
-    init_worker, update_state, add_event, get_state,
-    render_full, get_totals,
+    add_event,
+    get_state,
+    get_totals,
+    init_worker,
+    render_full,
+    update_state,
 )
+from applypilot.database import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +58,9 @@ POLL_INTERVAL = config.DEFAULTS["poll_interval"]
 # Thread-safe shutdown coordination
 _stop_event = threading.Event()
 
-# Track active Claude Code processes for skip (Ctrl+C) handling
-_claude_procs: dict[int, subprocess.Popen] = {}
-_claude_lock = threading.Lock()
+# Track active browser-agent processes for skip (Ctrl+C) handling
+_agent_procs: dict[int, subprocess.Popen] = {}
+_agent_lock = threading.Lock()
 
 # Register cleanup on exit
 atexit.register(cleanup_on_exit)
@@ -125,7 +134,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 params.extend(blocked_sites)
             url_clauses = ""
             if blocked_patterns:
-                url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
+                url_clauses = " ".join("AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
@@ -294,9 +303,74 @@ def reset_failed() -> int:
 # Per-job execution
 # ---------------------------------------------------------------------------
 
+def resolve_agent(agent: str) -> str:
+    """Resolve the requested browser agent CLI."""
+    if agent == "auto":
+        configured = config.get_browser_agent()
+        if configured != "auto":
+            agent = configured
+        else:
+            if shutil.which("agy"):
+                return "antigravity"
+            if shutil.which("claude"):
+                return "claude"
+            raise RuntimeError("No browser agent found. Install Antigravity CLI (agy) or Claude Code.")
+    if agent not in config.BROWSER_AGENT_BINARIES:
+        choices = ", ".join(config.BROWSER_AGENT_BINARIES)
+        raise ValueError(f"Unknown browser agent '{agent}'. Choose {choices}, or auto.")
+    binary = config.BROWSER_AGENT_BINARIES[agent]
+    if not shutil.which(binary):
+        raise RuntimeError(f"{agent} agent requested but '{binary}' is not installed")
+    return agent
+
+
+def default_model_for_agent(agent: str) -> str:
+    """Return ApplyPilot's default model for a resolved browser agent."""
+    return "gemini-3.8-flash-medium" if agent == "antigravity" else "haiku"
+
+
+def build_agent_command(
+    agent: str,
+    model: str | None,
+    prompt: str,
+    mcp_config_path: Path,
+) -> tuple[list[str], str]:
+    """Build the subprocess command for a resolved browser agent."""
+    selected_model = model or default_model_for_agent(agent)
+    if agent == "antigravity":
+        return ([
+            "agy",
+            "--model", selected_model,
+            "--dangerously-skip-permissions",
+            "--output-format", "stream-json",
+            f"--print={prompt}",
+        ], selected_model)
+    return ([
+        "claude",
+        "--model", selected_model,
+        "-p",
+        "--mcp-config", str(mcp_config_path),
+        "--permission-mode", "bypassPermissions",
+        "--no-session-persistence",
+        "--disallowedTools", (
+            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
+            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
+            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
+            "mcp__gmail__create_label,mcp__gmail__update_label,"
+            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
+            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
+            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
+            "mcp__gmail__delete_filter"
+        ),
+        "--output-format", "stream-json",
+        "--verbose", "-",
+    ], selected_model)
+
+
 def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
-    """Spawn a Claude Code session for one job application.
+            model: str | None = None, dry_run: bool = False,
+            agent: str = "auto") -> tuple[str, int]:
+    """Spawn a browser-agent session for one job application.
 
     Returns:
         Tuple of (status_string, duration_ms). Status is one of:
@@ -321,27 +395,13 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
     mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
 
-    # Build claude command
-    cmd = [
-        "claude",
-        "--model", model,
-        "-p",
-        "--mcp-config", str(mcp_config_path),
-        "--permission-mode", "bypassPermissions",
-        "--no-session-persistence",
-        "--disallowedTools", (
-            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
-            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
-            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
-            "mcp__gmail__create_label,mcp__gmail__update_label,"
-            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
-            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
-            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
-            "mcp__gmail__delete_filter"
-        ),
-        "--output-format", "stream-json",
-        "--verbose", "-",
-    ]
+    resolved_agent = resolve_agent(agent)
+    cmd, _ = build_agent_command(
+        resolved_agent,
+        model,
+        agent_prompt,
+        mcp_config_path,
+    )
 
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
@@ -371,7 +431,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     try:
         proc = subprocess.Popen(
             cmd,
-            stdin=subprocess.PIPE,
+            stdin=subprocess.PIPE if resolved_agent == "claude" else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -379,12 +439,16 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             errors="replace",
             env=env,
             cwd=str(worker_dir),
+            # _kill_process_tree uses killpg on Unix. Give the agent its own
+            # process group so skipping it cannot kill ApplyPilot itself.
+            start_new_session=platform.system() != "Windows",
         )
-        with _claude_lock:
-            _claude_procs[worker_id] = proc
+        with _agent_lock:
+            _agent_procs[worker_id] = proc
 
-        proc.stdin.write(agent_prompt)
-        proc.stdin.close()
+        if resolved_agent == "claude" and proc.stdin:
+            proc.stdin.write(agent_prompt)
+            proc.stdin.close()
 
         text_parts: list[str] = []
         with open(worker_log, "a", encoding="utf-8") as lf:
@@ -397,7 +461,41 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 try:
                     msg = json.loads(line)
                     msg_type = msg.get("type")
-                    if msg_type == "assistant":
+                    if resolved_agent == "antigravity":
+                        event = msg.get("event")
+                        if event == "step_update":
+                            step = msg.get("step_update", {})
+                            if step.get("step_type") == "agent_response" and step.get("text_delta"):
+                                text_parts.append(step["text_delta"])
+                                lf.write(step["text_delta"])
+                            elif step.get("step_type") == "tool" and step.get("state") == "ACTIVE":
+                                name = step.get("tool_name", "tool")
+                                info = step.get("tool_info", {})
+                                params = info.get("parameters", {})
+                                if name == "call_mcp_tool":
+                                    name = params.get("ToolName", name)
+                                desc = name
+                                lf.write(f"  >> {desc}\n")
+                                ws = get_state(worker_id)
+                                cur_actions = ws.actions if ws else 0
+                                update_state(worker_id, actions=cur_actions + 1,
+                                             last_action=desc[:35])
+                        elif event == "result":
+                            result_data = msg.get("result", {})
+                            response = result_data.get("response", "")
+                            if response:
+                                text_parts.append(response)
+                                lf.write(response + "\n")
+                            usage = result_data.get("usage", {})
+                            stats = {
+                                "input_tokens": usage.get("input_tokens", 0),
+                                "output_tokens": usage.get("output_tokens", 0),
+                                "cache_read": usage.get("cache_read_tokens", 0),
+                                "cache_create": 0,
+                                "cost_usd": 0,
+                                "turns": result_data.get("num_turns", 0),
+                            }
+                    elif msg_type == "assistant":
                         for block in msg.get("message", {}).get("content", []):
                             bt = block.get("type")
                             if bt == "text":
@@ -453,7 +551,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         duration_ms = int((time.time() - start) * 1000)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        job_log = config.LOG_DIR / f"claude_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.txt"
+        job_log = config.LOG_DIR / f"{resolved_agent}_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.txt"
         job_log.write_text(output, encoding="utf-8")
 
         if stats:
@@ -473,7 +571,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 return result_status.lower(), duration_ms
 
         if "RESULT:FAILED" in output:
-            for out_line in output.split("\n"):
+            # Antigravity streams response fragments and then emits the complete
+            # response. Inspect from the end so the complete result wins.
+            for out_line in reversed(output.split("\n")):
                 if "RESULT:FAILED" in out_line:
                     reason = (
                         out_line.split("RESULT:FAILED:")[-1].strip()
@@ -483,13 +583,15 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                     reason = _clean_reason(reason)
                     PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
                     if reason in PROMOTE_TO_STATUS:
-                        add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
-                        update_state(worker_id, status=reason,
-                                     last_action=f"{reason.upper()} ({elapsed}s)")
+                        event_label = f"DRY RUN: {reason}" if dry_run else reason.upper()
+                        add_event(f"[W{worker_id}] {event_label} ({elapsed}s): {job['title'][:30]}")
+                        update_state(worker_id, status="inspected" if dry_run else reason,
+                                     last_action=f"{event_label} ({elapsed}s)")
                         return reason, duration_ms
-                    add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
-                    update_state(worker_id, status="failed",
-                                 last_action=f"FAILED: {reason[:25]}")
+                    event_label = "DRY RUN" if dry_run else "FAILED"
+                    add_event(f"[W{worker_id}] {event_label} ({elapsed}s): {reason[:30]}")
+                    update_state(worker_id, status="inspected" if dry_run else "failed",
+                                 last_action=f"{event_label}: {reason[:25]}")
                     return f"failed:{reason}", duration_ms
             return "failed:unknown", duration_ms
 
@@ -509,8 +611,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         update_state(worker_id, status="failed", last_action=f"ERROR: {str(e)[:25]}")
         return f"failed:{str(e)[:100]}", duration_ms
     finally:
-        with _claude_lock:
-            _claude_procs.pop(worker_id, None)
+        with _agent_lock:
+            _agent_procs.pop(worker_id, None)
         if proc is not None and proc.poll() is None:
             _kill_process_tree(proc.pid)
 
@@ -548,7 +650,8 @@ def _is_permanent_failure(result: str) -> bool:
 def worker_loop(worker_id: int = 0, limit: int = 1,
                 target_url: str | None = None,
                 min_score: int = 7, headless: bool = False,
-                model: str = "sonnet", dry_run: bool = False) -> tuple[int, int]:
+                model: str | None = None, dry_run: bool = False,
+                agent: str = "auto") -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -557,7 +660,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         target_url: Apply to a specific URL.
         min_score: Minimum fit_score threshold.
         headless: Run Chrome headless.
-        model: Claude model name.
+        model: Browser-agent model name.
         dry_run: Don't click Submit.
 
     Returns:
@@ -602,17 +705,32 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
 
             result, duration_ms = run_job(job, port=port, worker_id=worker_id,
-                                            model=model, dry_run=dry_run)
+                                            model=model, dry_run=dry_run,
+                                            agent=agent)
 
             if result == "skipped":
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
                 continue
             elif result == "applied":
-                mark_result(job["url"], "applied", duration_ms=duration_ms)
-                applied += 1
-                update_state(worker_id, jobs_applied=applied,
-                             jobs_done=applied + failed)
+                if dry_run:
+                    release_lock(job["url"])
+                    add_event(f"[W{worker_id}] Dry run completed: {job['title'][:30]}")
+                    update_state(worker_id, status="done",
+                                 last_action="dry run completed")
+                else:
+                    mark_result(job["url"], "applied", duration_ms=duration_ms)
+                    applied += 1
+                    update_state(worker_id, jobs_applied=applied,
+                                 jobs_done=applied + failed)
+            elif dry_run:
+                # A dry run is observational: preserve the queue and attempts
+                # even when the inspected listing cannot be submitted.
+                release_lock(job["url"])
+                reason = result.split(":", 1)[-1] if ":" in result else result
+                add_event(f"[W{worker_id}] Dry run: {reason[:35]}")
+                update_state(worker_id, status="done",
+                             last_action=f"dry run: {reason[:25]}")
             else:
                 reason = result.split(":", 1)[-1] if ":" in result else result
                 mark_result(job["url"], "failed", reason,
@@ -651,9 +769,10 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 # ---------------------------------------------------------------------------
 
 def main(limit: int = 1, target_url: str | None = None,
-         min_score: int = 7, headless: bool = False, model: str = "sonnet",
+         min_score: int = 7, headless: bool = False, model: str | None = None,
          dry_run: bool = False, continuous: bool = False,
-         poll_interval: int = 60, workers: int = 1) -> None:
+         poll_interval: int = 60, workers: int = 1,
+         agent: str = "auto") -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -661,15 +780,20 @@ def main(limit: int = 1, target_url: str | None = None,
         target_url: Apply to a specific URL.
         min_score: Minimum fit_score threshold.
         headless: Run Chrome in headless mode.
-        model: Claude model name.
+        model: Browser agent model name.
         dry_run: Don't click Submit.
         continuous: Run forever, polling for new jobs.
         poll_interval: Seconds between DB polls when queue is empty.
         workers: Number of parallel workers (default 1).
+        agent: Browser agent backend (auto, antigravity, or claude).
     """
     global POLL_INTERVAL
     POLL_INTERVAL = poll_interval
     _stop_event.clear()
+
+    resolved_agent = resolve_agent(agent)
+    if resolved_agent == "antigravity" and workers != 1:
+        raise RuntimeError("Antigravity currently supports one ApplyPilot worker at a time")
 
     config.ensure_dirs()
     console = Console()
@@ -687,6 +811,8 @@ def main(limit: int = 1, target_url: str | None = None,
 
     worker_label = f"{workers} worker{'s' if workers > 1 else ''}"
     console.print(f"Launching apply pipeline ({mode_label}, {worker_label}, poll every {POLL_INTERVAL}s)...")
+    selected_model = model or default_model_for_agent(resolved_agent)
+    console.print(f"Browser agent: {resolved_agent} ({selected_model})")
     console.print("[dim]Ctrl+C = skip current job(s) | Ctrl+C x2 = stop[/dim]")
 
     # Double Ctrl+C handler
@@ -697,18 +823,18 @@ def main(limit: int = 1, target_url: str | None = None,
         _ctrl_c_count += 1
         if _ctrl_c_count == 1:
             console.print("\n[yellow]Skipping current job(s)... (Ctrl+C again to STOP)[/yellow]")
-            # Kill all active Claude processes to skip current jobs
-            with _claude_lock:
-                for wid, cproc in list(_claude_procs.items()):
-                    if cproc.poll() is None:
-                        _kill_process_tree(cproc.pid)
+            # Kill all active agent processes to skip current jobs
+            with _agent_lock:
+                for wid, agent_proc in list(_agent_procs.items()):
+                    if agent_proc.poll() is None:
+                        _kill_process_tree(agent_proc.pid)
         else:
             console.print("\n[red bold]STOPPING[/red bold]")
             _stop_event.set()
-            with _claude_lock:
-                for wid, cproc in list(_claude_procs.items()):
-                    if cproc.poll() is None:
-                        _kill_process_tree(cproc.pid)
+            with _agent_lock:
+                for wid, agent_proc in list(_agent_procs.items()):
+                    if agent_proc.poll() is None:
+                        _kill_process_tree(agent_proc.pid)
             kill_all_chrome()
             raise KeyboardInterrupt
 
@@ -737,6 +863,7 @@ def main(limit: int = 1, target_url: str | None = None,
                     headless=headless,
                     model=model,
                     dry_run=dry_run,
+                    agent=resolved_agent,
                 )
             else:
                 # Multi-worker — distribute limit across workers
@@ -760,6 +887,7 @@ def main(limit: int = 1, target_url: str | None = None,
                             headless=headless,
                             model=model,
                             dry_run=dry_run,
+                            agent=resolved_agent,
                         ): i
                         for i in range(workers)
                     }
