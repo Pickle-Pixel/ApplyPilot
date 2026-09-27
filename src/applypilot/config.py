@@ -170,6 +170,12 @@ DEFAULTS = {
     "viewport": "1280x900",
 }
 
+BROWSER_AGENT_ENV = "APPLYPILOT_BROWSER_AGENT"
+BROWSER_AGENT_BINARIES = {
+    "antigravity": "agy",
+    "claude": "claude",
+}
+
 
 def load_env():
     """Load environment variables from ~/.applypilot/.env if it exists."""
@@ -178,6 +184,23 @@ def load_env():
         load_dotenv(ENV_PATH)
     # Also try CWD .env as fallback
     load_dotenv()
+
+
+def get_browser_agent() -> str:
+    """Return the browser agent selected during setup, or ``auto``."""
+    load_env()
+    agent = os.environ.get(BROWSER_AGENT_ENV, "auto").strip().lower()
+    if agent in BROWSER_AGENT_BINARIES:
+        return agent
+    return "auto"
+
+
+def browser_agent_available(agent: str) -> bool:
+    """Return whether the requested or automatically selected agent is installed."""
+    if agent == "auto":
+        return any(shutil.which(binary) for binary in BROWSER_AGENT_BINARIES.values())
+    binary = BROWSER_AGENT_BINARIES.get(agent)
+    return bool(binary and shutil.which(binary))
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +225,7 @@ def get_tier() -> int:
 
     Tier 1 (Discovery):            Python + pip
     Tier 2 (AI Scoring & Tailoring): + LLM API key
-    Tier 3 (Full Auto-Apply):       + Claude Code CLI + Chrome
+    Tier 3 (Full Auto-Apply):       + supported browser agent CLI + Chrome
     """
     load_env()
 
@@ -210,14 +233,14 @@ def get_tier() -> int:
     if not has_llm:
         return 1
 
-    has_claude = shutil.which("claude") is not None
+    has_browser_agent = browser_agent_available(get_browser_agent())
     try:
         get_chrome_path()
         has_chrome = True
     except FileNotFoundError:
         has_chrome = False
 
-    if has_claude and has_chrome:
+    if has_browser_agent and has_chrome:
         return 3
 
     return 2
@@ -241,8 +264,13 @@ def check_tier(required: int, feature: str) -> None:
     if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
         missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
     if required >= 3:
-        if not shutil.which("claude"):
-            missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
+        selected_agent = get_browser_agent()
+        if not browser_agent_available(selected_agent):
+            if selected_agent == "auto":
+                missing.append("Browser agent CLI — install Antigravity CLI (agy) or Claude Code")
+            else:
+                binary = BROWSER_AGENT_BINARIES[selected_agent]
+                missing.append(f"Selected browser agent '{selected_agent}' — install '{binary}' or re-run init")
         try:
             get_chrome_path()
         except FileNotFoundError:

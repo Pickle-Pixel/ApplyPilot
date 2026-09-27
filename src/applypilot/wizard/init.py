@@ -10,25 +10,76 @@ Interactive flow that creates ~/.applypilot/ with:
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
-import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 
 from applypilot.config import (
     APP_DIR,
+    BROWSER_AGENT_BINARIES,
+    BROWSER_AGENT_ENV,
     ENV_PATH,
     PROFILE_PATH,
     RESUME_PATH,
     RESUME_PDF_PATH,
     SEARCH_CONFIG_PATH,
     ensure_dirs,
+    get_browser_agent,
 )
 
 console = Console()
+
+
+def _set_env_value(key: str, value: str) -> None:
+    """Add or replace one value in ApplyPilot's user .env file."""
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
+    replacement = f"{key}={value}"
+    updated = False
+    for index, line in enumerate(lines):
+        if line.strip().startswith(f"{key}="):
+            lines[index] = replacement
+            updated = True
+            break
+    if not updated:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(replacement)
+    ENV_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    os.environ[key] = value
+
+
+def _configure_antigravity_mcp() -> bool:
+    """Register the MCP servers used by ApplyPilot with Antigravity CLI."""
+    commands = [
+        [
+            "agy", "mcp", "add", "applypilot-playwright", "npx", "-y",
+            "@playwright/mcp@latest",
+            "--cdp-endpoint=http://localhost:9222",
+            "--viewport-size=1280x900",
+        ],
+        [
+            "agy", "mcp", "add", "applypilot-gmail", "npx", "-y",
+            "@gongrzhe/server-gmail-autoauth-mcp",
+        ],
+    ]
+    try:
+        for command in commands:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        console.print(f"[yellow]Could not configure Antigravity MCP servers:[/yellow] {exc}")
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -280,26 +331,48 @@ def _setup_ai_features() -> None:
 # ---------------------------------------------------------------------------
 
 def _setup_auto_apply() -> None:
-    """Configure autonomous job application (requires Claude Code CLI)."""
+    """Configure autonomous job application and select a browser agent."""
     console.print(Panel(
         "[bold]Step 5: Auto-Apply (optional)[/bold]\n"
         "ApplyPilot can autonomously fill and submit job applications\n"
-        "using Claude Code as the browser agent."
+        "using Claude Code or Antigravity as the browser agent."
     ))
 
     if not Confirm.ask("Enable autonomous job applications?", default=True):
         console.print("[dim]You can apply manually using the tailored resumes ApplyPilot generates.[/dim]")
         return
 
-    # Check for Claude Code CLI
-    if shutil.which("claude"):
-        console.print("[green]Claude Code CLI detected.[/green]")
-    else:
+    installed = {
+        agent: shutil.which(binary)
+        for agent, binary in BROWSER_AGENT_BINARIES.items()
+    }
+    for agent, path in installed.items():
+        label = "Antigravity" if agent == "antigravity" else "Claude Code"
+        status = f"[green]detected at {path}[/green]" if path else "[yellow]not found[/yellow]"
+        console.print(f"  {label}: {status}")
+
+    configured = get_browser_agent()
+    if configured == "auto":
+        configured = next((agent for agent, path in installed.items() if path), "claude")
+    agent = Prompt.ask(
+        "Browser agent",
+        choices=list(BROWSER_AGENT_BINARIES),
+        default=configured,
+    )
+    _set_env_value(BROWSER_AGENT_ENV, agent)
+
+    binary = BROWSER_AGENT_BINARIES[agent]
+    label = "Antigravity" if agent == "antigravity" else "Claude Code"
+    if not installed[agent]:
         console.print(
-            "[yellow]Claude Code CLI not found on PATH.[/yellow]\n"
-            "Install it from: [bold]https://claude.ai/code[/bold]\n"
-            "Auto-apply won't work until Claude Code is installed."
+            f"[yellow]{label} is selected but '{binary}' was not found on PATH.[/yellow]\n"
+            "Install it, then run [bold]applypilot doctor[/bold]."
         )
+    elif agent == "antigravity":
+        if _configure_antigravity_mcp():
+            console.print("[green]Antigravity selected and MCP servers configured.[/green]")
+    else:
+        console.print("[green]Claude Code selected.[/green]")
 
     # Optional: CapSolver for CAPTCHAs
     console.print("\n[dim]Some job sites use CAPTCHAs. CapSolver can handle them automatically.[/dim]")
@@ -356,12 +429,12 @@ def run_wizard() -> None:
     _setup_ai_features()
     console.print()
 
-    # Step 5: Auto-apply (Claude Code detection)
+    # Step 5: Auto-apply browser agent
     _setup_auto_apply()
     console.print()
 
     # Done — show tier status
-    from applypilot.config import get_tier, TIER_LABELS, TIER_COMMANDS
+    from applypilot.config import TIER_COMMANDS, TIER_LABELS, get_tier
 
     tier = get_tier()
 
@@ -380,7 +453,7 @@ def run_wizard() -> None:
     if tier == 1:
         unlock_hint = "\n[dim]To unlock Tier 2: configure an LLM API key (re-run [bold]applypilot init[/bold]).[/dim]"
     elif tier == 2:
-        unlock_hint = "\n[dim]To unlock Tier 3: install Claude Code CLI + Chrome.[/dim]"
+        unlock_hint = "\n[dim]To unlock Tier 3: install the selected browser agent CLI + Chrome.[/dim]"
 
     console.print(
         Panel.fit(

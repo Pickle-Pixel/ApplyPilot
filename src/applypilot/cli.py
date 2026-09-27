@@ -35,7 +35,7 @@ VALID_STAGES = ("discover", "enrich", "score", "tailor", "cover", "pdf")
 
 def _bootstrap() -> None:
     """Common setup: load env, create dirs, init DB."""
-    from applypilot.config import load_env, ensure_dirs
+    from applypilot.config import ensure_dirs, load_env
     from applypilot.database import init_db
 
     load_env()
@@ -147,7 +147,12 @@ def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel browser workers."),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for job selection."),
-    model: str = typer.Option("haiku", "--model", "-m", help="Claude model name."),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Browser agent model name."),
+    agent: str = typer.Option(
+        "auto",
+        "--agent",
+        help="Override the configured browser agent: auto, antigravity, or claude.",
+    ),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
@@ -161,7 +166,8 @@ def apply(
     """Launch auto-apply to submit job applications."""
     _bootstrap()
 
-    from applypilot.config import check_tier, PROFILE_PATH as _profile_path
+    from applypilot.config import PROFILE_PATH as _profile_path
+    from applypilot.config import check_tier
     from applypilot.database import get_connection
 
     # --- Utility modes (no Chrome/Claude needed) ---
@@ -186,7 +192,11 @@ def apply(
 
     # --- Full apply mode ---
 
-    # Check 1: Tier 3 required (Claude Code CLI + Chrome)
+    if agent not in ("auto", "antigravity", "claude"):
+        console.print("[red]Invalid --agent.[/red] Choose auto, antigravity, or claude.")
+        raise typer.Exit(code=1)
+
+    # Check 1: Tier 3 required (selected browser agent CLI + Chrome)
     check_tier(3, "auto-apply")
 
     # Check 2: Profile exists
@@ -211,33 +221,39 @@ def apply(
             raise typer.Exit(code=1)
 
     if gen:
-        from applypilot.apply.launcher import gen_prompt, BASE_CDP_PORT
+        from applypilot.apply.launcher import gen_prompt
         target = url or ""
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
             raise typer.Exit(code=1)
-        prompt_file = gen_prompt(target, min_score=min_score, model=model)
+        prompt_file = gen_prompt(target, min_score=min_score, model=model or "default")
         if not prompt_file:
             console.print("[red]No matching job found for that URL.[/red]")
             raise typer.Exit(code=1)
-        mcp_path = _profile_path.parent / ".mcp-apply-0.json"
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
-        console.print(f"\n[bold]Run manually:[/bold]")
+        console.print("\n[bold]Run manually:[/bold]")
         console.print(
-            f"  claude --model {model} -p "
-            f"--mcp-config {mcp_path} "
-            f"--permission-mode bypassPermissions < {prompt_file}"
+            f"  Review {prompt_file} and run it with the selected agent ({agent})."
         )
         return
 
-    from applypilot.apply.launcher import main as apply_main
+    from applypilot.apply.launcher import (
+        default_model_for_agent,
+        resolve_agent,
+    )
+    from applypilot.apply.launcher import (
+        main as apply_main,
+    )
 
     effective_limit = limit if limit is not None else (0 if continuous else 1)
+    resolved_agent = resolve_agent(agent)
+    selected_model = model or default_model_for_agent(resolved_agent)
 
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
     console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
     console.print(f"  Workers:  {workers}")
-    console.print(f"  Model:    {model}")
+    console.print(f"  Agent:    {resolved_agent}")
+    console.print(f"  Model:    {selected_model}")
     console.print(f"  Headless: {headless}")
     console.print(f"  Dry run:  {dry_run}")
     if url:
@@ -250,6 +266,7 @@ def apply(
         min_score=min_score,
         headless=headless,
         model=model,
+        agent=agent,
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
@@ -336,9 +353,16 @@ def dashboard() -> None:
 def doctor() -> None:
     """Check your setup and diagnose missing requirements."""
     import shutil
+
     from applypilot.config import (
-        load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
+        BROWSER_AGENT_BINARIES,
+        PROFILE_PATH,
+        RESUME_PATH,
+        RESUME_PDF_PATH,
+        SEARCH_CONFIG_PATH,
+        get_browser_agent,
+        get_chrome_path,
+        load_env,
     )
 
     load_env()
@@ -396,13 +420,25 @@ def doctor() -> None:
                         "Set GEMINI_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
 
     # --- Tier 3 checks ---
-    # Claude Code CLI
-    claude_bin = shutil.which("claude")
-    if claude_bin:
-        results.append(("Claude Code CLI", ok_mark, claude_bin))
+    # Browser agent CLI
+    selected_agent = get_browser_agent()
+    if selected_agent == "auto":
+        selected_agent = next(
+            (agent for agent, binary in BROWSER_AGENT_BINARIES.items() if shutil.which(binary)),
+            "auto",
+        )
+    selected_binary = BROWSER_AGENT_BINARIES.get(selected_agent)
+    selected_path = shutil.which(selected_binary) if selected_binary else None
+    if selected_path:
+        label = "Antigravity" if selected_agent == "antigravity" else "Claude Code"
+        results.append(("Browser agent CLI", ok_mark, f"{label} selected ({selected_path})"))
     else:
-        results.append(("Claude Code CLI", fail_mark,
-                        "Install from https://claude.ai/code (needed for auto-apply)"))
+        note = (
+            f"Selected '{selected_agent}' but '{selected_binary}' is not installed; re-run 'applypilot init'"
+            if selected_binary
+            else "Install Antigravity CLI (agy) or Claude Code, then run 'applypilot init'"
+        )
+        results.append(("Browser agent CLI", fail_mark, note))
 
     # Chrome
     try:
@@ -440,15 +476,15 @@ def doctor() -> None:
     console.print()
 
     # Tier summary
-    from applypilot.config import get_tier, TIER_LABELS
+    from applypilot.config import TIER_LABELS, get_tier
     tier = get_tier()
     console.print(f"[bold]Current tier: Tier {tier} — {TIER_LABELS[tier]}[/bold]")
 
     if tier == 1:
         console.print("[dim]  → Tier 2 unlocks: scoring, tailoring, cover letters (needs LLM API key)[/dim]")
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs a browser agent + Chrome + Node.js)[/dim]")
     elif tier == 2:
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs a browser agent + Chrome + Node.js)[/dim]")
 
     console.print()
 
