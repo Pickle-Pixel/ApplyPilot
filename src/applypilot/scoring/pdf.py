@@ -333,12 +333,13 @@ li {{
 
 # ── PDF Renderer ─────────────────────────────────────────────────────────
 
-def render_pdf(html: str, output_path: str) -> None:
+def render_pdf(html: str, output_path: str, margin: str = "0") -> None:
     """Render HTML to PDF using Playwright's headless Chromium.
 
     Args:
         html: Complete HTML string.
         output_path: Path to write the PDF file.
+        margin: Page margin on all sides (CSS length).
     """
     from playwright.sync_api import sync_playwright
 
@@ -349,7 +350,7 @@ def render_pdf(html: str, output_path: str) -> None:
         page.pdf(
             path=output_path,
             format="Letter",
-            margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+            margin={"top": margin, "right": margin, "bottom": margin, "left": margin},
             print_background=True,
         )
         browser.close()

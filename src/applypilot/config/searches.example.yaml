@@ -110,3 +110,28 @@ exclude_titles:
   - "clearance required"
   - "TS/SCI"
   - "principal scientist"
+
+# Which discovery sources `applypilot run discover` uses.
+# Use just [github] to apply only to curated GitHub lists (fastest, no scraping).
+sources:
+  - github
+  - jobspy
+  - workday
+  - smartextract
+
+# Curated GitHub job lists (also: `applypilot github --dry-run` to preview).
+# Supports Simplify-style listings.json and README tables (HTML or markdown).
+github_lists:
+  repos:
+    - SimplifyJobs/New-Grad-Positions
+    - SimplifyJobs/Summer2027-Internships
+    # - speedyapply/2027-SWE-College-Jobs
+    # - vanshb03/Summer2027-Internships
+  max_age_days: 14            # skip postings older than this
+  include_titles: []          # e.g. ["software", "backend", "data"]; empty = keep all
+  exclude_titles: []          # e.g. ["senior", "phd"]
+  locations: []               # substrings, e.g. ["Remote", "VA", "New York"]; empty = anywhere
+  exclude_locations: []       # drop postings whose EVERY location matches, e.g. ["UK", "Canada"]
+  categories: []              # listings.json only, e.g. ["Software", "AI/ML/Data"]
+  skip_no_sponsorship: false  # true = drop "Does Not Offer Sponsorship" postings
+  skip_citizenship_required: false

@@ -14,6 +14,18 @@ PROFILE_PATH = APP_DIR / "profile.json"
 RESUME_PATH = APP_DIR / "resume.txt"
 RESUME_PDF_PATH = APP_DIR / "resume.pdf"
 SEARCH_CONFIG_PATH = APP_DIR / "searches.yaml"
+
+# Optional: your own LaTeX resume (e.g. from Overleaf). When present, tailoring
+# edits this document and compiles it instead of using the built-in template.
+RESUME_TEX_PATH = APP_DIR / "resume.tex"
+# Optional: your own instructions for Gemini (replace the built-in style rules)
+RESUME_PROMPT_PATH = APP_DIR / "resume_prompt.md"
+COVER_LETTER_PROMPT_PATH = APP_DIR / "cover_letter_prompt.md"
+# Optional: fixed cover letter body paragraphs reused for every job; only the
+# intro and closing are written per application.
+COVER_LETTER_BODY_PATH = APP_DIR / "cover_letter_body.md"
+# Optional: a sample of your own writing, used to match your voice
+WRITING_SAMPLE_PATH = APP_DIR / "writing_sample.txt"
 ENV_PATH = APP_DIR / ".env"
 
 # Generated output

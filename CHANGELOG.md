@@ -5,6 +5,34 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **GitHub job lists** - `applypilot github` and a `github` discovery source import curated
+  postings from repos like SimplifyJobs/New-Grad-Positions (`listings.json`) or any README
+  job table. Filters: age, titles, include/exclude locations, sponsorship. Cross-list dedupe.
+- **`sources:` in searches.yaml** - choose which discovery sources `run discover` uses.
+- **ATS account registry** - `applypilot accounts`; the apply prompt signs in or registers per
+  employer tenant (Workday, iCIMS, Taleo, ...) and completes email link/code verification via Gmail.
+- **LaTeX resume tailoring** - when `resume.tex` exists, tailoring edits your own (e.g. Overleaf)
+  resume and compiles it with Tectonic/pdflatex. Rejects drafts that change sections, page count,
+  or numbers, add inflated wording, or fail a fact-check. Optional per-job skill selection.
+- **Custom instructions** - `resume_prompt.md` and `cover_letter_prompt.md` in the data dir.
+- **Fixed cover letter body** - `cover_letter_body.md`; only the intro and closing are generated.
+- **Plain cover letters** - black-and-white `.docx` + PDF output.
+- **`LLM_FALLBACK_MODEL`** - used on HTTP 503 and after the daily quota is exhausted.
+
+### Changed
+- Default Gemini model is now `gemini-3.5-flash` (2.x models are retired for new users).
+- Scores are saved per job; failed scores are retried on the next run.
+
+### Fixed
+- Dry runs no longer mark jobs as applied; timeouts / missing results become `needs_review`
+  instead of auto-retrying (possible duplicate applications); `apply --url` works for new jobs.
+- Enrichment no longer overwrites a known `application_url` with NULL.
+- Windows: launch `claude` via its resolved path and MCP servers via `cmd /c npx`.
+- Score parsing tolerates markdown; output token limits leave room for thinking models.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added

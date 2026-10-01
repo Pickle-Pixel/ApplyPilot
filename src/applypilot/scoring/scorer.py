@@ -52,20 +52,21 @@ def _parse_score_response(response: str) -> dict:
     """
     score = 0
     keywords = ""
+    response = response or ""
     reasoning = response
 
     for line in response.split("\n"):
-        line = line.strip()
-        if line.startswith("SCORE:"):
-            try:
-                score = int(re.search(r"\d+", line).group())
-                score = max(1, min(10, score))
-            except (AttributeError, ValueError):
-                score = 0
-        elif line.startswith("KEYWORDS:"):
-            keywords = line.replace("KEYWORDS:", "").strip()
-        elif line.startswith("REASONING:"):
-            reasoning = line.replace("REASONING:", "").strip()
+        # Tolerate markdown the model sometimes adds: "**SCORE:** 8", "- Score: 8/10"
+        line = line.strip().lstrip("-*# ").replace("**", "")
+        upper = line.upper()
+        if upper.startswith("SCORE"):
+            m = re.search(r"\d+", line)
+            if m:
+                score = max(1, min(10, int(m.group())))
+        elif upper.startswith("KEYWORDS"):
+            keywords = line.split(":", 1)[-1].strip()
+        elif upper.startswith("REASONING"):
+            reasoning = line.split(":", 1)[-1].strip()
 
     return {"score": score, "keywords": keywords, "reasoning": reasoning}
 
@@ -94,7 +95,7 @@ def score_job(resume_text: str, job: dict) -> dict:
 
     try:
         client = get_client()
-        response = client.chat(messages, max_tokens=512, temperature=0.2)
+        response = client.chat(messages, max_tokens=4096, temperature=0.2)  # room for "thinking" models
         return _parse_score_response(response)
     except Exception as e:
         log.error("LLM error scoring job '%s': %s", job.get("title", "?"), e)
@@ -143,7 +144,16 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
         completed += 1
 
         if result["score"] == 0:
+            # LLM/parse failure: leave unscored so the next run retries it
             errors += 1
+        else:
+            # Save each score immediately so an interrupted run keeps its progress
+            conn.execute(
+                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                (result["score"], f"{result['keywords']}\n{result['reasoning']}",
+                 datetime.now(timezone.utc).isoformat(), result["url"]),
+            )
+            conn.commit()
 
         results.append(result)
 
@@ -151,15 +161,6 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
             "[%d/%d] score=%d  %s",
             completed, len(jobs), result["score"], job.get("title", "?")[:60],
         )
-
-    # Write scores to DB
-    now = datetime.now(timezone.utc).isoformat()
-    for r in results:
-        conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-            (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
-        )
-    conn.commit()
 
     elapsed = time.time() - t0
     log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)

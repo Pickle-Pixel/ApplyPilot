@@ -664,7 +664,7 @@ def scrape_site_batch(
                 if status in ("ok", "partial"):
                     stats[status] += 1
                     conn.execute(
-                        "UPDATE jobs SET full_description = ?, application_url = ?, "
+                        "UPDATE jobs SET full_description = ?, application_url = COALESCE(?, application_url), "
                         "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
                         (result.get("full_description"), result.get("application_url"), now, url),
                     )

@@ -1,4 +1,5 @@
 # User data (NEVER commit)
+data/
 profile.json
 resume.txt
 resume.pdf
@@ -26,6 +27,7 @@ __pycache__/
 dist/
 build/
 *.egg
+.venv/
 
 # IDE
 .vscode/

@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -63,22 +64,24 @@ if platform.system() != "Windows":
 # MCP config
 # ---------------------------------------------------------------------------
 
+def _npx(args: list[str]) -> dict:
+    """MCP server launch spec for npx. Windows needs `cmd /c` to run the npx.cmd shim."""
+    if platform.system() == "Windows":
+        return {"command": "cmd", "args": ["/c", "npx", *args]}
+    return {"command": "npx", "args": args}
+
+
 def _make_mcp_config(cdp_port: int) -> dict:
     """Build MCP config dict for a specific CDP port."""
     return {
         "mcpServers": {
-            "playwright": {
-                "command": "npx",
-                "args": [
-                    "@playwright/mcp@latest",
-                    f"--cdp-endpoint=http://localhost:{cdp_port}",
-                    f"--viewport-size={config.DEFAULTS['viewport']}",
-                ],
-            },
-            "gmail": {
-                "command": "npx",
-                "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
-            },
+            "playwright": _npx([
+                "-y",
+                "@playwright/mcp@latest",
+                f"--cdp-endpoint=http://localhost:{cdp_port}",
+                f"--viewport-size={config.DEFAULTS['viewport']}",
+            ]),
+            "gmail": _npx(["-y", "@gongrzhe/server-gmail-autoauth-mcp"]),
         }
     }
 
@@ -111,7 +114,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 FROM jobs
                 WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
                   AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND COALESCE(apply_status, '') NOT IN ('in_progress', 'applied')
                 LIMIT 1
             """, (target_url, target_url, like, like)).fetchone()
         else:
@@ -323,7 +326,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
     # Build claude command
     cmd = [
-        "claude",
+        # Resolve the full path: on Windows npm installs `claude.cmd`, which
+        # Popen can't find from a bare name without shell=True.
+        shutil.which("claude") or "claude",
         "--model", model,
         "-p",
         "--mcp-config", str(mcp_config_path),
@@ -456,6 +461,16 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         job_log = config.LOG_DIR / f"claude_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.txt"
         job_log.write_text(output, encoding="utf-8")
 
+        # Remember per-tenant ATS accounts (Workday etc.) for future jobs
+        try:
+            from applypilot.apply.accounts import record_from_output
+            acct = record_from_output(job.get("application_url") or job["url"],
+                                      config.load_profile()["personal"]["email"], output)
+            if acct:
+                add_event(f"[W{worker_id}] account: {acct}")
+        except Exception:
+            logger.debug("Failed to record ATS account state", exc_info=True)
+
         if stats:
             cost = stats.get("cost_usd", 0)
             ws = get_state(worker_id)
@@ -529,6 +544,9 @@ PERMANENT_FAILURES: set[str] = {
 }
 
 PERMANENT_PREFIXES: tuple[str, ...] = ("site_blocked", "cloudflare", "blocked_by")
+
+# Outcomes where the application may or may not have been submitted
+UNCERTAIN_RESULTS: set[str] = {"failed:timeout", "failed:no_result_line"}
 
 
 def _is_permanent_failure(result: str) -> bool:
@@ -608,10 +626,26 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
                 continue
+            elif result == "applied" and dry_run:
+                # Nothing was submitted -- keep the job in the queue for a real run
+                release_lock(job["url"])
+                applied += 1
+                add_event(f"[W{worker_id}] Dry run OK (not submitted): {job['title'][:30]}")
+                update_state(worker_id, jobs_applied=applied,
+                             jobs_done=applied + failed)
             elif result == "applied":
                 mark_result(job["url"], "applied", duration_ms=duration_ms)
                 applied += 1
                 update_state(worker_id, jobs_applied=applied,
+                             jobs_done=applied + failed)
+            elif result in UNCERTAIN_RESULTS:
+                # The agent may have clicked Submit before it stopped. Retrying
+                # could send a duplicate application, so park it for a human.
+                mark_result(job["url"], "needs_review", result.split(":", 1)[-1],
+                            permanent=True, duration_ms=duration_ms)
+                failed += 1
+                add_event(f"[W{worker_id}] NEEDS REVIEW (maybe submitted): {job['title'][:30]}")
+                update_state(worker_id, jobs_failed=failed,
                              jobs_done=applied + failed)
             else:
                 reason = result.split(":", 1)[-1] if ":" in result else result

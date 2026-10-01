@@ -2,11 +2,12 @@
 Unified LLM client for ApplyPilot.
 
 Auto-detects provider from environment:
-  GEMINI_API_KEY  -> Google Gemini (default: gemini-2.0-flash)
+  GEMINI_API_KEY  -> Google Gemini (default: gemini-3.5-flash)
   OPENAI_API_KEY  -> OpenAI (default: gpt-4o-mini)
   LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
+LLM_FALLBACK_MODEL is used for a request when LLM_MODEL returns 503 (overloaded).
 """
 
 import logging
@@ -35,7 +36,7 @@ def _detect_provider() -> tuple[str, str, str]:
     if gemini_key and not local_url:
         return (
             "https://generativelanguage.googleapis.com/v1beta/openai",
-            model_override or "gemini-2.0-flash",
+            model_override or "gemini-3.5-flash",
             gemini_key,
         )
 
@@ -100,6 +101,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        model: str | None = None,
     ) -> str:
         """Call the native Gemini generateContent API.
 
@@ -133,7 +135,7 @@ class LLMClient:
         if system_parts:
             payload["systemInstruction"] = {"parts": system_parts}
 
-        url = f"{_GEMINI_NATIVE_BASE}/models/{self.model}:generateContent"
+        url = f"{_GEMINI_NATIVE_BASE}/models/{model or self.model}:generateContent"
         resp = self._client.post(
             url,
             json=payload,
@@ -151,6 +153,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        model: str | None = None,
     ) -> str:
         """Call the OpenAI-compatible endpoint."""
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -158,7 +161,7 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -199,13 +202,16 @@ class LLMClient:
             if first.get("role") == "user" and not first["content"].startswith("/no_think"):
                 messages = [{"role": first["role"], "content": f"/no_think\n{first['content']}"}] + messages[1:]
 
+        # Per-call model: a 503 switches THIS request to the fallback; the next
+        # request tries the primary (usually better) model again.
+        model = self.model
         for attempt in range(_MAX_RETRIES):
             try:
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
-                    return self._chat_native_gemini(messages, temperature, max_tokens)
+                    return self._chat_native_gemini(messages, temperature, max_tokens, model)
 
-                return self._chat_compat(messages, temperature, max_tokens)
+                return self._chat_compat(messages, temperature, max_tokens, model)
 
             except _GeminiCompatForbidden as exc:
                 # Model not available on OpenAI-compat layer — switch to native.
@@ -218,7 +224,7 @@ class LLMClient:
                 self._use_native_gemini = True
                 # Retry immediately with native — don't count as a rate-limit wait
                 try:
-                    return self._chat_native_gemini(messages, temperature, max_tokens)
+                    return self._chat_native_gemini(messages, temperature, max_tokens, model)
                 except httpx.HTTPStatusError as native_exc:
                     raise RuntimeError(
                         f"Both Gemini endpoints failed. Compat: 403 Forbidden. "
@@ -228,6 +234,21 @@ class LLMClient:
 
             except httpx.HTTPStatusError as exc:
                 resp = exc.response
+                # 503 = provider overloaded (not our quota). Switch to the
+                # fallback model right away instead of waiting out backoff.
+                fallback = os.environ.get("LLM_FALLBACK_MODEL", "")
+                if resp.status_code == 503 and fallback and fallback != model:
+                    log.info("Model '%s' is overloaded (HTTP 503). Using fallback '%s' for this request.",
+                             model, fallback)
+                    model = fallback
+                    continue
+                # Daily quota used up (free tier: per model, per day). Waiting won't help
+                # today, so move to the fallback for the rest of the run.
+                if resp.status_code == 429 and "PerDay" in resp.text and fallback and fallback != model:
+                    log.warning("Daily quota for '%s' is used up. Switching to fallback '%s' for this run.",
+                                model, fallback)
+                    self.model = model = fallback
+                    continue
                 if resp.status_code in (429, 503) and attempt < _MAX_RETRIES - 1:
                     # Respect Retry-After header if provided (Gemini sends this).
                     retry_after = (

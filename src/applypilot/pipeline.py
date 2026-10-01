@@ -60,41 +60,50 @@ _UPSTREAM: dict[str, str | None] = {
 # ---------------------------------------------------------------------------
 
 def _run_discover(workers: int = 1) -> dict:
-    """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
-    stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    """Stage: Job discovery — GitHub lists, JobSpy, Workday, and smart-extract scrapers.
 
-    # JobSpy
-    console.print("  [cyan]JobSpy full crawl...[/cyan]")
-    try:
+    searches.yaml `sources:` picks which ones run (default: all four).
+    """
+    from applypilot.config import load_search_config
+
+    def _github():
+        from applypilot.discovery.github_lists import run_github_discovery
+        res = run_github_discovery()
+        console.print(f"  [green]GitHub:[/green] {res['new']} new, {res['duplicates']} already known")
+
+    def _jobspy():
         from applypilot.discovery.jobspy import run_discovery
         run_discovery()
-        stats["jobspy"] = "ok"
-    except Exception as e:
-        log.error("JobSpy crawl failed: %s", e)
-        console.print(f"  [red]JobSpy error:[/red] {e}")
-        stats["jobspy"] = f"error: {e}"
 
-    # Workday corporate scraper
-    console.print("  [cyan]Workday corporate scraper...[/cyan]")
-    try:
+    def _workday():
         from applypilot.discovery.workday import run_workday_discovery
         run_workday_discovery(workers=workers)
-        stats["workday"] = "ok"
-    except Exception as e:
-        log.error("Workday scraper failed: %s", e)
-        console.print(f"  [red]Workday error:[/red] {e}")
-        stats["workday"] = f"error: {e}"
 
-    # Smart extract
-    console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
-    try:
+    def _smartextract():
         from applypilot.discovery.smartextract import run_smart_extract
         run_smart_extract(workers=workers)
-        stats["smartextract"] = "ok"
-    except Exception as e:
-        log.error("Smart extract failed: %s", e)
-        console.print(f"  [red]Smart extract error:[/red] {e}")
-        stats["smartextract"] = f"error: {e}"
+
+    runners = [
+        ("github", "GitHub job lists", _github),
+        ("jobspy", "JobSpy full crawl", _jobspy),
+        ("workday", "Workday corporate scraper", _workday),
+        ("smartextract", "Smart extract (AI-powered scraping)", _smartextract),
+    ]
+    sources = (load_search_config() or {}).get("sources") or [name for name, _, _ in runners]
+
+    stats: dict = {}
+    for name, label, fn in runners:
+        if name not in sources:
+            stats[name] = "skipped"
+            continue
+        console.print(f"  [cyan]{label}...[/cyan]")
+        try:
+            fn()
+            stats[name] = "ok"
+        except Exception as e:
+            log.error("%s failed: %s", label, e)
+            console.print(f"  [red]{label} error:[/red] {e}")
+            stats[name] = f"error: {e}"
 
     return stats
 

@@ -156,6 +156,40 @@ applypilot apply --reset-failed        # reset all failed jobs for retry
 applypilot apply --gen --url URL       # generate prompt file for manual debugging
 ```
 
+### GitHub Job Lists
+Community repos like [SimplifyJobs/New-Grad-Positions](https://github.com/SimplifyJobs/New-Grad-Positions) and [SimplifyJobs/Summer2027-Internships](https://github.com/SimplifyJobs/Summer2027-Internships) keep hand-picked postings with direct apply links. ApplyPilot imports them as a discovery source (Simplify-style `listings.json`, or any README with an HTML/markdown table of Company / Role / Location / Apply link).
+
+```bash
+applypilot github --dry-run --title software      # preview matches
+applypilot github -r speedyapply/2027-SWE-College-Jobs --max-age 7
+applypilot run enrich score tailor cover pdf      # prep materials for the imported jobs
+applypilot apply --dry-run                        # watch it fill a form without submitting
+```
+
+Configure repos and filters under `github_lists:` in `searches.yaml`. Set `sources: [github]` to skip the Indeed/LinkedIn/Workday scrapers entirely.
+
+### Workday & Account Logins
+Workday, iCIMS, Taleo, Oracle, and SuccessFactors make you create one account **per employer**, verified by an email link or code. The apply agent:
+
+1. Checks a local registry (`applypilot accounts`) to decide whether to **sign in** or **create an account** on that employer's tenant.
+2. Creates the account with `profile.json` → `personal.email` / `personal.password`. Use a dedicated portal password (8+ chars with upper, lower, digit, and symbol, as Workday requires), never your email password.
+3. Reads the verification email through the Gmail MCP server, opens the link (or types the code), then signs in and continues.
+4. Falls back to "Forgot password" when an old account's password doesn't match.
+
+SSO pages (Google/Microsoft/Okta sign-in) are never automated.
+
+**Gmail setup (one time):** create an OAuth client (type "Desktop app") in a Google Cloud project with the Gmail API enabled. Save the JSON as `~/.gmail-mcp/gcp-oauth.keys.json`, then run `npx @gongrzhe/server-gmail-autoauth-mcp auth` and approve in the browser. `applypilot doctor` shows whether it's configured. School Google Workspace accounts may block unverified OAuth apps; if so, use a personal Gmail as `personal.email`.
+
+### Windows
+Install [Python 3.11+](https://www.python.org/downloads/) (not the Microsoft Store stub), [Node.js LTS](https://nodejs.org), and the Claude Code CLI (`npm install -g @anthropic-ai/claude-code`, then run `claude` once to sign in). Using a virtualenv is recommended:
+
+```powershell
+py -3.12 -m venv .venv; .venv\Scripts\Activate.ps1
+pip install -e .
+pip install --no-deps python-jobspy; pip install pydantic tls-client requests markdownify regex
+applypilot doctor
+```
+
 ---
 
 ## CLI Reference
@@ -176,6 +210,8 @@ applypilot apply --dry-run              # Fill forms without submitting
 applypilot apply --continuous           # Run forever, polling for new jobs
 applypilot apply --headless             # Headless browser mode
 applypilot apply --url URL              # Apply to a specific job
+applypilot github [--dry-run]          # Import jobs from GitHub job-list repos
+applypilot accounts                     # Employer portals with accounts (Workday etc.)
 applypilot status                       # Pipeline statistics
 applypilot dashboard                    # Open HTML results dashboard
 ```

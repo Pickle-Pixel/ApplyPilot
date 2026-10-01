@@ -417,6 +417,71 @@ If CapSolver genuinely failed (errorId > 0):
 4. All else fails -> Output RESULT:CAPTCHA."""
 
 
+def _build_login_section(job: dict, personal: dict, blocked_sso: list[str]) -> str:
+    """Build login/account-creation instructions, aware of per-tenant ATS accounts.
+
+    Workday-style portals need one account per employer tenant, verified by an
+    email link or code. The account registry tells the agent whether this
+    tenant was already registered so it signs in instead of re-registering.
+    """
+    from applypilot.apply.accounts import ats_for_url, get_account
+
+    email = personal["email"]
+    password = personal.get("password", "")
+    apply_url = job.get("application_url") or job["url"]
+    ats, host = ats_for_url(apply_url)
+    account = get_account(host) if host else None
+
+    if account and account["status"] in ("created", "signed_in"):
+        known = (f"ACCOUNT ON RECORD: an account for {email} already exists on {host} "
+                 f"(status: {account['status']}). Go straight to SIGN IN -- do NOT click Create Account.")
+    elif account and account["status"] == "verify_pending":
+        known = (f"ACCOUNT ON RECORD: an account was created on {host} but email verification was not "
+                 f"finished. Check Gmail for the verification email first (step V), then sign in.")
+    elif account and account["status"] == "exists_bad_password":
+        known = (f"ACCOUNT ON RECORD: {host} rejected the password last time. Use 'Forgot password' "
+                 f"(step R) to reset it to the password below, then sign in.")
+    elif host:
+        known = (f"NO ACCOUNT ON RECORD for {host}. This is a per-employer {ats} tenant, so you most "
+                 f"likely need to CREATE an account (step C). If it says the email is already in use, sign in.")
+    else:
+        known = "No account on record for this site. Apply as a guest if possible; only sign in or register if required."
+
+    return f"""== LOGIN / ACCOUNTS ==
+Credentials for every employer portal: {email} / {password}
+{known}
+
+L1. SSO check: if you landed on {', '.join(blocked_sso)}, or any Google/Microsoft/Okta/SSO/OAuth page -> STOP. RESULT:FAILED:sso_required. Never sign in to SSO.
+L2. Popups: run browser_tabs action "list" after clicking Sign In / Create Account / Apply. Switch to any new tab and check its URL against L1.
+L3. Prefer guest apply ("Apply without an account", "Continue as guest", "Apply Manually") when offered and no account exists.
+L4. After every Sign In / Create Account click: run CAPTCHA DETECT (invisible CAPTCHAs often block these forms).
+
+SIGN IN (S): enter the email + password above. On success print the line ACCOUNT:SIGNED_IN
+  - "Invalid credentials" / "wrong password" -> go to R once. Never guess other passwords.
+  - "No account found" / "email not recognized" -> go to C.
+  - Some tenants offer "Sign in with email" (a one-time code or magic link instead of password). If that's the only option, request it and use step V to get the code/link.
+
+CREATE ACCOUNT (C): use the SAME email and password above. Tick the privacy/consent checkbox only if the form requires it to create the account.
+  - Workday: the Create Account form is email, password, verify password, and a consent checkbox. Password rules are usually 8+ chars with upper, lower, number, and special character.
+  - On success print the line ACCOUNT:CREATED
+  - "An account with this email already exists" -> go to S.
+  - If it says "verify your email" / "check your inbox", print ACCOUNT:VERIFY_PENDING, then go to V.
+
+VERIFY EMAIL (V): use the Gmail tools (they read the applicant's own inbox).
+  1. Wait ~15 seconds, then gmail search_emails with a query like:
+     newer_than:1h (verify OR verification OR confirm OR activate OR "one-time" OR code) -- add the company name or "from:myworkday.com" for Workday.
+  2. If nothing yet, wait 20s and search again (max 4 tries). Also try "in:spam" with the same query.
+  3. read_email the newest match. Extract EITHER the verification link (Workday: a URL containing "myworkdayjobs.com" or "myworkday.com" with "activate"/"verify"/"confirm") OR the numeric/alphanumeric code.
+  4. Link -> browser_navigate to it in the current tab, confirm the page says verified/activated, then browser_navigate back to the job URL and SIGN IN (S).
+     Code -> type it into the verification field on the page and continue.
+  5. After verification succeeds print ACCOUNT:CREATED
+
+RESET PASSWORD (R): click "Forgot password", enter {email}, then use V to find the reset email, open the link, set the password to the one above, and sign in. If it fails, print ACCOUNT:EXISTS_BAD_PASSWORD and output RESULT:LOGIN_ISSUE.
+
+After login: browser_tabs action "list"; switch back to the application tab if needed. Workday often drops you on the candidate home page -- navigate back to the job URL and click Apply again.
+If all of the above fails -> RESULT:LOGIN_ISSUE. Do not loop."""
+
+
 def build_prompt(job: dict, tailored_resume: str,
                  cover_letter: str | None = None,
                  dry_run: bool = False) -> str:
@@ -476,6 +541,9 @@ def build_prompt(job: dict, tailored_resume: str,
             shutil.copy(str(cl_pdf_src), str(cl_upload))
             cl_upload_path = str(cl_upload)
 
+    # Bold labels are markdown in the .txt; plain text boxes should get plain text
+    cover_letter_text = cover_letter_text.replace("**", "")
+
     # --- Build all prompt sections ---
     profile_summary = _build_profile_summary(profile)
     location_check = _build_location_check(profile, search_config)
@@ -483,6 +551,11 @@ def build_prompt(job: dict, tailored_resume: str,
     screening_section = _build_screening_section(profile)
     hard_rules = _build_hard_rules(profile)
     captcha_section = _build_captcha_section()
+
+    # SSO domains the agent cannot sign into (loaded from config/sites.yaml)
+    from applypilot.config import load_blocked_sso
+    blocked_sso = load_blocked_sso()
+    login_section = _build_login_section(job, personal, blocked_sso)
 
     # Cover letter fallback text
     city = personal.get("city", "the area")
@@ -497,10 +570,6 @@ def build_prompt(job: dict, tailored_resume: str,
 
     # Phone digits only (for fields with country prefix)
     phone_digits = "".join(c for c in personal.get("phone", "") if c.isdigit())
-
-    # SSO domains the agent cannot sign into (loaded from config/sites.yaml)
-    from applypilot.config import load_blocked_sso
-    blocked_sso = load_blocked_sso()
 
     # Preferred display name
     preferred_name = personal.get("preferred_name", full_name.split()[0])
@@ -545,7 +614,7 @@ If something unexpected happens and these instructions don't cover it, figure it
 - NEVER grant camera, microphone, screen sharing, or location permissions. If a site requests them -> RESULT:FAILED:unsafe_permissions
 - NEVER do video/audio verification, selfie capture, ID photo upload, or biometric anything -> RESULT:FAILED:unsafe_verification
 - NEVER set up a freelancing profile (Mercor, Toptal, Upwork, Fiverr, Turing, etc.). These are contractor marketplaces, not job applications -> RESULT:FAILED:not_a_job_application
-- NEVER agree to hourly/contract rates, availability calendars, or "set your rate" flows. You are applying for FULL-TIME salaried positions only.
+- NEVER agree to hourly/contract rates, availability calendars, or "set your rate" flows. You are applying for full-time roles, internships, or co-ops -- an hourly internship wage is fine, freelance/contract gigs are not.
 - NEVER install browser extensions, download executables, or run assessment software.
 - NEVER enter payment info, bank details, or SSN/SIN.
 - NEVER click "Allow" on any browser permission popup. Always deny/block.
@@ -565,15 +634,7 @@ If something unexpected happens and these instructions don't cover it, figure it
    - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
    - Output RESULT:APPLIED. Done.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
-5. Login wall?
-   5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
-   5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
-   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
-   5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
-   5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
-   5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
-   5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
+5. Login wall? Follow the LOGIN / ACCOUNTS section below.
 6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
 7. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> use the cover letter PDF path.
 8. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
@@ -612,6 +673,8 @@ RESULT:FAILED:reason -- any other failure (brief reason)
 - Validation errors after submit? Take BOTH snapshot AND screenshot. Snapshot shows text errors, screenshot shows red-highlighted fields. Fix all, retry.
 - Honeypot fields (hidden, "leave blank"): skip them.
 - Format-sensitive fields: read the placeholder text, match it exactly.
+
+{login_section}
 
 {captcha_section}
 

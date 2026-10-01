@@ -35,6 +35,16 @@ console = Console()
 # Resume
 # ---------------------------------------------------------------------------
 
+def _pdf_to_text(pdf: Path) -> str:
+    """Extract plain text from a resume PDF, or '' if it has no text layer."""
+    try:
+        from pypdf import PdfReader
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(str(pdf)).pages)
+    except Exception:
+        return ""
+    return text.strip() if len(text.strip()) > 200 else ""
+
+
 def _setup_resume() -> None:
     """Prompt for resume file and copy into APP_DIR."""
     console.print(Panel("[bold]Step 1: Resume[/bold]\nPoint to your master resume file (.txt or .pdf)."))
@@ -59,9 +69,18 @@ def _setup_resume() -> None:
             shutil.copy2(src, RESUME_PDF_PATH)
             console.print(f"[green]Copied to {RESUME_PDF_PATH}[/green]")
 
-            # Also ask for a plain-text version for LLM consumption
+            # AI stages need plain text: extract it from the PDF when possible
+            text = _pdf_to_text(src)
+            if text:
+                RESUME_PATH.write_text(text, encoding="utf-8")
+                console.print(
+                    f"[green]Extracted text to {RESUME_PATH}[/green] "
+                    "[dim](review it; replace with your own .txt if the layout came out garbled)[/dim]"
+                )
+                break
+
             txt_path_str = Prompt.ask(
-                "Plain-text version of your resume (.txt)",
+                "Couldn't extract text from the PDF. Path to a plain-text (.txt) copy of your resume",
                 default="",
             )
             if txt_path_str.strip():
@@ -101,7 +120,7 @@ def _setup_profile() -> dict:
         "github_url": Prompt.ask("GitHub URL (optional)", default=""),
         "portfolio_url": Prompt.ask("Portfolio URL (optional)", default=""),
         "website_url": Prompt.ask("Personal website URL (optional)", default=""),
-        "password": Prompt.ask("Job site password (used for login walls during auto-apply)", password=True, default=""),
+        "password": Prompt.ask("Job portal password for Workday/iCIMS accounts (8+ chars, upper, lower, digit, symbol; NOT your email password)", password=True, default=""),
     }
 
     # -- Work Authorization --
@@ -225,6 +244,28 @@ def _setup_searches() -> None:
         lines.append(f'  - query: "{role}"')
         lines.append(f"    tier: {min(i + 1, 3)}")
 
+    console.print(
+        "\nCurated GitHub lists (SimplifyJobs New-Grad-Positions, Summer2027-Internships) "
+        "have hand-picked postings with direct apply links."
+    )
+    if Confirm.ask("Import jobs from GitHub lists?", default=True):
+        github_only = Confirm.ask("Use ONLY GitHub lists (skip scraping Indeed/LinkedIn/etc.)?", default=False)
+        lines += ["", "sources:"]
+        lines += ["  - github"] if github_only else ["  - github", "  - jobspy", "  - workday", "  - smartextract"]
+        lines += [
+            "",
+            "github_lists:",
+            "  repos:",
+            "    - SimplifyJobs/New-Grad-Positions",
+            "    - SimplifyJobs/Summer2027-Internships",
+            "  max_age_days: 14",
+            "  include_titles: []",
+            "  exclude_titles: []",
+            "  locations: []",
+        ]
+    else:
+        lines += ["", "sources:", "  - jobspy", "  - workday", "  - smartextract"]
+
     SEARCH_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     console.print(f"[green]Search config saved to {SEARCH_CONFIG_PATH}[/green]")
 
@@ -256,7 +297,7 @@ def _setup_ai_features() -> None:
 
     if provider == "gemini":
         api_key = Prompt.ask("Gemini API key (from aistudio.google.com)")
-        model = Prompt.ask("Model", default="gemini-2.0-flash")
+        model = Prompt.ask("Model", default="gemini-3.5-flash")
         env_lines.append(f"GEMINI_API_KEY={api_key}")
         env_lines.append(f"LLM_MODEL={model}")
     elif provider == "openai":

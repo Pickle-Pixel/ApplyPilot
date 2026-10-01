@@ -11,7 +11,14 @@ import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
+from applypilot.config import (
+    COVER_LETTER_BODY_PATH,
+    COVER_LETTER_DIR,
+    COVER_LETTER_PROMPT_PATH,
+    RESUME_PATH,
+    WRITING_SAMPLE_PATH,
+    load_profile,
+)
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
@@ -102,6 +109,159 @@ Start DIRECTLY with "Dear Hiring Manager," and end with the name."""
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+DEFAULT_COVER_LETTER_INSTRUCTIONS = """\
+Write a cover letter for this job. 3 or 4 short paragraphs, under 300 words.
+
+- Open with who I am (school, degree, and graduation date from my resume) and the role I'm applying for.
+- Middle: connect 2 or 3 specific things from my resume to what the job description asks for. Use the real numbers.
+- Close by saying why this company specifically, based on the job description, and that I'd welcome a conversation.
+- Sound like a person, not a template. No buzzwords, no flattery, no "I am excited to apply".
+- Don't guess at the company's problems or claim to know their internal challenges.
+"""
+
+
+def _build_custom_cover_letter_prompt(instructions: str, profile: dict) -> str:
+    """User-written instructions plus the rules the renderer and validator rely on."""
+    personal = profile.get("personal", {})
+    sign_off = personal.get("preferred_name") or personal.get("full_name", "")
+    return f"""{instructions.strip()}
+
+== NON-NEGOTIABLE RULES ==
+- Only use facts from the RESUME. Never invent experience, tools, numbers, or details about the company beyond the job description.
+- Do not write a header, address, or date (they are added automatically).
+- Start with "Dear Hiring Manager," and end with a sign-off followed by "{sign_off}".
+- Plain text: paragraphs separated by a blank line, no em dashes. The only markdown allowed is **bold** for a quality label at the start of a paragraph.
+- Output ONLY the letter. No "Here is your letter" or notes."""
+
+
+# Words that mark text as AI-written (from Wikipedia's "Signs of AI writing")
+_AI_TELLS = (
+    "delve", "crucial", "pivotal", "landscape", "tapestry", "testament", "underscore", "underscores",
+    "showcase", "showcases", "showcasing", "foster", "fostering", "enhance", "enhancing", "intricate",
+    "vibrant", "align", "aligns", "aligned", "seamless", "seamlessly", "leverage", "leveraging",
+    "embark", "journey", "thrilled", "resonate", "resonates", "invaluable",
+)
+# Scale/seniority claims a student's intro tends to inflate. OK only if the resume says it.
+_CL_INFLATION = (
+    "production-ready", "production-grade", "production models", "production systems", "high-volume",
+    "large-scale", "scalable", "enterprise", "state-of-the-art", "extensive", "expert", "seasoned",
+)
+
+_CL_JUDGE_PROMPT = """You fact-check the INTRO and CLOSING of a cover letter.
+Claims about the candidate must be supported by the RESUME. Claims about the company or role must be
+supported by the JOB DESCRIPTION. FAIL if either paragraph states anything that isn't, including
+inflated descriptions of the candidate's work (e.g. calling student or intern work "production").
+Reply exactly:
+VERDICT: PASS or FAIL
+ISSUES: none, or the unsupported phrases"""
+
+
+def _cl_tells(text: str, resume_text: str) -> list[str]:
+    lower, resume_lower = text.lower(), resume_text.lower()
+    has = lambda w, s: re.search(rf"\b{re.escape(w)}\b", s)
+    issues = []
+    tells = [w for w in _AI_TELLS if has(w, lower)]
+    if tells:
+        issues.append(f"Remove AI-sounding words: {', '.join(tells)}")
+    inflated = [w for w in _CL_INFLATION if has(w, lower) and not has(w, resume_lower)]
+    if inflated:
+        issues.append(f"Remove claims my resume doesn't support: {', '.join(inflated)}")
+    return issues
+
+
+def _cl_judge(intro: str, closing: str, resume_text: str, job_text: str) -> str | None:
+    """Return a problem description, or None if the fact-check passes."""
+    raw = get_client().chat([
+        {"role": "system", "content": _CL_JUDGE_PROMPT},
+        {"role": "user", "content": (
+            f"RESUME:\n{resume_text}\n\n---\n\nJOB DESCRIPTION:\n{job_text}\n\n---\n\n"
+            f"INTRO:\n{intro}\n\nCLOSING:\n{closing}"
+        )},
+    ], max_tokens=4096, temperature=0.0)
+    if "VERDICT: PASS" in raw.upper():
+        return None
+    return "Fact-check failed: " + (raw.split("ISSUES:", 1)[-1].strip() if "ISSUES:" in raw else raw.strip())[:400]
+
+
+def _body_labels(body: str) -> list[str]:
+    """Bold quality labels that start each body paragraph (e.g. **Machine Learning:**)."""
+    return [m.strip().rstrip(":").strip() for m in re.findall(r"^\*\*([^*]+)\*\*", body, re.M)]
+
+
+def _mentions(text: str, label: str) -> bool:
+    """True if text refers to the quality, by stem: "Communicator" matches "communicate"."""
+    lower = text.lower()
+    words = [w for w in re.findall(r"[a-z]+", label.lower()) if len(w) >= 4] or [label.lower()]
+    return any(w[:max(4, len(w) - 3)] in lower for w in words)
+
+
+def _voice_sample() -> str:
+    if WRITING_SAMPLE_PATH.exists():
+        sample = WRITING_SAMPLE_PATH.read_text(encoding="utf-8").strip()
+        if sample:
+            return (
+                "\n\n== MY WRITING SAMPLE (match this voice) ==\n"
+                "Match its sentence length, word choice, and punctuation habits. Don't copy its content.\n"
+                f"{sample[:3000]}"
+            )
+    return ""
+
+
+def _generate_intro_closing(instructions: str, body: str, resume_text: str, job_text: str,
+                            profile: dict, validation_mode: str, max_retries: int) -> str:
+    """Write only the intro and closing around the user's fixed body paragraphs."""
+    personal = profile.get("personal", {})
+    name = personal.get("full_name", "")
+    labels = _body_labels(body)
+    qualities = ", ".join(labels) if labels else "the qualities in the body paragraphs"
+
+    system = f"""{instructions.strip()}{_voice_sample()}
+
+== YOUR TASK FOR THIS LETTER ==
+The three body paragraphs are already written (below) and must not change. Write ONLY:
+- "intro": the introduction paragraph. It must name these three qualities, in this order: {qualities}.
+- "closing": the closing paragraph, specific to this company and role.
+Only use facts from the RESUME and the job description. Don't invent anything about me or the company.
+No greeting and no sign-off (they are added automatically). No em dashes.
+Return ONLY a JSON object: {{"intro": "...", "closing": "..."}}"""
+
+    client = get_client()
+    avoid: list[str] = []
+    letter = ""
+    for attempt in range(max_retries + 1):
+        prompt = system + ("\n\n== FIX THESE ISSUES ==\n" + "\n".join(f"- {a}" for a in avoid[-5:]) if avoid else "")
+        raw = client.chat([
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": (
+                f"CANDIDATE NAME: {name}\n\nRESUME:\n{resume_text}\n\n---\n\n"
+                f"BODY PARAGRAPHS (fixed):\n{body}\n\n---\n\nTARGET JOB:\n{job_text}"
+            )},
+        ], max_tokens=4096, temperature=0.7)
+        try:
+            parts = json.loads(re.search(r"\{.*\}", raw, re.S).group(0))
+            intro, closing = sanitize_text(parts["intro"]).strip(), sanitize_text(parts["closing"]).strip()
+        except (AttributeError, ValueError, KeyError, TypeError):
+            avoid.append('Return valid JSON with exactly the keys "intro" and "closing".')
+            continue
+
+        letter = f"Dear Hiring Manager,\n\n{intro}\n\n{body.strip()}\n\n{closing}\n\nSincerely,\n{name}"
+        missing = [q for q in labels if not _mentions(intro, q)]
+        validation = validate_cover_letter(letter, mode=validation_mode)
+        errors = validation["errors"] + ([f"Intro must name: {', '.join(missing)}"] if missing else [])
+        if "thank" not in closing.lower():
+            errors.append("The closing must start by thanking the reader for their time.")
+        if validation_mode != "lenient":
+            errors += _cl_tells(f"{intro}\n{closing}", resume_text)
+            if not errors:
+                problem = _cl_judge(intro, closing, resume_text, job_text)
+                if problem:
+                    errors.append(problem)
+        if not errors:
+            return letter
+        avoid.extend(errors)
+    return letter
+
+
 def _strip_preamble(text: str) -> str:
     """Remove LLM preamble before 'Dear Hiring Manager,' if present.
 
@@ -146,7 +306,17 @@ def generate_cover_letter(
     avoid_notes: list[str] = []
     letter = ""
     client = get_client()
-    cl_prompt_base = _build_cover_letter_prompt(profile)
+    custom = (COVER_LETTER_PROMPT_PATH.read_text(encoding="utf-8").strip()
+              if COVER_LETTER_PROMPT_PATH.exists() else "")
+    body = (COVER_LETTER_BODY_PATH.read_text(encoding="utf-8").strip()
+            if COVER_LETTER_BODY_PATH.exists() else "")
+    if body:
+        return _generate_intro_closing(custom or DEFAULT_COVER_LETTER_INSTRUCTIONS, body, resume_text,
+                                       job_text, profile, validation_mode, max_retries)
+    if custom:
+        cl_prompt_base = _build_custom_cover_letter_prompt(custom, profile) + _voice_sample()
+    else:
+        cl_prompt_base = _build_cover_letter_prompt(profile)
 
     for attempt in range(max_retries + 1):
         # Fresh conversation every attempt
@@ -165,7 +335,7 @@ def generate_cover_letter(
             )},
         ]
 
-        letter = client.chat(messages, max_tokens=1024, temperature=0.7)
+        letter = client.chat(messages, max_tokens=4096, temperature=0.7)
         letter = sanitize_text(letter)  # auto-fix em dashes, smart quotes
         letter = _strip_preamble(letter)  # remove any "Here is the letter:" prefix
 
@@ -245,11 +415,11 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
 
-            # Generate PDF (best-effort)
+            # Plain black-and-white .docx + PDF (best-effort)
             pdf_path = None
             try:
-                from applypilot.scoring.pdf import convert_to_pdf
-                pdf_path = str(convert_to_pdf(cl_path))
+                from applypilot.scoring.letter_doc import render_letter
+                pdf_path = str(render_letter(cl_path, profile, company=job.get("site", "")))
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 

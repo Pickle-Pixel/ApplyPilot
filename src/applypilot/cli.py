@@ -257,6 +257,70 @@ def apply(
 
 
 @app.command()
+def github(
+    repo: Optional[list[str]] = typer.Option(
+        None, "--repo", "-r",
+        help="GitHub repo (owner/name) to import. Repeatable. Defaults to github_lists.repos in searches.yaml.",
+    ),
+    max_age: Optional[int] = typer.Option(None, "--max-age", help="Only postings newer than N days."),
+    title: Optional[list[str]] = typer.Option(None, "--title", "-t", help="Keep titles containing this text. Repeatable."),
+    location: Optional[list[str]] = typer.Option(None, "--location", help="Keep locations containing this text. Repeatable."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be imported without saving."),
+) -> None:
+    """Import curated postings from GitHub job-list repos (SimplifyJobs etc.)."""
+    _bootstrap()
+
+    from applypilot.discovery.github_lists import run_github_discovery
+
+    overrides = {"max_age_days": max_age, "include_titles": title or None, "locations": location or None}
+    res = run_github_discovery(repos=repo or None, overrides=overrides, dry_run=dry_run)
+
+    table = Table(title="GitHub job lists", header_style="bold cyan")
+    table.add_column("Repo")
+    table.add_column("Kept", justify="right")
+    for name, kept in res["by_repo"].items():
+        table.add_row(name, str(kept))
+    console.print(table)
+
+    if dry_run:
+        preview = Table(title="Preview (first 25)", header_style="bold")
+        preview.add_column("Company")
+        preview.add_column("Title")
+        preview.add_column("Location")
+        preview.add_column("Age", justify="right")
+        for j in res["jobs"][:25]:
+            age = f"{j['age_days']:.0f}d" if j["age_days"] is not None else "?"
+            preview.add_row(j["company"], j["title"][:60], "; ".join(j["locations"])[:30], age)
+        console.print(preview)
+        console.print(f"[dim]{res['kept']} of {res['fetched']} postings match. Nothing saved (--dry-run).[/dim]")
+        return
+
+    console.print(
+        f"[green]{res['new']} new jobs imported[/green], {res['duplicates']} already known.\n"
+        "Next: [bold]applypilot run enrich score tailor cover pdf[/bold] then [bold]applypilot apply[/bold]"
+    )
+
+
+@app.command()
+def accounts() -> None:
+    """List employer portals (Workday etc.) where an account has been created."""
+    _bootstrap()
+
+    from applypilot.apply.accounts import list_accounts
+
+    rows = list_accounts()
+    if not rows:
+        console.print("[dim]No ATS accounts recorded yet.[/dim]")
+        return
+    table = Table(title="ATS accounts", header_style="bold cyan")
+    for col in ("Host", "ATS", "Email", "Status", "Last used"):
+        table.add_column(col)
+    for r in rows:
+        table.add_row(r["host"], r["ats"] or "", r["email"] or "", r["status"] or "", (r["last_used_at"] or "")[:16])
+    console.print(table)
+
+
+@app.command()
 def status() -> None:
     """Show pipeline statistics from the database."""
     _bootstrap()
@@ -284,6 +348,7 @@ def status() -> None:
     summary.add_row("Ready to apply", str(stats["ready_to_apply"]))
     summary.add_row("Applied", str(stats["applied"]))
     summary.add_row("Apply errors", str(stats["apply_errors"]))
+    summary.add_row("Needs review (maybe submitted)", str(stats["needs_review"]))
 
     console.print(summary)
 
@@ -384,7 +449,7 @@ def doctor() -> None:
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
     has_local = bool(os.environ.get("LLM_URL"))
     if has_gemini:
-        model = os.environ.get("LLM_MODEL", "gemini-2.0-flash")
+        model = os.environ.get("LLM_MODEL", "gemini-3.5-flash")
         results.append(("LLM API key", ok_mark, f"Gemini ({model})"))
     elif has_openai:
         model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
@@ -419,6 +484,31 @@ def doctor() -> None:
     else:
         results.append(("Node.js (npx)", fail_mark,
                         "Install Node.js 18+ from nodejs.org (needed for auto-apply)"))
+
+    # Gmail MCP (email verification codes/links for Workday-style account creation)
+    from pathlib import Path
+    gmail_dir = Path.home() / ".gmail-mcp"
+    if (gmail_dir / "credentials.json").exists():
+        results.append(("Gmail (verification)", ok_mark, str(gmail_dir)))
+    elif (gmail_dir / "gcp-oauth.keys.json").exists():
+        results.append(("Gmail (verification)", warn_mark,
+                        "OAuth keys found, not authorized — run: npx @gongrzhe/server-gmail-autoauth-mcp auth"))
+    else:
+        results.append(("Gmail (verification)", warn_mark,
+                        "Needed for Workday email verification — see README 'Gmail setup'"))
+
+    # Password strength for Workday account creation
+    if PROFILE_PATH.exists():
+        import json
+        import re as _re
+        pw = json.loads(PROFILE_PATH.read_text(encoding="utf-8")).get("personal", {}).get("password", "")
+        strong = (len(pw) >= 8 and _re.search(r"[a-z]", pw) and _re.search(r"[A-Z]", pw)
+                  and _re.search(r"\d", pw) and _re.search(r"[^A-Za-z0-9]", pw))
+        if strong:
+            results.append(("Portal password", ok_mark, "Meets Workday rules"))
+        else:
+            results.append(("Portal password", warn_mark,
+                            "personal.password should be 8+ chars with upper, lower, digit, symbol (Workday rules)"))
 
     # CapSolver (optional)
     capsolver = os.environ.get("CAPSOLVER_API_KEY")

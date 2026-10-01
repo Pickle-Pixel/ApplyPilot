@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
+from applypilot.config import RESUME_PATH, RESUME_TEX_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
@@ -326,7 +326,7 @@ def judge_tailored_resume(
     ]
 
     client = get_client()
-    response = client.chat(messages, max_tokens=512, temperature=0.1)
+    response = client.chat(messages, max_tokens=4096, temperature=0.1)
 
     passed = "VERDICT: PASS" in response.upper()
     issues = "none"
@@ -478,6 +478,9 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
         return {"approved": 0, "failed": 0, "errors": 0, "elapsed": 0.0}
 
     TAILORED_DIR.mkdir(parents=True, exist_ok=True)
+    latex_source = RESUME_TEX_PATH.read_text(encoding="utf-8") if RESUME_TEX_PATH.exists() else None
+    if latex_source:
+        log.info("Using your LaTeX resume: %s", RESUME_TEX_PATH)
     log.info("Tailoring resumes for %d jobs (score >= %d)...", len(jobs), min_score)
     t0 = time.time()
     completed = 0
@@ -487,17 +490,29 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     for job in jobs:
         completed += 1
         try:
-            tailored, report = tailor_resume(resume_text, job, profile,
-                                             validation_mode=validation_mode)
-
             # Build safe filename prefix
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
             safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
             prefix = f"{safe_site}_{safe_title}"
-
-            # Save tailored resume text
             txt_path = TAILORED_DIR / f"{prefix}.txt"
-            txt_path.write_text(tailored, encoding="utf-8")
+
+            if latex_source:
+                from applypilot.scoring.latex_resume import tailor_latex
+                pdf_out = TAILORED_DIR / f"{prefix}.pdf"
+                tex, tailored, report = tailor_latex(latex_source, job, pdf_out,
+                                                     validation_mode=validation_mode)
+                if tex:
+                    (TAILORED_DIR / f"{prefix}.tex").write_text(tex, encoding="utf-8")
+                if report["status"] == "approved":
+                    # Plain text for form-filling; the compiled PDF is what gets uploaded
+                    txt_path.write_text(tailored, encoding="utf-8")
+                elif pdf_out.exists():
+                    pdf_out.replace(TAILORED_DIR / f"{prefix}_DRAFT.pdf")
+            else:
+                tailored, report = tailor_resume(resume_text, job, profile,
+                                                 validation_mode=validation_mode)
+                # Save tailored resume text
+                txt_path.write_text(tailored, encoding="utf-8")
 
             # Save job description for traceability
             job_path = TAILORED_DIR / f"{prefix}_JOB.txt"
@@ -517,8 +532,8 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
 
             # Generate PDF for approved resumes (best-effort)
             # "approved_with_judge_warning" is also a success — resume was generated.
-            pdf_path = None
-            if report["status"] in ("approved", "approved_with_judge_warning"):
+            pdf_path = str(TAILORED_DIR / f"{prefix}.pdf") if latex_source else None
+            if not latex_source and report["status"] in ("approved", "approved_with_judge_warning"):
                 try:
                     from applypilot.scoring.pdf import convert_to_pdf
                     pdf_path = str(convert_to_pdf(txt_path))
