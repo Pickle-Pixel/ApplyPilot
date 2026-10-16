@@ -12,6 +12,7 @@ Three-tier extraction cascade (cheapest first):
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -870,6 +871,19 @@ def run_enrichment(limit: int = 100, workers: int = 1) -> dict:
         Dict with stats: processed, ok, partial, error, tiers.
     """
     conn = init_db()
+
+    # Configure proxy from environment or searches.yaml if not already set
+    global _PROXY_CONFIG
+    if not _PROXY_CONFIG:
+        proxy_str = os.environ.get("PROXY")
+        if not proxy_str:
+            try:
+                cfg = config.load_search_config()
+                proxy_str = cfg.get("proxy")
+            except Exception:
+                proxy_str = None
+        if proxy_str:
+            set_proxy(proxy_str)
 
     # URL resolution first
     url_stats = resolve_all_urls(conn)

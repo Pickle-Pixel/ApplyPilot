@@ -9,6 +9,7 @@ hardcoded. Supports sequential search + detail fetching with proxy.
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -125,23 +126,30 @@ def setup_proxy(proxy_str: str | None) -> None:
         _opener = urllib.request.build_opener()
         return
 
-    parts = proxy_str.split(":")
-    if len(parts) == 4:
-        host, port, user, passwd = parts
-        proxy_url = f"http://{user}:{passwd}@{host}:{port}"
-    elif len(parts) == 2:
-        proxy_url = f"http://{parts[0]}:{parts[1]}"
+    proxy_str = proxy_str.strip()
+    if proxy_str.startswith("http://") or proxy_str.startswith("https://"):
+        proxy_url = proxy_str
+        log_label = proxy_str.split("@")[-1] if "@" in proxy_str else proxy_str
     else:
-        log.warning("Proxy format not recognized: %s (expected host:port:user:pass or host:port)", proxy_str)
-        _opener = urllib.request.build_opener()
-        return
+        parts = proxy_str.split(":")
+        if len(parts) == 4:
+            host, port, user, passwd = parts
+            proxy_url = f"http://{user}:{passwd}@{host}:{port}"
+            log_label = f"{host}:{port}"
+        elif len(parts) == 2:
+            proxy_url = f"http://{parts[0]}:{parts[1]}"
+            log_label = f"{parts[0]}:{parts[1]}"
+        else:
+            log.warning("Proxy format not recognized: %s (expected host:port:user:pass or host:port)", proxy_str)
+            _opener = urllib.request.build_opener()
+            return
 
     proxy_handler = urllib.request.ProxyHandler({
         "http": proxy_url,
         "https": proxy_url,
     })
     _opener = urllib.request.build_opener(proxy_handler)
-    log.info("Proxy configured: %s:%s", parts[0], parts[1])
+    log.info("Proxy configured: %s", log_label)
 
 
 def _urlopen(req, timeout=30):
@@ -506,7 +514,7 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
         log.warning("No search queries configured in searches.yaml.")
         return {"found": 0, "new": 0, "existing": 0, "queries": 0}
 
-    proxy = search_cfg.get("proxy")
+    proxy = search_cfg.get("proxy") or os.environ.get("PROXY")
     if proxy:
         setup_proxy(proxy)
 

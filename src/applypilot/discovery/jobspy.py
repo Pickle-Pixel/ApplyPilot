@@ -8,9 +8,11 @@ search configuration YAML (searches.yaml) rather than being hardcoded.
 """
 
 import logging
+import os
 import sqlite3
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from jobspy import scrape_jobs
 
@@ -23,37 +25,41 @@ log = logging.getLogger(__name__)
 # -- Proxy parsing -----------------------------------------------------------
 
 def parse_proxy(proxy_str: str) -> dict:
-    """Parse host:port:user:pass into components."""
-    parts = proxy_str.split(":")
-    if len(parts) == 4:
-        host, port, user, passwd = parts
-        return {
-            "host": host,
-            "port": port,
-            "user": user,
-            "pass": passwd,
-            "jobspy": f"{user}:{passwd}@{host}:{port}",
-            "playwright": {
-                "server": f"http://{host}:{port}",
-                "username": user,
-                "password": passwd,
-            },
-        }
-    elif len(parts) == 2:
-        host, port = parts
-        return {
-            "host": host,
-            "port": port,
-            "user": None,
-            "pass": None,
-            "jobspy": f"{host}:{port}",
-            "playwright": {"server": f"http://{host}:{port}"},
-        }
+    """Parse host:port:user:pass or URL format into components."""
+    proxy_str = proxy_str.strip()
+    if proxy_str.startswith("http://") or proxy_str.startswith("https://"):
+        parsed = urlparse(proxy_str)
+        host = parsed.hostname or ""
+        port = str(parsed.port or (443 if parsed.scheme == "https" else 80))
+        user = parsed.username
+        passwd = parsed.password
     else:
-        raise ValueError(
-            f"Proxy format not recognized: {proxy_str}. "
-            f"Expected: host:port:user:pass or host:port"
-        )
+        parts = proxy_str.split(":")
+        if len(parts) == 4:
+            host, port, user, passwd = parts
+        elif len(parts) == 2:
+            host, port = parts
+            user, passwd = None, None
+        else:
+            raise ValueError(
+                f"Proxy format not recognized: {proxy_str}. "
+                f"Expected: host:port:user:pass or host:port or http://user:pass@host:port"
+            )
+
+    jobspy_proxy = f"{user}:{passwd}@{host}:{port}" if user and passwd else f"{host}:{port}"
+    playwright_proxy: dict = {"server": f"http://{host}:{port}"}
+    if user and passwd:
+        playwright_proxy["username"] = user
+        playwright_proxy["password"] = passwd
+
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "pass": passwd,
+        "jobspy": jobspy_proxy,
+        "playwright": playwright_proxy,
+    }
 
 
 # -- Retry wrapper -----------------------------------------------------------
@@ -460,7 +466,7 @@ def run_discovery(cfg: dict | None = None) -> dict:
         log.warning("No search configuration found. Run `applypilot init` to create one.")
         return {"new": 0, "existing": 0, "errors": 0, "db_total": 0, "queries": 0}
 
-    proxy = cfg.get("proxy")
+    proxy = cfg.get("proxy") or os.environ.get("PROXY")
     sites = cfg.get("sites")
     results_per_site = cfg.get("defaults", {}).get("results_per_site", 100)
     hours_old = cfg.get("defaults", {}).get("hours_old", 72)

@@ -35,7 +35,7 @@ def _detect_provider() -> tuple[str, str, str]:
     if gemini_key and not local_url:
         return (
             "https://generativelanguage.googleapis.com/v1beta/openai",
-            model_override or "gemini-2.0-flash",
+            model_override or "gemini-2.5-flash-lite",
             gemini_key,
         )
 
@@ -89,9 +89,9 @@ class LLMClient:
         self.model = model
         self.api_key = api_key
         self._client = httpx.Client(timeout=_TIMEOUT)
-        # True once we've confirmed the native Gemini API works for this model
-        self._use_native_gemini: bool = False
-        self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
+        self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE) or "generativelanguage.googleapis.com" in base_url
+        # Use native generateContent API directly for Gemini to avoid compat layer deprecations
+        self._use_native_gemini: bool = self._is_gemini
 
     # -- Native Gemini API --------------------------------------------------
 
@@ -170,9 +170,9 @@ class LLMClient:
             headers=headers,
         )
 
-        # 403 on Gemini compat = model not available on compat layer.
+        # 403 or 404 on Gemini compat = model not available on compat layer.
         # Raise a specific sentinel so chat() can switch to native API.
-        if resp.status_code == 403 and self._is_gemini:
+        if resp.status_code in (403, 404) and self._is_gemini:
             raise _GeminiCompatForbidden(resp)
 
         return self._handle_compat_response(resp)
