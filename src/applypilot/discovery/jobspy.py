@@ -199,6 +199,8 @@ def _run_one_search(
     """Run a single search query and store results in DB."""
     s = search
     label = f"\"{s['query']}\" in {s['location']} {'(remote)' if s.get('remote') else ''}"
+    if s.get("job_type"):
+        label += f" [{s['job_type']}]"
     if "tier" in s:
         label += f" [tier {s['tier']}]"
 
@@ -220,9 +222,8 @@ def _run_one_search(
             "description_format": "markdown",
             "country_indeed": defaults.get("country_indeed", "usa"),
             "verbose": 0,
+            **_filter_kwargs(s.get("remote", False), s.get("job_type")),
         }
-        if s.get("remote"):
-            kwargs["is_remote"] = True
         if proxy_config:
             kwargs["proxies"] = [proxy_config["jobspy"]]
         if "linkedin" in other_sites:
@@ -243,9 +244,8 @@ def _run_one_search(
             "hours_old": hours_old,
             "description_format": "markdown",
             "verbose": 0,
+            **_filter_kwargs(s.get("remote", False), s.get("job_type")),
         }
-        if s.get("remote"):
-            gd_kwargs["is_remote"] = True
         if proxy_config:
             gd_kwargs["proxies"] = [proxy_config["jobspy"]]
         try:
@@ -287,6 +287,41 @@ def _run_one_search(
     return {"new": new, "existing": existing, "errors": 0, "filtered": filtered, "total": before, "label": label}
 
 
+# -- Search filters ----------------------------------------------------------
+
+# Values JobSpy's ``job_type`` parameter accepts (python-jobspy README, scrape_jobs parameters).
+JOB_TYPES = ("fulltime", "parttime", "contract", "temporary", "internship", "perdiem", "other", "volunteer")
+
+
+def _resolve_job_type(location: dict, defaults: dict) -> str | None:
+    """Return the JobSpy job type for a search location, or None for any type.
+
+    A ``job_type`` on the location entry wins over ``defaults.job_type``.
+    Raises ValueError for a value JobSpy does not know, so a typo fails loudly
+    instead of silently searching every job type.
+    """
+    value = location.get("job_type", defaults.get("job_type"))
+    if value is None:
+        return None
+    value = str(value).strip().lower().replace("-", "").replace("_", "").replace(" ", "")
+    if value not in JOB_TYPES:
+        raise ValueError(
+            f"job_type {location.get('job_type', defaults.get('job_type'))!r} in searches.yaml "
+            f"is not one of: {', '.join(JOB_TYPES)}"
+        )
+    return value
+
+
+def _filter_kwargs(remote: bool, job_type: str | None) -> dict:
+    """JobSpy keyword arguments for the remote and job-type filters."""
+    kwargs: dict = {}
+    if remote:
+        kwargs["is_remote"] = True
+    if job_type:
+        kwargs["job_type"] = job_type
+    return kwargs
+
+
 # -- Single query search -----------------------------------------------------
 
 def search_jobs(
@@ -298,8 +333,13 @@ def search_jobs(
     hours_old: int = 72,
     proxy: str | None = None,
     country_indeed: str = "usa",
+    job_type: str | None = None,
 ) -> dict:
-    """Run a single job search via JobSpy and store results in DB."""
+    """Run a single job search via JobSpy and store results in DB.
+
+    ``job_type`` is one of ``JOB_TYPES`` (e.g. "parttime", "contract"), or None for any.
+    """
+    job_type = _resolve_job_type({"job_type": job_type}, {}) if job_type else None
     if sites is None:
         sites = ["indeed", "linkedin", "zip_recruiter"]
 
@@ -316,10 +356,8 @@ def search_jobs(
         "description_format": "markdown",
         "country_indeed": country_indeed,
         "verbose": 2,
+        **_filter_kwargs(remote_only, job_type),
     }
-
-    if remote_only:
-        kwargs["is_remote"] = True
 
     if proxy_config:
         kwargs["proxies"] = [proxy_config["jobspy"]]
@@ -390,6 +428,7 @@ def _full_crawl(
                 "query": q["query"],
                 "location": loc["location"],
                 "remote": loc.get("remote", False),
+                "job_type": _resolve_job_type(loc, defaults),
                 "tier": q.get("tier", 0),
             })
 

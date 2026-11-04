@@ -55,11 +55,17 @@ queries:
     tier: 3
 
 # Locations to search
+# Optional job_type per location: fulltime, parttime, contract, temporary, internship,
+# perdiem, other, volunteer. It overrides defaults.job_type; leave both out to search every type.
+# To search several types, repeat the location once per type.
 locations:
   - location: "San Francisco, CA"
     remote: false
   - location: "Remote"
     remote: true
+  # - location: "Remote"
+  #   remote: true
+  #   job_type: contract
 
 # Location filtering -- accept/reject patterns for job location text
 location:
@@ -97,6 +103,7 @@ boards:
 defaults:
   results_per_site: 100  # Max results per board per query
   hours_old: 72          # Only jobs posted within this many hours
+  # job_type: fulltime   # Applies to every location without its own job_type
 
 # Negative keywords -- skip jobs with these in the title (case-insensitive)
 exclude_titles:
