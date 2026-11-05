@@ -92,6 +92,15 @@ def _build_profile_summary(profile: dict) -> str:
     return "\n".join(lines)
 
 
+def _display_city(personal: dict, fallback: str) -> str:
+    """Where the candidate lives, for prose: city, else country, else ``fallback``.
+
+    ``personal.city`` may be missing or an empty string (remote candidates often leave it
+    blank); either way the prompt must not render "lives in ," or "based in .".
+    """
+    return personal.get("city") or personal.get("country") or fallback
+
+
 def _build_location_check(profile: dict, search_config: dict) -> str:
     """Build the location eligibility check section of the prompt.
 
@@ -101,7 +110,9 @@ def _build_location_check(profile: dict, search_config: dict) -> str:
     personal = profile["personal"]
     location_cfg = search_config.get("location", {})
     accept_patterns = location_cfg.get("accept_patterns", [])
-    primary_city = personal.get("city", location_cfg.get("primary", "your city"))
+    # A configured location.primary is more specific than the country, so it comes before it.
+    primary_city = (personal.get("city") or location_cfg.get("primary")
+                    or personal.get("country") or "your city")
 
     # Build the list of acceptable cities for hybrid/onsite
     if accept_patterns:
@@ -120,6 +131,24 @@ Read the job page. Determine the work arrangement. Then decide:
 Do NOT fill out forms for jobs that are clearly onsite in a non-acceptable location. Check EARLY, save time."""
 
 
+def _is_yes(value) -> bool:
+    """Profile flags are written as "Yes"/"No" strings or booleans."""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("yes", "y", "true", "1")
+
+
+def _build_role_type_rule(profile: dict) -> str:
+    """Which kinds of role the candidate applies to, from profile.availability."""
+    if _is_yes(profile.get("availability", {}).get("available_for_contract")):
+        return ('- NEVER set up availability calendars or a "set your rate" marketplace profile. '
+                "Contract and part-time roles posted by an employer ARE valid applications: answer "
+                "rate questions from the SALARY section.")
+    return ('- NEVER agree to hourly/contract rates, availability calendars, '
+            'or "set your rate" flows. '
+            "You are applying for FULL-TIME salaried positions only.")
+
+
 def _build_salary_section(profile: dict) -> str:
     """Build the salary negotiation instructions.
 
@@ -131,6 +160,7 @@ def _build_salary_section(profile: dict) -> str:
     range_min = comp.get("salary_range_min", floor)
     range_max = comp.get("salary_range_max", str(int(floor) + 20000) if floor.isdigit() else floor)
     conversion_note = comp.get("currency_conversion_note", "")
+    hourly_rate = str(comp.get("hourly_rate", "") or "").strip()
 
     # Compute example hourly rates at 3 salary levels
     try:
@@ -143,6 +173,12 @@ def _build_salary_section(profile: dict) -> str:
         hourly_line = ", ".join(f"{sal} = ${hr}/hr" for sal, hr in examples)
     except (ValueError, TypeError):
         hourly_line = "Divide annual salary by 2080"
+
+    if hourly_rate:
+        hourly_answer = (f"Hourly rate? -> ${hourly_rate} {currency}/hr "
+                         "(the candidate's contract rate). Never go below it.")
+    else:
+        hourly_answer = f"Hourly rate? -> Divide your annual answer by 2080. ({hourly_line})"
 
     # Currency conversion guidance
     if conversion_note:
@@ -159,14 +195,14 @@ Decision tree:
 3. {convert_line}
 4. No salary info anywhere? -> Use ${floor} {currency}.
 5. Asked for a range? -> Give posted midpoint minus 10% to midpoint plus 10%. No posted range? -> "${range_min}-${range_max} {currency}".
-6. Hourly rate? -> Divide your annual answer by 2080. ({hourly_line})"""
+6. {hourly_answer}"""
 
 
 def _build_screening_section(profile: dict) -> str:
     """Build the screening questions guidance section."""
     personal = profile["personal"]
     exp = profile.get("experience", {})
-    city = personal.get("city", "their city")
+    city = _display_city(personal, "their city")
     years = exp.get("years_of_experience_total", "multiple")
     target_role = exp.get("target_role", personal.get("current_job_title", "software engineer"))
     work_auth = profile["work_authorization"]
@@ -483,9 +519,10 @@ def build_prompt(job: dict, tailored_resume: str,
     screening_section = _build_screening_section(profile)
     hard_rules = _build_hard_rules(profile)
     captcha_section = _build_captcha_section()
+    role_type_rule = _build_role_type_rule(profile)
 
     # Cover letter fallback text
-    city = personal.get("city", "the area")
+    city = _display_city(personal, "the area")
     if not cover_letter_text:
         cl_display = (
             f"None available. Skip if optional. If required, write 2 factual "
@@ -545,7 +582,7 @@ If something unexpected happens and these instructions don't cover it, figure it
 - NEVER grant camera, microphone, screen sharing, or location permissions. If a site requests them -> RESULT:FAILED:unsafe_permissions
 - NEVER do video/audio verification, selfie capture, ID photo upload, or biometric anything -> RESULT:FAILED:unsafe_verification
 - NEVER set up a freelancing profile (Mercor, Toptal, Upwork, Fiverr, Turing, etc.). These are contractor marketplaces, not job applications -> RESULT:FAILED:not_a_job_application
-- NEVER agree to hourly/contract rates, availability calendars, or "set your rate" flows. You are applying for FULL-TIME salaried positions only.
+{role_type_rule}
 - NEVER install browser extensions, download executables, or run assessment software.
 - NEVER enter payment info, bank details, or SSN/SIN.
 - NEVER click "Allow" on any browser permission popup. Always deny/block.

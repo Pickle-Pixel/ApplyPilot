@@ -5,6 +5,29 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Job type filter** - `job_type` per location in `searches.yaml` (or `defaults.job_type`)
+  is passed to JobSpy: `fulltime`, `parttime`, `contract`, `temporary`, `internship`, `perdiem`,
+  `other`, `volunteer`. Common spellings like `part-time` are accepted; an unknown value raises.
+  Boards that ignore the filter (LinkedIn) are covered by dropping returned jobs whose own type
+  differs; JobSpy's per-board warnings are logged instead of hidden.
+- **Contract and part-time applications** - with `availability.available_for_contract: "Yes"`
+  the apply prompt no longer restricts the agent to full-time salaried roles;
+  `compensation.hourly_rate` answers hourly-rate questions directly. `applypilot init` asks for both,
+  and the `searches.yaml` it writes documents `job_type` in a comment.
+- **Custom scoring criteria** - optional `~/.applypilot/scoring_rules.md` is appended to the
+  scoring prompt.
+- **Test suite** - `tests/` with the first tests, so the CI workflow's `pytest tests/` has
+  something to run.
+
+### Fixed
+- **Empty city in the apply prompt** - an empty or missing `personal.city` rendered as "lives in ,"
+  (screening answers) and "based in ." (cover-letter fallback). All three places that print the city
+  now use one fallback: city, then country; the location check tries `location.primary` before the
+  country.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added

@@ -14,6 +14,9 @@ PROFILE_PATH = APP_DIR / "profile.json"
 RESUME_PATH = APP_DIR / "resume.txt"
 RESUME_PDF_PATH = APP_DIR / "resume.pdf"
 SEARCH_CONFIG_PATH = APP_DIR / "searches.yaml"
+# Optional: the candidate's own scoring criteria (dealbreakers, preferences), appended to the
+# scoring prompt when the file exists.
+SCORING_RULES_PATH = APP_DIR / "scoring_rules.md"
 ENV_PATH = APP_DIR / ".env"
 
 # Generated output

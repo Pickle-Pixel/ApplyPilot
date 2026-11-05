@@ -11,7 +11,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import RESUME_PATH, load_profile
+from applypilot.config import RESUME_PATH, SCORING_RULES_PATH, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 
@@ -70,12 +70,32 @@ def _parse_score_response(response: str) -> dict:
     return {"score": score, "keywords": keywords, "reasoning": reasoning}
 
 
-def score_job(resume_text: str, job: dict) -> dict:
+def build_score_prompt(rules: str | None = None) -> str:
+    """Return the scoring system prompt, with the candidate's own rules appended if given."""
+    if not rules or not rules.strip():
+        return SCORE_PROMPT
+    return (
+        SCORE_PROMPT
+        + "\n\nCANDIDATE'S OWN CRITERIA (they take precedence over the guidelines above; "
+        "a job that breaks a dealbreaker listed here scores 1-2):\n"
+        + rules.strip()
+    )
+
+
+def load_scoring_rules() -> str | None:
+    """Read ~/.applypilot/scoring_rules.md if it exists."""
+    if SCORING_RULES_PATH.exists():
+        return SCORING_RULES_PATH.read_text(encoding="utf-8")
+    return None
+
+
+def score_job(resume_text: str, job: dict, rules: str | None = None) -> dict:
     """Score a single job against the resume.
 
     Args:
         resume_text: The candidate's full resume text.
         job: Job dict with keys: title, site, location, full_description.
+        rules: Optional candidate criteria (contents of scoring_rules.md).
 
     Returns:
         {"score": int, "keywords": str, "reasoning": str}
@@ -88,7 +108,7 @@ def score_job(resume_text: str, job: dict) -> dict:
     )
 
     messages = [
-        {"role": "system", "content": SCORE_PROMPT},
+        {"role": "system", "content": build_score_prompt(rules)},
         {"role": "user", "content": f"RESUME:\n{resume_text}\n\n---\n\nJOB POSTING:\n{job_text}"},
     ]
 
@@ -112,6 +132,9 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
         {"scored": int, "errors": int, "elapsed": float, "distribution": list}
     """
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    rules = load_scoring_rules()
+    if rules:
+        log.info("Using scoring criteria from %s", SCORING_RULES_PATH)
     conn = get_connection()
 
     if rescore:
@@ -138,7 +161,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     results: list[dict] = []
 
     for job in jobs:
-        result = score_job(resume_text, job)
+        result = score_job(resume_text, job, rules)
         result["url"] = job["url"]
         completed += 1
 

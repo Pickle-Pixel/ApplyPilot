@@ -30,6 +30,7 @@
     "salary_currency": "USD",
     "salary_range_min": "80000",
     "salary_range_max": "100000",
+    "hourly_rate": "",
     "currency_conversion_note": ""
   },
   "experience": {
