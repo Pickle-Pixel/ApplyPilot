@@ -170,9 +170,18 @@ def _setup_profile() -> dict:
     }
 
     # -- Availability --
+    console.print("\n[bold cyan]Availability[/bold cyan]")
+    open_to_contract = Confirm.ask("Also open to contract and part-time roles?", default=False)
     profile["availability"] = {
         "earliest_start_date": Prompt.ask("Earliest start date", default="Immediately"),
+        "available_for_contract": "Yes" if open_to_contract else "No",
     }
+    if open_to_contract:
+        hourly_rate = Prompt.ask(
+            "Hourly rate for contract work (number; leave blank to derive it from your salary)", default=""
+        ).strip()
+        if hourly_rate:
+            profile["compensation"]["hourly_rate"] = hourly_rate
 
     # Save
     PROFILE_PATH.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -218,6 +227,8 @@ def _setup_searches() -> None:
         "locations:",
         f'  - location: "{location}"',
         f"    remote: {str(distance == 0).lower()}",
+        "    # job_type: contract   # optional: fulltime, parttime, contract, temporary, internship,",
+        "    #                      # perdiem, other, volunteer; omit to search every type",
         "",
         "queries:",
     ]

@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `other`, `volunteer`. Common spellings like `part-time` are accepted; an unknown value raises.
 - **Contract and part-time applications** - with `availability.available_for_contract: "Yes"`
   the apply prompt no longer restricts the agent to full-time salaried roles;
-  `compensation.hourly_rate` answers hourly-rate questions directly.
+  `compensation.hourly_rate` answers hourly-rate questions directly. `applypilot init` asks for both,
+  and the `searches.yaml` it writes documents `job_type` in a comment.
 - **Custom scoring criteria** - optional `~/.applypilot/scoring_rules.md` is appended to the
   scoring prompt.
 - **Test suite** - `tests/` with the first tests, so the CI workflow's `pytest tests/` has
