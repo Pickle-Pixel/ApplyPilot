@@ -178,7 +178,8 @@ def _setup_profile() -> dict:
     }
     if open_to_contract:
         hourly_rate = Prompt.ask(
-            "Hourly rate for contract work (number; leave blank to derive it from your salary)", default=""
+            "Hourly rate for contract work (number; blank = derived from your salary)",
+            default="",
         ).strip()
         if hourly_rate:
             profile["compensation"]["hourly_rate"] = hourly_rate
@@ -227,8 +228,8 @@ def _setup_searches() -> None:
         "locations:",
         f'  - location: "{location}"',
         f"    remote: {str(distance == 0).lower()}",
-        "    # job_type: contract   # optional: fulltime, parttime, contract, temporary, internship,",
-        "    #                      # perdiem, other, volunteer; omit to search every type",
+        "    # job_type: contract   # optional: fulltime, parttime, contract, temporary,",
+        "    #                      # internship, perdiem, other, volunteer; omit for any",
         "",
         "queries:",
     ]

@@ -10,7 +10,7 @@ from applypilot.wizard import init as wizard
 
 
 def _asker(answers: dict):
-    """Stand-in for Prompt.ask / Confirm.ask: answer by a phrase in the question, else the default."""
+    """Stand-in for Prompt.ask / Confirm.ask: match a phrase in the question, else the default."""
     def ask(question, *args, default=None, **kwargs):
         for phrase, answer in answers.items():
             if phrase.lower() in question.lower():
@@ -31,7 +31,8 @@ def test_contract_answers_reach_the_profile_and_the_apply_prompt():
     profile = _run(wizard._setup_profile, {"contract and part-time": True, "hourly rate": "95"})
     assert profile["availability"]["available_for_contract"] == "Yes"
     assert profile["compensation"]["hourly_rate"] == "95"
-    assert "Contract and part-time roles posted by an employer ARE valid" in pm._build_role_type_rule(profile)
+    rule = pm._build_role_type_rule(profile)
+    assert "Contract and part-time roles posted by an employer ARE valid" in rule
 
 
 def test_full_time_only_unless_the_user_says_otherwise():
@@ -46,4 +47,5 @@ def test_generated_searches_yaml_documents_job_type_and_still_parses():
     text = config.SEARCH_CONFIG_PATH.read_text(encoding="utf-8")
     assert "job_type" in text
     parsed = yaml.safe_load(text)
-    assert "job_type" not in parsed["locations"][0]  # documented, not set: searching every type stays the default
+    # Documented, not set: searching every type stays the default.
+    assert "job_type" not in parsed["locations"][0]

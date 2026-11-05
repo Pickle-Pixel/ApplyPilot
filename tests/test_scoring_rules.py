@@ -4,7 +4,8 @@ from unittest import mock
 
 from applypilot.scoring import scorer
 
-JOB = {"title": "Engineer", "site": "Acme", "location": "Remote", "full_description": "Build things."}
+JOB = {"title": "Engineer", "site": "Acme", "location": "Remote",
+       "full_description": "Build things."}
 
 
 def _system_prompt_sent(rules):

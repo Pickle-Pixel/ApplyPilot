@@ -48,7 +48,8 @@ def test_contract_availability_allows_contract_and_part_time_roles():
 
 
 def test_hourly_rate_is_used_for_rate_questions():
-    prompt = _prompt(_with(availability__available_for_contract="Yes", compensation__hourly_rate="95"))
+    prompt = _prompt(_with(availability__available_for_contract="Yes",
+                           compensation__hourly_rate="95"))
     assert "Hourly rate? -> $95 USD/hr" in prompt
     assert "Divide your annual answer by 2080" not in prompt
 

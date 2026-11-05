@@ -1,24 +1,31 @@
 """`job_type` in searches.yaml reaches every JobSpy call."""
 
+import logging
 from unittest import mock
 
+import pandas as pd
 import pytest
 
+from applypilot.database import init_db
 from applypilot.discovery import jobspy as js
 
 
-class _Stop(Exception):
-    """Raised by the fake scraper after recording its arguments."""
-
-
 def _record_calls(target: str):
+    """Patch ``target`` with a fake that records its arguments and finds nothing."""
     calls = []
 
     def fake(*args, **kwargs):
         calls.append(args[0] if args else kwargs)
-        raise _Stop()
+        return pd.DataFrame()
 
     return calls, mock.patch.object(js, target, side_effect=fake)
+
+
+def _board_result(rows: list[dict], warnings: dict | None = None) -> pd.DataFrame:
+    """A DataFrame shaped like scrape_jobs' result, with its per-board warnings in ``attrs``."""
+    df = pd.DataFrame(rows)
+    df.attrs = {"errors": {}, "warnings": warnings or {}}
+    return df
 
 
 def test_location_job_type_wins_over_default():
@@ -81,3 +88,39 @@ def test_single_query_search_passes_job_type():
     with patch:
         js.search_jobs("engineer", "Remote", remote_only=True, job_type="part-time")
     assert calls[0]["job_type"] == "parttime"
+
+
+@pytest.mark.parametrize("value, keep", [
+    ("contract", True),
+    ("contract, parttime", True),   # JobSpy joins several types with ", "
+    ("fulltime", False),
+    ("Full-Time", False),
+    (None, True),                   # the board did not say: not a mismatch
+    (float("nan"), True),
+    ("", True),
+])
+def test_row_filter_drops_only_a_known_different_job_type(value, keep):
+    assert js._job_type_ok(value, "contract") is keep
+
+
+def test_row_filter_is_off_without_a_job_type():
+    assert js._job_type_ok("fulltime", None) is True
+
+
+def test_rows_a_board_returned_despite_the_filter_are_dropped(caplog):
+    # LinkedIn ignores JobSpy's job_type filter: it returns every type and records a warning.
+    init_db()
+    result = _board_result(
+        [
+            {"job_url": "https://example.com/1", "title": "A", "job_type": "contract"},
+            {"job_url": "https://example.com/2", "title": "B", "job_type": "fulltime"},
+            {"job_url": "https://example.com/3", "title": "C", "job_type": None},
+        ],
+        warnings={"linkedin": ["job_type isn't supported, ignoring it"]},
+    )
+    search = {"query": "engineer", "location": "Remote", "remote": True, "job_type": "contract"}
+    with mock.patch.object(js, "_scrape_with_retry", return_value=result), \
+            caplog.at_level(logging.WARNING, logger=js.log.name):
+        stats = js._run_one_search(search, ["linkedin"], 10, 72, None, {}, 0, [], [], {})
+    assert (stats["total"], stats["new"], stats["filtered"]) == (3, 2, 1)
+    assert "linkedin: job_type isn't supported, ignoring it" in caplog.text

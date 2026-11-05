@@ -111,7 +111,8 @@ def _build_location_check(profile: dict, search_config: dict) -> str:
     location_cfg = search_config.get("location", {})
     accept_patterns = location_cfg.get("accept_patterns", [])
     # A configured location.primary is more specific than the country, so it comes before it.
-    primary_city = personal.get("city") or location_cfg.get("primary") or _display_city(personal, "your city")
+    primary_city = (personal.get("city") or location_cfg.get("primary")
+                    or personal.get("country") or "your city")
 
     # Build the list of acceptable cities for hybrid/onsite
     if accept_patterns:
@@ -143,7 +144,8 @@ def _build_role_type_rule(profile: dict) -> str:
         return ('- NEVER set up availability calendars or a "set your rate" marketplace profile. '
                 "Contract and part-time roles posted by an employer ARE valid applications: answer "
                 "rate questions from the SALARY section.")
-    return ('- NEVER agree to hourly/contract rates, availability calendars, or "set your rate" flows. '
+    return ('- NEVER agree to hourly/contract rates, availability calendars, '
+            'or "set your rate" flows. '
             "You are applying for FULL-TIME salaried positions only.")
 
 
@@ -173,8 +175,8 @@ def _build_salary_section(profile: dict) -> str:
         hourly_line = "Divide annual salary by 2080"
 
     if hourly_rate:
-        hourly_answer = (f"Hourly rate? -> ${hourly_rate} {currency}/hr (the candidate's contract rate). "
-                         "Never go below it.")
+        hourly_answer = (f"Hourly rate? -> ${hourly_rate} {currency}/hr "
+                         "(the candidate's contract rate). Never go below it.")
     else:
         hourly_answer = f"Hourly rate? -> Divide your annual answer by 2080. ({hourly_line})"
 

@@ -57,7 +57,8 @@ queries:
 # Locations to search
 # Optional job_type per location: fulltime, parttime, contract, temporary, internship,
 # perdiem, other, volunteer. It overrides defaults.job_type; leave both out to search every type.
-# To search several types, repeat the location once per type.
+# To search several types, repeat the location once per type. Not every board honours the filter
+# (LinkedIn ignores it), so jobs whose own type is different are dropped after the search.
 locations:
   - location: "San Francisco, CA"
     remote: false

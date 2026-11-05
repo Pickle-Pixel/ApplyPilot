@@ -6,12 +6,17 @@
   A stub module stands in when it is missing; tests that reach JobSpy patch `scrape_jobs` anyway.
 """
 
+import atexit
 import os
+import shutil
 import sys
 import tempfile
 import types
 
-os.environ.setdefault("APPLYPILOT_DIR", tempfile.mkdtemp(prefix="applypilot-tests-"))
+if "APPLYPILOT_DIR" not in os.environ:
+    _tmp = tempfile.mkdtemp(prefix="applypilot-tests-")
+    atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
+    os.environ["APPLYPILOT_DIR"] = _tmp
 
 try:
     import jobspy  # noqa: F401

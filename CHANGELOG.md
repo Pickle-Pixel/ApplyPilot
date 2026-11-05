@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Job type filter** - `job_type` per location in `searches.yaml` (or `defaults.job_type`)
   is passed to JobSpy: `fulltime`, `parttime`, `contract`, `temporary`, `internship`, `perdiem`,
   `other`, `volunteer`. Common spellings like `part-time` are accepted; an unknown value raises.
+  Boards that ignore the filter (LinkedIn) are covered by dropping returned jobs whose own type
+  differs; JobSpy's per-board warnings are logged instead of hidden.
 - **Contract and part-time applications** - with `availability.available_for_contract: "Yes"`
   the apply prompt no longer restricts the agent to full-time salaried roles;
   `compensation.hourly_rate` answers hourly-rate questions directly. `applypilot init` asks for both,
