@@ -61,3 +61,26 @@ def test_empty_city_falls_back_to_country():
     prompt = _prompt(_with(personal__city=""))
     assert "lives in ," not in prompt
     assert "lives in USA" in prompt
+
+
+def test_empty_city_never_renders_blank_anywhere_in_the_prompt():
+    # The city is read in three places: location check, screening answers, cover-letter fallback.
+    prompt = _prompt(_with(personal__city=""))
+    assert "based in ." not in prompt
+    assert "based in USA." in prompt
+    assert "onsite\" in  ->" not in prompt
+    assert "onsite\" in USA ->" in prompt
+
+
+def test_missing_city_key_behaves_like_an_empty_city():
+    profile = copy.deepcopy(PROFILE)
+    del profile["personal"]["city"]
+    prompt = _prompt(profile)
+    assert "lives in USA" in prompt
+    assert "based in USA." in prompt
+
+
+def test_location_check_prefers_search_config_primary_over_country_when_city_is_blank():
+    profile = _with(personal__city="")
+    section = pm._build_location_check(profile, {"location": {"primary": "Denver"}})
+    assert "onsite\" in Denver ->" in section

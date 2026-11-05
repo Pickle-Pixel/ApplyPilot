@@ -92,6 +92,15 @@ def _build_profile_summary(profile: dict) -> str:
     return "\n".join(lines)
 
 
+def _display_city(personal: dict, fallback: str) -> str:
+    """Where the candidate lives, for prose: city, else country, else ``fallback``.
+
+    ``personal.city`` may be missing or an empty string (remote candidates often leave it
+    blank); either way the prompt must not render "lives in ," or "based in .".
+    """
+    return personal.get("city") or personal.get("country") or fallback
+
+
 def _build_location_check(profile: dict, search_config: dict) -> str:
     """Build the location eligibility check section of the prompt.
 
@@ -101,7 +110,8 @@ def _build_location_check(profile: dict, search_config: dict) -> str:
     personal = profile["personal"]
     location_cfg = search_config.get("location", {})
     accept_patterns = location_cfg.get("accept_patterns", [])
-    primary_city = personal.get("city", location_cfg.get("primary", "your city"))
+    # A configured location.primary is more specific than the country, so it comes before it.
+    primary_city = personal.get("city") or location_cfg.get("primary") or _display_city(personal, "your city")
 
     # Build the list of acceptable cities for hybrid/onsite
     if accept_patterns:
@@ -190,7 +200,7 @@ def _build_screening_section(profile: dict) -> str:
     """Build the screening questions guidance section."""
     personal = profile["personal"]
     exp = profile.get("experience", {})
-    city = personal.get("city") or personal.get("country") or "their city"
+    city = _display_city(personal, "their city")
     years = exp.get("years_of_experience_total", "multiple")
     target_role = exp.get("target_role", personal.get("current_job_title", "software engineer"))
     work_auth = profile["work_authorization"]
@@ -510,7 +520,7 @@ def build_prompt(job: dict, tailored_resume: str,
     role_type_rule = _build_role_type_rule(profile)
 
     # Cover letter fallback text
-    city = personal.get("city", "the area")
+    city = _display_city(personal, "the area")
     if not cover_letter_text:
         cl_display = (
             f"None available. Skip if optional. If required, write 2 factual "

@@ -20,8 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   something to run.
 
 ### Fixed
-- **Empty city in the apply prompt** - an empty `personal.city` rendered as "lives in ,"; it now
-  falls back to the country.
+- **Empty city in the apply prompt** - an empty or missing `personal.city` rendered as "lives in ,"
+  (screening answers) and "based in ." (cover-letter fallback). All three places that print the city
+  now use one fallback: city, then country; the location check tries `location.primary` before the
+  country.
 
 ## [0.2.0] - 2026-02-17
 
