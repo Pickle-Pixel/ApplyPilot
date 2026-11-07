@@ -1,0 +1,45 @@
+exclusions:
+  directories:
+    - .git
+    - .github
+    - __pycache__
+    - .vscode
+    - .idea
+    - .claude
+    - .trae
+    - dist
+    - build
+    - *.egg-info
+    - tailored_resumes
+    - cover_letters
+    - chrome-workers
+    - apply-workers
+    - apply_logs
+    - logs
+
+  files:
+    - ".env"
+    - ".env.*"
+    - "!.env.example"
+    - "profile.json"
+    - "resume.txt"
+    - "resume.pdf"
+    - "*.db"
+    - "*.pyc"
+    - "*.pyo"
+    - ".DS_Store"
+    - "Thumbs.db"
+    - "*.swp"
+    - "*.swo"
+    - ".mcp*.json"
+    - "*.egg"
+
+  patterns:
+    - path_contains: "__pycache__"
+    - path_contains: ".egg-info"
+
+  rationale: |
+    - Runtime artifacts (databases, generated resumes, logs) are excluded to keep analysis focused on source code.
+    - User data (profile.json, resume.*, .env) may contain personal information or API keys — excluded for security.
+    - Python cache, build artifacts, IDE/OS metadata are non-source and excluded.
+    - .github/workflows is not excluded (CI configs are useful for understanding test setup), but the workflow files themselves are small configs that will be processed lightly.

@@ -1,0 +1,249 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-11-07",
+  "project_name": "ApplyPilot",
+  "capability_total": 28,
+  "features_total": 10,
+
+  "features": [
+
+    {
+      "feature_id": "FEAT-0001",
+      "name": "首次安装与用户配置",
+      "description": "首次使用 ApplyPilot 时的交互式向导，引导用户完成个人信息、LLM 提供商、搜索规则和自动申请参数的配置。写入 ~/.applypilot/config.yaml 和 .env 文件，后续所有模块从该配置加载运行时参数。",
+      "feature_type": "system_management",
+      "user_visible": true,
+      "cli_entry": "applypilot init",
+      "capability_ids": ["CAP-0027", "CAP-0001"],
+      "entry_candidates": ["cli.py:init()", "wizard/init.py:InitWizard.run()"],
+      "related_features": ["FEAT-0002", "FEAT-0010"],
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:init() 命令调用 InitWizard",
+        "wizard/init.py InitWizard.run() 顺序执行 _collect_profile → _collect_llm → _collect_search → _collect_autoapply → _save_config",
+        "CAP-0027 写入的配置由 CAP-0001 在运行时加载"
+      ],
+      "open_questions": ["Wizard 是否在保存前做 LLM API key 有效性验证？CAP-0027 open_question 待 runtime 确认"]
+    },
+
+    {
+      "feature_id": "FEAT-0002",
+      "name": "系统健康诊断",
+      "description": "用户手动执行环境诊断：检查 Chrome/Chromium 可用性、Playwright 浏览器是否安装、.env 文件是否存在并验证 LLM API key 连通性、数据目录可写性。支持 --fix 自动修复 Playwright 浏览器缺失。",
+      "feature_type": "system_management",
+      "user_visible": true,
+      "cli_entry": "applypilot doctor",
+      "capability_ids": ["CAP-0028", "CAP-0002", "CAP-0004"],
+      "entry_candidates": ["cli.py:doctor()"],
+      "related_features": ["FEAT-0001"],
+      "status": "confirmed",
+      "evidence": [
+        "cli.py doctor() 命令列出检查项",
+        "CAP-0028 依赖 CAP-0002 (Chrome Detection) 和 CAP-0004 (LLM Invocation) 做连通性测试"
+      ],
+      "open_questions": []
+    },
+
+    {
+      "feature_id": "FEAT-0003",
+      "name": "多源职位发现",
+      "description": "从四类职位来源自动抓取职位列表：(1) Indeed/LinkedIn/Glassdoor/ZipRecruiter 等主流招聘网站（JobSpy 库），(2) Workday 驱动的企业招聘门户（60+ 家企业 CXS JSON API），(3) 通用招聘网站（SmartExtract AI 两阶段智能提取），(4) 可选的额外自定义站点模板。所有结果经过地点过滤后存入 SQLite jobs 表。",
+      "feature_type": "user_facing",
+      "user_visible": true,
+      "cli_entry": "applypilot run --stage discovery",
+      "capability_ids": ["CAP-0009", "CAP-0010", "CAP-0011", "CAP-0013", "CAP-0012", "CAP-0003"],
+      "entry_candidates": ["pipeline.py:Pipeline.run()", "discovery/jobspy.py:search_jobs()", "discovery/workday.py:run_workday_scrape()", "discovery/smartextract.py:run_smartextract()"],
+      "related_features": ["FEAT-0004", "FEAT-0010"],
+      "status": "confirmed",
+      "evidence": [
+        "pipeline.py STAGES 列表第一个阶段是 discovery",
+        "CAP-0009/0010/0011 是三选一的来源策略，共享 CAP-0013 (Location Filtering)",
+        "CAP-0012 (Proxy Parsing) 被 CAP-0009 使用",
+        "CAP-0003 作为数据持久化目标被三个发现模块写入"
+      ],
+      "open_questions": [
+        "两个 DB 访问路径（discovery 用 direct sqlite3，其他层用 JobsDB 类）— 需 runtime 确认是否有意为之",
+        "Workday CXS API 未文档化，稳定性存疑",
+        "SmartExtract Phase 1 的 LLM 策略选择调用会增加发现阶段延迟"
+      ]
+    },
+
+    {
+      "feature_id": "FEAT-0004",
+      "name": "职位详情丰富",
+      "description": "对已发现的职位，逐条访问详情页提取完整职位描述和申请链接。使用三层级联提取（JSON-LD 免费 → CSS 选择器免费 → LLM 付费兜底），并解析薪资、地点等结构化字段。识别 ATS 平台类型，标记 SSO 登录拦截的职位。",
+      "feature_type": "backend_automation",
+      "user_visible": false,
+      "cli_entry": "applypilot run --stage enrichment",
+      "capability_ids": ["CAP-0014", "CAP-0015", "CAP-0021", "CAP-0022", "CAP-0023", "CAP-0003"],
+      "entry_candidates": ["enrichment/detail.py:run_enrichment()"],
+      "related_features": ["FEAT-0003", "FEAT-0005"],
+      "status": "confirmed",
+      "evidence": [
+        "pipeline.py STAGES 第二个阶段是 enrichment",
+        "CAP-0014 是核心提取引擎，CAP-0015/0021/0022/0023 是辅助解析能力",
+        "更新 jobs 表的 full_description, application_url, salary, location 等字段"
+      ],
+      "open_questions": ["Tier 3 LLM 触发阈值（例如 T1+T2 提取长度不足时才调用）— 需 runtime 确认"]
+    },
+
+    {
+      "feature_id": "FEAT-0005",
+      "name": "职位匹配评分与筛选",
+      "description": "将用户简历与已丰富的职位描述进行 LLM 驱动的 1-10 分匹配度评估。提取匹配的 ATS 关键词，生成评分理由。评分结果写入 DB，供后续自动申请阶段使用 score_min 阈值筛选。",
+      "feature_type": "backend_automation",
+      "user_visible": false,
+      "cli_entry": "applypilot run --stage scoring",
+      "capability_ids": ["CAP-0016", "CAP-0003"],
+      "entry_candidates": ["scoring/scorer.py:ScoreScorer.score_job()"],
+      "related_features": ["FEAT-0004", "FEAT-0008"],
+      "status": "confirmed",
+      "evidence": [
+        "pipeline.py STAGES 第三个阶段是 scoring",
+        "CAP-0016 SCORE_PROMPT 定义 1-10 分标准",
+        "评分结果被 FEAT-0008 (自动申请) 用作筛选阈值"
+      ],
+      "open_questions": ["评分失败时是否有重试？CAP-0016 描述为 fail-fast — 需 runtime 确认行为"]
+    },
+
+    {
+      "feature_id": "FEAT-0006",
+      "name": "简历定制与 PDF 渲染",
+      "description": "根据目标职位，LLM 生成量身定制的简历 JSON（工作经验 bullets 重写、技能重排序、summary 重写、项目优先级调整），规则引擎验证无伪造内容（所有定制项必须在基础简历中存在），然后渲染为 PDF 文件存于 ~/.applypilot/resumes/{job_id}.pdf。",
+      "feature_type": "backend_automation",
+      "user_visible": false,
+      "cli_entry": "applypilot run --stage tailoring",
+      "capability_ids": ["CAP-0017", "CAP-0020", "CAP-0019"],
+      "entry_candidates": ["scoring/tailor.py:ResumeTailor.tailor_resume()", "scoring/pdf.py:PDFRenderer.render()"],
+      "related_features": ["FEAT-0005", "FEAT-0007", "FEAT-0008"],
+      "status": "confirmed",
+      "evidence": [
+        "pipeline.py STAGES 第四个阶段是 tailoring",
+        "CAP-0017 生成 TailoredResume JSON，CAP-0020 做伪造内容交叉检查，CAP-0019 渲染 PDF",
+        "定制后的 PDF 被 FEAT-0008 用于自动申请时上传"
+      ],
+      "open_questions": ["TailoredResume JSON schema 具体定义 — 需文档或 runtime 示例", "reportlab 是否真的存在为 PDF fallback"]
+    },
+
+    {
+      "feature_id": "FEAT-0007",
+      "name": "求职信生成与 PDF 渲染",
+      "description": "为每个目标职位生成个性化求职信：LLM 根据职位详情 + 用户简历 + 个人资料构建求职信正文，规则引擎验证无禁用词（55 条企业套话黑名单）和 LLM 泄漏语句（25 条），然后渲染为 PDF 存于 ~/.applypilot/cover_letters/{job_id}.pdf。",
+      "feature_type": "backend_automation",
+      "user_visible": false,
+      "cli_entry": "applypilot run --stage cover_letter",
+      "capability_ids": ["CAP-0018", "CAP-0020", "CAP-0019"],
+      "entry_candidates": ["scoring/cover_letter.py:CoverLetterGenerator.generate()", "scoring/pdf.py:PDFRenderer.render_cover_letter()"],
+      "related_features": ["FEAT-0006", "FEAT-0008"],
+      "status": "confirmed",
+      "evidence": [
+        "pipeline.py STAGES 第五个阶段是 cover_letter",
+        "CAP-0018 生成正文，CAP-0020 复用 FEAT-0006 的验证逻辑，CAP-0019 渲染 PDF",
+        "求职信 PDF 被 FEAT-0008 用于自动申请时上传"
+      ],
+      "open_questions": ["CAP-0020 三个验证模式（strict/normal/lenient）在求职信场景下是否有差异化使用？"]
+    },
+
+    {
+      "feature_id": "FEAT-0008",
+      "name": "多 Worker 全自动职位申请",
+      "description": "从 DB 中取出达到 score_min 阈值的职位，启动 N 个并行 Worker 自动提交申请。每个 Worker 启动隔离 Chrome（独立 CDP 端口 + 独立 profile），构建完整 Agent Prompt（SOP + Playwright MCP + CapSolver 配置），调用 Claude Code 子进程在 --dangerously-skip-permissions 模式下执行申请流程。实时更新 DB 的 apply_status 和 terminal dashboard。",
+      "feature_type": "user_facing",
+      "user_visible": true,
+      "cli_entry": "applypilot apply --workers N --score-min X",
+      "capability_ids": ["CAP-0025", "CAP-0024", "CAP-0026", "CAP-0008", "CAP-0003"],
+      "entry_candidates": ["apply/launcher.py:ApplyLauncher.launch()"],
+      "related_features": ["FEAT-0006", "FEAT-0007", "FEAT-0009"],
+      "status": "confirmed",
+      "evidence": [
+        "cli.py apply 命令是 Tier 3 的主入口",
+        "CAP-0025 是核心编排，CAP-0024/0026 是每个 worker 必需的技术支撑",
+        "CAP-0008 (Terminal Dashboard) 实时展示 worker 状态",
+        "FEAT-0006/0007 的 PDF 输出是申请时的上传材料"
+      ],
+      "open_questions": [
+        "Claude Code --dangerously-skip-permissions 高信任执行 — 安全边界如何定义？",
+        "每个职位的超时时间？未在 launcher.py 头部观察到",
+        "跳过当前 worker 的 Ctrl+C 机制 — 跳过后该职位标记为 failed 还是重新入队？",
+        "CapSolver API key 是否明文嵌入 Agent Prompt？— CAP-0026 open_question",
+        "CAP-0003 (JobsDB) 同时被 CAP-0025 和 apply 模块的 direct sqlite3 访问"
+      ]
+    },
+
+    {
+      "feature_id": "FEAT-0009",
+      "name": "数据展示与实时监控",
+      "description": "两种监控视角：(1) 静态 HTML 仪表板 — 从 DB 查询职位统计、分数分布、按 stage/source 分组计数、可点击职位卡片列表，写入 dashboard.html；(2) 终端实时仪表板 — apply 运行期间显示各 worker 的实时状态、进度条和日志流。",
+      "feature_type": "user_facing",
+      "user_visible": true,
+      "cli_entry": "applypilot dashboard (HTML) | applypilot apply (终端实时)",
+      "capability_ids": ["CAP-0007", "CAP-0008", "CAP-0003"],
+      "entry_candidates": ["view.py:DashboardGenerator.write_dashboard()", "apply/dashboard.py:ApplyDashboard"],
+      "related_features": ["FEAT-0008"],
+      "status": "confirmed",
+      "evidence": [
+        "cli.py dashboard 命令调用 CAP-0007 生成 HTML",
+        "CAP-0008 被 FEAT-0008 (apply) 运行时实时驱动",
+        "两者数据源头都是 CAP-0003 (JobsDB)"
+      ],
+      "open_questions": ["HTML Dashboard 是否支持实时刷新？还是需要手动重新生成？"]
+    },
+
+    {
+      "feature_id": "FEAT-0010",
+      "name": "一键流水线编排",
+      "description": "把 FEAT-0003 → FEAT-0004 → FEAT-0005 → FEAT-0006 → FEAT-0007 五个业务功能串联为一条可一次性运行的端到端流水线。支持 sequential 和 streaming 两种执行模式，CLI flags 可选择性跳过部分阶段（如 --skip-discovery, --skip-scoring）。内部是 Pipeline 类和 Typer CLI 分发器的组合。",
+      "feature_type": "internal_technical",
+      "user_visible": true,
+      "cli_entry": "applypilot run (一键全流程)",
+      "capability_ids": ["CAP-0005", "CAP-0006", "CAP-0003"],
+      "entry_candidates": ["pipeline.py:Pipeline.run()", "cli.py:run()"],
+      "related_features": ["FEAT-0003", "FEAT-0004", "FEAT-0005", "FEAT-0006", "FEAT-0007", "FEAT-0008"],
+      "status": "confirmed",
+      "evidence": [
+        "CAP-0005 STAGES list = [discovery, enrichment, scoring, tailoring, cover_letter, apply]",
+        "CAP-0006 (CLI Dispatch) 是 FEAT-0001/0002/0010 的统一入口",
+        "CAP-0003 在整个流水线中传递职位数据"
+      ],
+      "open_questions": [
+        "CLI 是否支持阶段性跳过？CAP-0005 open_question 提到 --llm --score flags — 需 runtime 确认",
+        "apply 阶段是否在 Pipeline 内还是独立命令？CAP-0005 STAGES 列表包含 apply，但 cli.py 有独立 apply 命令 — 两者关系？"
+      ]
+    }
+  ],
+
+  "unclassified_capability_ids": [],
+
+  "cross_cutting_capabilities": [
+    {
+      "capability_id": "CAP-0004",
+      "description": "被 FEAT-0003 (SmartExtract), FEAT-0004 (Enrichment T3), FEAT-0005 (Scoring), FEAT-0006 (Tailoring), FEAT-0007 (Cover Letter) 五个功能复用",
+      "feature_ids": ["FEAT-0003", "FEAT-0004", "FEAT-0005", "FEAT-0006", "FEAT-0007"]
+    },
+    {
+      "capability_id": "CAP-0003",
+      "description": "被全部 10 个功能中的 9 个复用（除 FEAT-0002 健康诊断）。注意：discovery 模块（FEAT-0003）使用 direct sqlite3，其他层使用 JobsDB 类 — 双路径问题",
+      "feature_ids": ["FEAT-0003", "FEAT-0004", "FEAT-0005", "FEAT-0006", "FEAT-0007", "FEAT-0008", "FEAT-0009", "FEAT-0010"]
+    },
+    {
+      "capability_id": "CAP-0001",
+      "description": "被所有需要运行时配置的功能复用",
+      "feature_ids": ["FEAT-0001", "FEAT-0003", "FEAT-0004", "FEAT-0005", "FEAT-0006", "FEAT-0007", "FEAT-0008", "FEAT-0010"]
+    },
+    {
+      "capability_id": "CAP-0020",
+      "description": "被 FEAT-0006 (简历验证) 和 FEAT-0007 (求职信验证) 两个功能共享",
+      "feature_ids": ["FEAT-0006", "FEAT-0007"]
+    },
+    {
+      "capability_id": "CAP-0019",
+      "description": "被 FEAT-0006 (简历 PDF) 和 FEAT-0007 (求职信 PDF) 共享",
+      "feature_ids": ["FEAT-0006", "FEAT-0007"]
+    },
+    {
+      "capability_id": "CAP-0008",
+      "description": "被 FEAT-0008 (运行时实时) 和 FEAT-0009 (监控视角) 共享",
+      "feature_ids": ["FEAT-0008", "FEAT-0009"]
+    }
+  ]
+}

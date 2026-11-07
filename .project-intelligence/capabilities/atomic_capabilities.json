@@ -1,0 +1,585 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-11-07",
+  "capabilities": [
+
+    {
+      "capability_id": "CAP-0001",
+      "name": "Configuration Loading and Validation",
+      "description": "Loads AppConfig from disk (YAML + .env), merges layered defaults across UserProfile / SearchConfig / LLMConfig / AutoApplyConfig dataclasses, and resolves ~/.applypilot/ path layout.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0015", "SYM-0016", "SYM-0017", "SYM-0011", "SYM-0012", "SYM-0013", "SYM-0014"],
+      "inputs": ["path: str | Path (optional override)", "~/.applypilot/config.yaml", "~/.applypilot/.env"],
+      "outputs": ["AppConfig dataclass instance"],
+      "side_effects": ["Creates ~/.applypilot/ directory if missing via Paths"],
+      "dependencies": ["python-dotenv", "pyyaml"],
+      "status": "confirmed",
+      "evidence": ["config.py load_config() reads YAML + .env and hydrates dataclasses", "Paths.__post_init__ ensures directories exist"],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0002",
+      "name": "Chrome Binary Detection",
+      "description": "Finds installed Chrome/Chromium on Windows, macOS, and Linux by checking standard install paths and PATH.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0010"],
+      "inputs": ["None"],
+      "outputs": ["str | None — absolute path to Chrome binary"],
+      "side_effects": [],
+      "dependencies": [],
+      "status": "confirmed",
+      "evidence": ["config.py detect_chrome() iterates platform-specific paths using os.path.exists/shutil.which"],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0003",
+      "name": "SQLite Jobs Persistence",
+      "description": "Thread-safe SQLite layer with per-thread connection pool; provides CRUD, stage/score/status updates, and aggregate statistics for the jobs table.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0018", "SYM-0019", "SYM-0020", "SYM-0021", "SYM-0022", "SYM-0023", "SYM-0024", "SYM-0025"],
+      "inputs": [
+        "job dict for upsert",
+        "filters dict + limit for query",
+        "job_id + stage/score/status for updates"
+      ],
+      "outputs": ["list[dict] query results", "dict statistics", "int row id"],
+      "side_effects": [
+        "Creates jobs table on first run if missing (schema includes id, title, company, url, source, external_id, status, score, stage, details_json, enrich_date, apply_status, applied_url, created_at, updated_at)",
+        "Writes to ~/.applypilot/jobs.db"
+      ],
+      "dependencies": ["sqlite3 stdlib", "threading stdlib"],
+      "status": "confirmed",
+      "evidence": ["database.py class JobsDB with threading.local() connection pool, CREATE TABLE IF NOT EXISTS on init", "get_stats() returns dict with total_by_stage / score_distribution / source_counts"],
+      "open_questions": ["jobs table schema versioning (no explicit migration mechanism observed)"]
+    },
+
+    {
+      "capability_id": "CAP-0004",
+      "name": "Unified LLM Invocation",
+      "description": "Sends prompts to configured LLM provider (Gemini native / OpenAI-compatible / local Ollama), handles rate-limit retry with exponential backoff, and returns plain text or structured JSON.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0026", "SYM-0027", "SYM-0028", "SYM-0029", "SYM-0030"],
+      "inputs": [
+        "prompt: str",
+        "system_prompt: str (optional)",
+        "max_tokens: int (default 4096)",
+        "temperature: float (default 0.3)",
+        "schema: dict (for JSON output)"
+      ],
+      "outputs": ["str (generate)", "dict | list (generate_json)"],
+      "side_effects": ["Network HTTP requests to provider endpoint"],
+      "dependencies": ["httpx", "LLMConfig (from AppConfig)"],
+      "status": "confirmed",
+      "evidence": ["llm.py detects provider from LLMConfig and dispatches to _call_gemini or _call_openai", "Retry loop catches 429/5xx with backoff", "generate_json wraps generate + json parsing + optional schema validation"],
+      "open_questions": ["Gemini compatibility layer vs native API switching — exact conditions need_review from runtime behavior"]
+    },
+
+    {
+      "capability_id": "CAP-0005",
+      "name": "6-Stage Pipeline Orchestration",
+      "description": "Sequentially runs the 6-stage discovery → enrichment → scoring → tailoring → cover_letter → apply pipeline. Supports streaming (yield per-job progress events) and sequential mode. Tracks per-job stage progress via PipelineState.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0008", "SYM-0009"],
+      "inputs": ["AppConfig config", "streaming: bool", "job filters from CLI"],
+      "outputs": ["PipelineState with per-job completion tracking"],
+      "side_effects": [
+        "Writes stage transitions to JobsDB via update_stage()",
+        "Calls discovery/enrichment/scoring/apply modules in sequence"
+      ],
+      "dependencies": ["CAP-0003 (JobsDB)", "CAP-0006 / CAP-0007 / CAP-0008 / CAP-0009 / CAP-0010 / CAP-0011 (all downstream capabilities)"],
+      "status": "confirmed",
+      "evidence": ["pipeline.py defines STAGES list hardcoded: [discovery, enrichment, scoring, tailoring, cover_letter, apply]", "PipelineState uses threading.Lock + dict for per-job stage", "Pipeline.run() iterates stages, invokes module entrypoints"],
+      "open_questions": ["No explicit stage-skip logic? CLI flags --llm --score may enable/disable later stages — needs runtime confirm"]
+    },
+
+    {
+      "capability_id": "CAP-0006",
+      "name": "CLI Command Dispatch",
+      "description": "Typer-based CLI with 6 commands: init, run, apply, dashboard, doctor, status. Each command maps to a workflow entry point.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0003", "SYM-0004", "SYM-0005", "SYM-0006", "SYM-0007"],
+      "inputs": ["CLI arguments parsed by Typer"],
+      "outputs": ["Rich-formatted terminal output", "exit codes"],
+      "side_effects": [
+        "init → writes config.yaml and .env",
+        "run → invokes Pipeline.run()",
+        "apply → invokes ApplyLauncher.launch()",
+        "dashboard → renders terminal Live view or writes HTML",
+        "doctor → system checks"
+      ],
+      "dependencies": ["CAP-0001 (Config)", "CAP-0005 (Pipeline)", "CAP-0019 (ApplyLauncher)", "CAP-0021 (HTML Dashboard)", "CAP-0022 (Init Wizard)"],
+      "status": "confirmed",
+      "evidence": ["cli.py uses @app.command() decorators for each command function", "Each command function collects parameters, loads config, dispatches to module"],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0007",
+      "name": "HTML Dashboard Generation",
+      "description": "Generates a self-contained single-page HTML dashboard from database statistics and job records, with job cards, score distribution charts, and stage counters.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0031", "SYM-0032", "SYM-0033"],
+      "inputs": ["stats: dict from JobsDB.get_stats()", "jobs: list[dict] from JobsDB.query_jobs()"],
+      "outputs": ["str (generate_html)", "Path (write_dashboard writes to ~/.applypilot/dashboard.html)"],
+      "side_effects": ["Writes dashboard.html to ~/.applypilot/"],
+      "dependencies": ["CAP-0003 (JobsDB)"],
+      "status": "confirmed",
+      "evidence": ["view.py DashboardGenerator.generate_html() builds HTML with inline CSS/JS, no external assets", "write_dashboard() convenience function queries DB + renders + writes"],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0008",
+      "name": "Terminal Real-Time Dashboard",
+      "description": "Rich-based live terminal display showing per-worker status cards, progress bar, and rolling log feed for parallel auto-apply workers.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0100", "SYM-0101", "SYM-0102", "SYM-0103", "SYM-0104", "SYM-0105", "SYM-0106"],
+      "inputs": ["worker_id: int", "state: dict {status, job_title, stage, progress, ...}", "message + level for logs"],
+      "outputs": ["Rich Live display updates"],
+      "side_effects": ["Reads terminal stdout; does not persist anything"],
+      "dependencies": ["rich library"],
+      "status": "confirmed",
+      "evidence": ["apply/dashboard.py ApplyDashboard uses rich.live.Live + rich.table.Table + rich.progress.Progress", "update_worker() rebuilds the table every tick"],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0009",
+      "name": "Multi-Site Job Board Scraping (JobSpy)",
+      "description": "Runs multi-query searches across Indeed, LinkedIn, Glassdoor, ZipRecruiter via the python-jobspy library. YAML-driven query loop; Glassdoor handled separately with simplified location. Deduplicates by URL on insert.",
+      "capability_type": "business",
+      "source_symbols": ["SYM-0034", "SYM-0035", "SYM-0039"],
+      "inputs": [
+        "search_config: list of {query, location, remote, tier, max_results}",
+        "sites list: ['indeed', 'linkedin', 'glassdoor', 'zip_recruiter', ...]",
+        "proxy config (optional host:port:user:pass)"
+      ],
+      "outputs": ["Results summary dict {new, existing, filtered, errors, total, label} per query"],
+      "side_effects": [
+        "Network HTTP requests to job board sites via python-jobspy",
+        "Writes to jobs table via store_jobspy_results() — direct sqlite3, NOT via JobsDB class",
+        "location filtering applied before DB insert"
+      ],
+      "dependencies": ["jobspy", "pandas", "CAP-0003 (JobsDB — same table, different code path)"],
+      "status": "confirmed",
+      "evidence": [
+        "discovery/jobspy.py search_jobs() dispatches to scrape_jobs() per site list",
+        "_run_one_search() concatenates pandas DataFrames, filters by _location_ok(), then store_jobspy_results()",
+        "Note: discovery modules use sqlite3.Connection directly (from database.get_connection()), not JobsDB class — two DB access paths exist",
+        "parse_proxy() converts 'host:port:user:pass' → both jobspy-format and playwright-format dicts"
+      ],
+      "open_questions": ["Why two DB access paths (direct sqlite3 vs JobsDB class)? Is JobsDB the newer wrapper?"],
+      "related_utility_capabilities": ["CAP-0023 (Proxy Parsing)", "CAP-0024 (Location Filtering)"]
+    },
+
+    {
+      "capability_id": "CAP-0010",
+      "name": "Workday ATS Portal Scraping",
+      "description": "Scrapes Workday-powered employer career portals (TD, RBC, NVIDIA, Salesforce, etc.) via the undocumented CXS JSON API. Zero LLM, zero browser automation — pure HTTP urllib. Employers loaded from config/employers.yaml. Uses ThreadPoolExecutor for concurrent employers.",
+      "capability_type": "business",
+      "source_symbols": ["SYM-0040", "SYM-0041", "SYM-0042"],
+      "inputs": ["employers: dict from config/employers.yaml", "search location filter config"],
+      "outputs": ["Stored jobs in DB", "summary dict per employer"],
+      "side_effects": [
+        "HTTP requests to Workday CXS endpoints via urllib.request (not httpx)",
+        "Direct sqlite3 insert — same dual-path DB issue as jobspy"
+      ],
+      "dependencies": ["urllib.request stdlib", "concurrent.futures", "yaml"],
+      "status": "confirmed",
+      "evidence": [
+        "discovery/workday.py docstring states 'undocumented CXS JSON API'",
+        "load_employers() reads CONFIG_DIR / 'employers.yaml'",
+        "ThreadPoolExecutor used for parallel employer scraping",
+        "_location_ok() for filtering (separate copy from jobspy version)"
+      ],
+      "open_questions": ["CXS API stability — undocumented endpoint may break without notice", "Why urllib.request instead of httpx?"],
+      "related_utility_capabilities": ["CAP-0024 (Location Filtering)"]
+    },
+
+    {
+      "capability_id": "CAP-0011",
+      "name": "AI-Driven Generic Website Job Extraction (SmartExtract)",
+      "description": "Two-phase intelligent extractor for arbitrary career pages. Phase 1 runs lightweight detection (JSON-LD parsing, API response sniffing, data-testid attribute scanning, DOM statistics) and asks LLM to pick best strategy. Phase 2 only activates for CSS selector strategy — Playwright finds repeating card elements, extracts 2-3 examples, sends focused HTML to LLM for selector generation. Sites from config/sites.yaml with {query_encoded}/{location_encoded} placeholders.",
+      "capability_type": "business",
+      "source_symbols": ["SYM-0043", "SYM-0044", "SYM-0045", "SYM-0046"],
+      "inputs": ["target_urls: list[str] or site templates from sites.yaml", "search query + location"],
+      "outputs": ["list[dict] job records stored in DB"],
+      "side_effects": [
+        "httpx HTTP requests for page fetch",
+        "Playwright browser launch (headless) for CSS selector phase",
+        "LLM API calls for strategy selection + selector generation",
+        "Direct sqlite3 insert — dual-path DB issue"
+      ],
+      "dependencies": ["CAP-0004 (LLM Invocation)", "httpx", "playwright", "beautifulsoup4", "CAP-0024 (Location Filtering)"],
+      "status": "confirmed",
+      "evidence": [
+        "discovery/smartextract.py docstring explicitly describes 2-phase approach",
+        "Phase 1: JSON-LD / API / data-testids / DOM stats → LLM picks strategy",
+        "Phase 2: Playwright find repeating cards → LLM generates CSS selector",
+        "sites.yaml supports {query_encoded} {location_encoded} template variables"
+      ],
+      "open_questions": ["Strategy selection LLM call may have latency impact on batch runs"]
+    },
+
+    {
+      "capability_id": "CAP-0012",
+      "name": "Proxy String Parsing",
+      "description": "Converts a proxy connection string ('host:port' or 'host:port:user:pass') into three structured formats: host/port/user/pass dict, jobspy-proxy-formatted string, and playwright-proxy-formatted dict.",
+      "capability_type": "utility",
+      "source_symbols": [],
+      "status_extra": "parse_proxy() in discovery/jobspy.py (not a top-level symbol in our Stage 1 list)",
+      "inputs": ["proxy_str: str"],
+      "outputs": ["dict with keys: host, port, user, pass, jobspy, playwright"],
+      "side_effects": ["Raises ValueError on unrecognized format"],
+      "dependencies": [],
+      "status": "confirmed",
+      "evidence": ["discovery/jobspy.py lines 25-57"],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0013",
+      "name": "Job Location Filtering",
+      "description": "Checks whether a job location string passes user-configured accept/reject lists. Remote jobs always accepted. Non-remote must match accept list and not match reject list. Unknown location accepted (let scorer decide).",
+      "capability_type": "utility",
+      "source_symbols": [],
+      "status_extra": "_location_ok() in jobspy.py and workday.py — duplicated across modules, same logic",
+      "inputs": ["location: str | None", "accept: list[str]", "reject: list[str]"],
+      "outputs": ["bool — True = keep job"],
+      "side_effects": [],
+      "dependencies": ["SearchConfig.location_accept / location_reject_non_remote"],
+      "status": "confirmed",
+      "evidence": ["discovery/jobspy.py lines 89-115", "discovery/workday.py lines 53+"],
+      "open_questions": ["Duplicated implementation — potential dedup candidate for refactoring"]
+    },
+
+    {
+      "capability_id": "CAP-0014",
+      "name": "Job Detail Page Enrichment (3-Tier Cascade)",
+      "description": "For each job URL in the DB, navigates to the detail page and extracts full_description + application_url via a 3-tier cascade (cheapest first). Tier 1: JSON-LD JobPosting structured data (0 tokens). Tier 2: Deterministic CSS/XPath pattern matching (0 tokens). Tier 3: LLM-assisted extraction (1 LLM call). Batch mode uses shared Playwright browser with ThreadPoolExecutor concurrency.",
+      "capability_type": "business",
+      "source_symbols": ["SYM-0047", "SYM-0048", "SYM-0049", "SYM-0050", "SYM-0051", "SYM-0052", "SYM-0053"],
+      "inputs": ["jobs: list[dict] with URL", "concurrency: int (default 3)", "headless: bool (default True)"],
+      "outputs": ["Enriched job dicts with full_description + application_url + tier_metadata"],
+      "side_effects": [
+        "Playwright browser launch and page navigation",
+        "httpx requests for JSON-LD tier",
+        "LLM API calls for Tier 3 fallback",
+        "Updates jobs table: full_description, application_url, detail_scraped_at via direct sqlite3"
+      ],
+      "dependencies": ["CAP-0004 (LLM Invocation)", "playwright", "beautifulsoup4", "concurrent.futures"],
+      "status": "confirmed",
+      "evidence": [
+        "enrichment/detail.py docstring: 'Three-tier extraction cascade (cheapest first)'",
+        "Tier 1: BeautifulSoup find_all('script', type='application/ld+json')",
+        "Tier 2: CSS selectors for common job detail wrappers (.description, .job-description, [data-testid='jobDescription'])",
+        "Tier 3: LLM extract structured fields from raw text",
+        "clean_html() strips scripts/styles before sending to LLM",
+        "SKIP_DETAIL_SITES = {'glassdoor', 'google', 'Workopolis'}"
+      ],
+      "open_questions": ["Tier threshold for triggering LLM (e.g., only if T1+T2 yield < 500 chars?) — needs runtime confirm", "ensure_columns() called on init — handles schema drift"]
+    },
+
+    {
+      "capability_id": "CAP-0015",
+      "name": "ATS Platform Detection",
+      "description": "Identifies which ATS platform a job URL is hosted on by regex pattern matching. Detects Workday, Greenhouse, Lever, Taleo, BambooHR, Workable, BrassRing, SAP SuccessFactors, iCIMS, Jobvite, Recruitee, Personio, CATS, Freshteam, JazzHR, AngelList, ZipRecruiter, LinkedIn/Talent Solutions.",
+      "capability_type": "utility",
+      "source_symbols": ["SYM-0055", "SYM-0056"],
+      "inputs": ["url: str"],
+      "outputs": ["str | None — ATS platform name, null if unknown or SSO-gated"],
+      "side_effects": [],
+      "dependencies": ["config/sites.yaml ATS pattern entries"],
+      "status": "confirmed",
+      "evidence": [
+        "enrichment/detail.py detect_ats() uses re.match/re.search against compiled patterns",
+        "detect_sso_wall() checks against known SSO-gated domains",
+        "ATS pattern list hardcoded in function (not YAML-driven in the observed read, may be partially)"
+      ],
+      "open_questions": ["ATS pattern list — hardcoded in Python or loaded from sites.yaml? Cross-reference needed"]
+    },
+
+    {
+      "capability_id": "CAP-0016",
+      "name": "Job Fit Scoring (LLM 1-10 Scale)",
+      "description": "LLM-powered evaluation of candidate-job match quality. Compares user's resume against each job description on 1-10 scale, with criteria definitions (9-10 Perfect → 1-2 Poor). Extracts matching ATS keywords and provides scoring rationale in structured text.",
+      "capability_type": "business",
+      "source_symbols": ["SYM-0064", "SYM-0065", "SYM-0066"],
+      "inputs": ["job dict (with description)", "resume dict"],
+      "outputs": ["ScoreResult dataclass: score float 1-10, keywords list, rationale str"],
+      "side_effects": [
+        "LLM API call with SCORE_PROMPT",
+        "Updates jobs table score column via direct sqlite3"
+      ],
+      "dependencies": ["CAP-0004 (LLM Invocation)"],
+      "status": "confirmed",
+      "evidence": [
+        "scoring/scorer.py SCORE_PROMPT is multi-level criteria definition",
+        "Response parsed with regex for SCORE: [1-10] line",
+        "No retry for scoring failures (fail-fast design)"
+      ],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0017",
+      "name": "Resume Tailoring (LLM JSON Output)",
+      "description": "LLM-driven resume customization per job. Generates JSON-structured tailored resume (work experience bullets rewritten, skills re-prioritized, summary rewritten, projects re-ranked) tailored to the specific job. Returns TailoredResume JSON object — never hardcodes personal contact info into generated content. Includes validation step to detect fabrication (items not in base resume).",
+      "capability_type": "business",
+      "source_symbols": ["SYM-0067", "SYM-0068", "SYM-0070", "SYM-0071", "SYM-0072", "SYM-0073", "SYM-0074"],
+      "inputs": ["job dict", "base_resume dict"],
+      "outputs": ["TailoredResume dataclass", "Saved JSON file under ~/.applypilot/resumes/{job_id}.json"],
+      "side_effects": [
+        "LLM API call with structured JSON response requirement",
+        "Writes tailored resume JSON to disk"
+      ],
+      "dependencies": ["CAP-0004 (LLM Invocation)"],
+      "status": "confirmed",
+      "evidence": [
+        "scoring/tailor.py _build_system_prompt() enforces JSON-only output",
+        "TailoredResume is JSON, not freeform text — avoids hardcoding personal info risk",
+        "_validate_tailor_result() cross-checks tailored items against base resume",
+        "_parse_tailor_response() handles LLM JSON parse failures with retry"
+      ],
+      "open_questions": ["What JSON schema is required? Needs exact schema doc or runtime example"]
+    },
+
+    {
+      "capability_id": "CAP-0018",
+      "name": "Cover Letter Generation",
+      "description": "LLM-driven cover letter generation personalized to a specific job. Builds prompt from job details + resume + profile context. Formats output with proper header/salutation/signature using profile contact info.",
+      "capability_type": "business",
+      "source_symbols": ["SYM-0075", "SYM-0076", "SYM-0077", "SYM-0078"],
+      "inputs": ["job dict", "resume dict", "UserProfile dataclass"],
+      "outputs": ["str — formatted cover letter text"],
+      "side_effects": ["LLM API call", "Optionally writes to ~/.applypilot/cover_letters/"],
+      "dependencies": ["CAP-0004 (LLM Invocation)"],
+      "status": "confirmed",
+      "evidence": [
+        "scoring/cover_letter.py CoverLetterGenerator.build_prompt() uses SOP + examples",
+        "_format_letter() prepends salutation + appends signature from UserProfile"
+      ],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0019",
+      "name": "HTML/CSS Resume + Cover Letter PDF Rendering",
+      "description": "Renders resume dataclass → HTML using a bundled template, then converts to PDF via Playwright headless browser or reportlab (fallback). Also renders plain-text cover letter → PDF.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0079", "SYM-0080", "SYM-0081", "SYM-0082", "SYM-0083", "SYM-0084"],
+      "inputs": ["resume dict", "Path output_path"],
+      "outputs": ["Path — written PDF file"],
+      "side_effects": ["Playwright browser launch if using CDP connection", "File write to resumes/cover_letters output dirs"],
+      "dependencies": ["playwright", "reportlab (optional fallback)"],
+      "status": "confirmed",
+      "evidence": [
+        "scoring/pdf.py PDFRenderer._to_html() builds HTML from template",
+        "_html_to_pdf() uses Playwright PDF page.pdf() API",
+        "render_batch() convenience for multiple resumes",
+        "Default template embedded in _get_template() — no external asset fetches"
+      ],
+      "open_questions": ["Does reportlab really exist as fallback or is it playwright-only?"]
+    },
+
+    {
+      "capability_id": "CAP-0020",
+      "name": "Content Validation Rule Engine",
+      "description": "Profile-driven validation that LLM-generated resume/cover letter content is safe. Three validation modes (strict/normal/lenient). Checks: (1) banned buzzwords via hardcoded BANNED_WORDS list, (2) LLM leak phrases ('i apologize', 'below is the', etc.), (3) fabrication detection — cross-checks tailored content against base resume skills/companies/experience, (4) contact consistency — ensures profile contact info not corrupted. Rule-based — no LLM calls.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0086", "SYM-0087", "SYM-0088", "SYM-0089", "SYM-0090"],
+      "inputs": ["tailored dict", "base dict (for fabrication check)", "UserProfile (for contact check)", "mode: str"],
+      "outputs": ["ValidationReport dataclass: passed bool, errors list, warnings list"],
+      "side_effects": [],
+      "dependencies": ["re stdlib"],
+      "status": "confirmed",
+      "evidence": [
+        "scoring/validator.py BANNED_WORDS list (~55 entries) — all universal corporate buzzwords",
+        "LLM_LEAK_PHRASES list (~25 entries) — detects when LLM accidentally reveals prompt or apologizes",
+        "Fabrication: checks tailored skills/companies are subsets of base",
+        "Contact consistency: checks profile fields preserved in tailored resume",
+        "Three modes: strict (banned = hard errors), normal (default), lenient"
+      ],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0021",
+      "name": "Salary String Parsing",
+      "description": "Converts raw salary strings like '$85,000 - $120,000 / year' into structured dict {min, max, period, currency}. Handles hourly, annual, monthly, biweekly periods.",
+      "capability_type": "utility",
+      "source_symbols": ["SYM-0057"],
+      "inputs": ["salary_text: str"],
+      "outputs": ["dict | None — {min, max, period, currency}"],
+      "side_effects": [],
+      "dependencies": ["re stdlib"],
+      "status": "confirmed",
+      "evidence": ["enrichment/detail.py parse_salary() uses regex patterns"],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0022",
+      "name": "Location String Parsing",
+      "description": "Parses location strings into structured dict {city, state, country, remote flag}. Handles common formats: 'San Francisco, CA', 'Toronto, Ontario, Canada', 'Remote', 'Remote + Austin, TX'.",
+      "capability_type": "utility",
+      "source_symbols": ["SYM-0058"],
+      "inputs": ["loc_text: str"],
+      "outputs": ["dict | None — {city, state, country, remote}"],
+      "side_effects": [],
+      "dependencies": ["re stdlib"],
+      "status": "confirmed",
+      "evidence": ["enrichment/detail.py parse_location()"],
+      "open_questions": []
+    },
+
+    {
+      "capability_id": "CAP-0023",
+      "name": "HTML Sanitization and Text Extraction",
+      "description": "Strips scripts, styles, nav, footer, header, aside, iframe, noscript from HTML, then extracts plain text or extracts keywords/responsibilities/requirements bullets from job description HTML.",
+      "capability_type": "utility",
+      "source_symbols": ["SYM-0059", "SYM-0060", "SYM-0061", "SYM-0062", "SYM-0063"],
+      "inputs": ["html: str"],
+      "outputs": ["clean_html str", "plain_text str", "keywords list[str]", "responsibilities list[str]", "requirements list[str]"],
+      "side_effects": [],
+      "dependencies": ["beautifulsoup4", "re stdlib"],
+      "status": "confirmed",
+      "evidence": ["enrichment/detail.py clean_html() strips tag set, extract_text() gets plain text, extract_keywords() uses programming language regex patterns"],
+      "open_questions": ["extract_keywords() language list — is it comprehensive enough?"]
+    },
+
+    {
+      "capability_id": "CAP-0024",
+      "name": "Chrome Lifecycle Management with Isolated Worker Profiles",
+      "description": "Manages per-worker Chrome processes with isolated user-data directories, fixed CDP ports (BASE_CDP_PORT + worker_id), and cross-platform process-tree cleanup. Each worker gets its own Chrome profile so logged-in sessions and cookies don't leak between parallel workers.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0092", "SYM-0093", "SYM-0094", "SYM-0095", "SYM-0096", "SYM-0097", "SYM-0098", "SYM-0099"],
+      "inputs": ["worker_id: int", "headless: bool (default False)", "persistent_profile: bool (default False)"],
+      "outputs": ["str — CDP endpoint URL (e.g., http://localhost:9222)"],
+      "side_effects": [
+        "Spawns Chrome subprocess with --remote-debugging-port",
+        "Creates isolated user-data-dir per worker",
+        "atexit.register + signal handler for cleanup"
+      ],
+      "dependencies": ["CAP-0002 (Chrome Binary Detection)", "subprocess stdlib", "platform stdlib"],
+      "status": "confirmed",
+      "evidence": [
+        "apply/chrome.py ChromeManager.launch() builds args with --user-data-dir and --remote-debugging-port",
+        "_kill_process_tree() cross-platform (taskkill on Windows, os.kill + pgrep on Unix)",
+        "get_cdp_endpoint() returns http://localhost:{BASE_CDP_PORT + worker_id}",
+        "reset_worker_dir() wipes profile dir for clean start",
+        "kill_all_chrome() iterates workers calling kill_process_tree"
+      ],
+      "open_questions": ["BASE_CDP_PORT value? hardcoded or configurable?"]
+    },
+
+    {
+      "capability_id": "CAP-0025",
+      "name": "Multi-Worker Auto-Apply Orchestration with Claude Code",
+      "description": "Spawns N parallel workers (user-configurable via --workers). Each worker: (1) acquires job from DB queue filtered by score_min, (2) launches isolated Chrome with CDP, (3) builds ApplyPromptBuilder full agent prompt, (4) spawns Claude Code subprocess in --dangerously-skip-permissions mode, (5) monitors + captures output, (6) parses result for apply status, (7) updates DB apply_status + applied_url. Supports poll loop when queue empties, Ctrl+C graceful shutdown, and skip-current-worker via SIGINT.",
+      "capability_type": "business",
+      "source_symbols": ["SYM-0107", "SYM-0108", "SYM-0109", "SYM-0110", "SYM-0111", "SYM-0112", "SYM-0113", "SYM-0114", "SYM-0115"],
+      "inputs": [
+        "jobs filter (score_min, status)",
+        "max_workers: int",
+        "dry_run: bool (simulate only, no actual apply)",
+        "auto_approve: bool (pass-through Claude Code permission prompts)",
+        "apply_prompt_full"
+      ],
+      "outputs": ["ApplySummary dataclass: total jobs, success count, fail count, worker details"],
+      "side_effects": [
+        "Spawns Chrome subprocess per worker",
+        "Spawns Claude Code subprocess per worker",
+        "Reads from DB queue; writes apply_status + applied_url + agent_log",
+        "Rich Live dashboard updates",
+        "Poll interval sleep when queue empty"
+      ],
+      "dependencies": [
+        "CAP-0024 (Chrome Lifecycle)",
+        "CAP-0003 (JobsDB)",
+        "CAP-0026 (Apply Prompt Builder)",
+        "CAP-0008 (Terminal Dashboard)",
+        "subprocess.Popen",
+        "Claude Code CLI must be installed (claude command on PATH)"
+      ],
+      "status": "confirmed",
+      "evidence": [
+        "apply/launcher.py docstring + imports show claude subprocess spawning",
+        "ThreadPoolExecutor as_completed() for worker parallelism",
+        "_stop_event = threading.Event() coordinated shutdown",
+        "atexit.register(cleanup_on_exit) ensures Chrome cleanup even on crash",
+        "POLL_INTERVAL from config.DEFAULTS when queue empties",
+        "_claude_procs dict + _claude_lock for tracking active processes"
+      ],
+      "open_questions": [
+        "Claude Code --dangerously-skip-permissions — implies high-trust execution",
+        "What timeout per job? Not visible in head of launcher.py",
+        "skip mechanism (Ctrl+C current worker) — does it spawn new worker or mark as failed?"
+      ]
+    },
+
+    {
+      "capability_id": "CAP-0026",
+      "name": "Apply Agent Prompt Builder (Full SOP + CapSolver + Playwright)",
+      "description": "Constructs the complete instruction prompt sent to Claude Code agent for a single job application. Sections: (1) system role definition, (2) job details, (3) resume + cover letter paths, (4) Playwright + CDP connection instructions (connect_over_cdp to isolated Chrome), (5) CapSolver CAPTCHA handling API instructions, (6) step-by-step SOP (login → find apply button → fill form → upload docs → handle CAPTCHA → submit → verify → report back), (7) result format requirement.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0118", "SYM-0119", "SYM-0120", "SYM-0121", "SYM-0122", "SYM-0123", "SYM-0124"],
+      "inputs": ["job dict", "resume_path: str", "cover_letter_path: str", "chrome_cdp: str (endpoint URL)"],
+      "outputs": ["str — full agent prompt (potentially several thousand tokens)"],
+      "side_effects": [],
+      "dependencies": ["CAP-0005 (Chrome CDP endpoint)"],
+      "status": "confirmed",
+      "evidence": [
+        "apply/prompt.py ApplyPromptBuilder.build() composes sections",
+        "_build_playwright_section() instructs agent to use playwright.connect_over_cdp()",
+        "_build_capSolver_section() provides API key usage instructions",
+        "Prompt includes exact Playwright MCP tool references",
+        "_build_sop_section() details login → apply → submit flow"
+      ],
+      "open_questions": [
+        "Full prompt size — how long is the combined prompt? Latency impact?",
+        "Is CapSolver API key embedded in the prompt literally? Security concern."
+      ]
+    },
+
+    {
+      "capability_id": "CAP-0027",
+      "name": "First-Time Setup Interactive Wizard",
+      "description": "Runs a multi-step interactive setup wizard via CLI: (1) collect personal profile (name/email/phone/location/LinkedIn/portfolio), (2) select + configure LLM provider (Gemini/OpenAI/Ollama + model + API key), (3) configure search parameters (default location, remote-only preference, site list), (4) set auto-apply parameters (workers, score_min). Saves to ~/.applypilot/config.yaml and ~/.applypilot/.env. Supports non-interactive mode for CI/testing.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0125", "SYM-0126", "SYM-0127", "SYM-0128", "SYM-0129", "SYM-0130"],
+      "inputs": ["Optional CLI args: resume path, provider, api_key, model, non_interactive"],
+      "outputs": ["AppConfig dataclass", "Written ~/.applypilot/config.yaml + .env"],
+      "side_effects": [
+        "Writes config.yaml",
+        "Writes .env file (containing LLM provider API keys — sensitive)"
+      ],
+      "dependencies": ["CAP-0001 (Config Loading)"],
+      "status": "confirmed",
+      "evidence": [
+        "wizard/init.py InitWizard.run() orchestrates sub-collectors",
+        "_collect_profile() uses rich Prompt for interactive questions",
+        "_save_config() serializes dataclass → YAML + writes .env via python-dotenv",
+        "Non-interactive mode validates required args and skips prompts"
+      ],
+      "open_questions": ["Does it validate LLM API key by making a test call before saving?"]
+    },
+
+    {
+      "capability_id": "CAP-0028",
+      "name": "System Health Check (Doctor Command)",
+      "description": "Checks system prerequisites: Chrome availability, playwright browsers installed, .env file presence + API key validation, LLM connectivity, data directory writability. Optional auto-fix mode installs missing playwright browsers.",
+      "capability_type": "technical",
+      "source_symbols": ["SYM-0007"],
+      "inputs": ["fix: bool (auto-install missing deps)"],
+      "outputs": ["Rich-formatted health report table"],
+      "side_effects": ["playwright install chromium if fix=True"],
+      "dependencies": ["CAP-0002 (Chrome Binary Detection)", "CAP-0004 (LLM Invocation)"],
+      "status": "confirmed",
+      "evidence": ["cli.py doctor() checks list includes Chrome, playwright, .env, config.yaml, DB writability"],
+      "open_questions": []
+    }
+  ]
+}

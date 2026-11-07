@@ -1,0 +1,839 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-11-07",
+  "project_name": "ApplyPilot",
+  "journeys": [
+
+    {
+      "journey_id": "JOURNEY-0001",
+      "name": "首次安装与配置向导",
+      "description": "用户第一次使用 ApplyPilot 时，通过交互式向导完成环境配置。向导引导用户设置简历文件、个人资料、职位搜索条件、LLM API key（可选）和自动申请功能（可选）。配置完成后显示当前可用的 Tier 等级。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0001", "FEAT-0010"],
+      "cli_entry": "applypilot init",
+      "tier_required": 1,
+      "trigger_evidence": "cli.py:init() 调用 wizard.init.run_wizard()",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:init() — Typer command decorator @app.command()",
+        "wizard/init.py:run_wizard() — 顺序执行 5 个 setup 步骤，每个步骤用 Rich Prompt 交互式输入",
+        "wizard/init.py — 每步保存到 ~/.applypilot/ 目录（Profile, SearchConfig, .env）",
+        "wizard/init.py:364-393 — 完成后调用 get_tier() 显示 Tier 状态面板",
+        "config.py:187-197 — Tier 1/2/3 定义与 TIER_COMMANDS"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0001",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "运行 init 命令",
+          "description": "用户在终端执行 applypilot init，启动交互式向导。",
+          "feature_ids": ["FEAT-0001"],
+          "trigger": "cli.py:init() → wizard.init.run_wizard()",
+          "preconditions": ["ApplyPilot 已通过 pip install 安装"],
+          "outcome": "显示欢迎面板并创建 ~/.applypilot/ 目录",
+          "status": "confirmed",
+          "evidence": [
+            "cli.py:69-73 — @app.command() def init() 调用 run_wizard()",
+            "wizard/init.py:327-341 — run_wizard() 调用 ensure_dirs() 创建 APP_DIR"
+          ]
+        },
+        {
+          "step_id": "STEP-0002",
+          "order": 2,
+          "step_type": "user_action",
+          "user_action": "设置简历文件",
+          "description": "用户提供简历文件路径（.txt 或 .pdf）。如果是 PDF，还会要求提供纯文本版本用于 AI 阶段。",
+          "feature_ids": ["FEAT-0001"],
+          "trigger": "wizard/init.py:_setup_resume()",
+          "preconditions": ["至少有一个 .txt 或 .pdf 简历文件"],
+          "outcome": "简历文件复制到 ~/.applypilot/resume.txt 和/或 resume.pdf",
+          "status": "confirmed",
+          "evidence": [
+            "wizard/init.py:38-74 — _setup_resume() 用 Prompt.ask() 获取路径，shutil.copy2() 复制",
+            "wizard/init.py:62-74 — PDF 时额外询问 .txt 版本路径"
+          ],
+          "is_optional": false
+        },
+        {
+          "step_id": "STEP-0003",
+          "order": 3,
+          "step_type": "user_action",
+          "user_action": "填写个人资料",
+          "description": "交互式填写个人信息、工作授权、薪资期望、经验、技能边界、简历保留事实、EEO 自愿信息和可用日期。这些信息用于后续的评分、简历定制和表单自动填充。",
+          "feature_ids": ["FEAT-0001"],
+          "trigger": "wizard/init.py:_setup_profile()",
+          "preconditions": ["STEP-0002 完成"],
+          "outcome": "profile.json 保存到 ~/.applypilot/",
+          "status": "confirmed",
+          "evidence": [
+            "wizard/init.py:81-180 — _setup_profile() 包含 8 个分组（Personal, Work Authorization, Compensation, Experience, Skills Boundary, Resume Facts, EEO Voluntary, Availability）",
+            "wizard/init.py:178 — PROFILE_PATH.write_text()",
+            "CAP-0001 配置加载会读取此文件"
+          ],
+          "is_optional": false
+        },
+        {
+          "step_id": "STEP-0004",
+          "order": 4,
+          "step_type": "user_action",
+          "user_action": "配置职位搜索条件",
+          "description": "用户设置目标地点、搜索半径、目标职位头衔。系统自动生成 searches.yaml 配置文件。",
+          "feature_ids": ["FEAT-0001"],
+          "trigger": "wizard/init.py:_setup_searches()",
+          "preconditions": ["STEP-0003 完成"],
+          "outcome": "searches.yaml 保存到 ~/.applypilot/",
+          "status": "confirmed",
+          "evidence": [
+            "wizard/init.py:187-229 — _setup_searches() 生成 YAML 内容并写入 SEARCH_CONFIG_PATH",
+            "wizard/init.py:191-205 — location, distance, roles 三个 Prompt"
+          ],
+          "is_optional": false
+        },
+        {
+          "step_id": "STEP-0005",
+          "order": 5,
+          "step_type": "user_action",
+          "user_action": "配置 AI 功能（可选）",
+          "description": "用户选择是否启用 AI 评分和简历定制。选择后配置 LLM 提供商（Gemini/OpenAI/Local）和 API key。启用后 Tier 升至 2。",
+          "feature_ids": ["FEAT-0001"],
+          "trigger": "wizard/init.py:_setup_ai_features()",
+          "preconditions": ["STEP-0004 完成"],
+          "outcome": ".env 文件写入 GEMINI_API_KEY/OPENAI_API_KEY/LLM_URL",
+          "status": "confirmed",
+          "evidence": [
+            "wizard/init.py:236-275 — _setup_ai_features() 用 Confirm.ask 确认启用，然后选择 provider",
+            "wizard/init.py:257-271 — 按 provider 不同写入不同 env 变量",
+            "config.py:get_tier() — 检测 .env 中有 LLM key 时返回 Tier 2"
+          ],
+          "is_optional": true
+        },
+        {
+          "step_id": "STEP-0006",
+          "order": 6,
+          "step_type": "user_action",
+          "user_action": "配置自动申请（可选）",
+          "description": "用户选择是否启用自动申请。系统检测 Claude Code CLI 是否存在。可选配置 CapSolver API key 用于自动处理 CAPTCHA。启用后 Tier 升至 3（需同时有 Chrome 和 Node.js）。",
+          "feature_ids": ["FEAT-0001"],
+          "trigger": "wizard/init.py:_setup_auto_apply()",
+          "preconditions": ["STEP-0005 完成"],
+          "outcome": ".env 追加 CAPSOLVER_API_KEY（如果配置）",
+          "status": "confirmed",
+          "evidence": [
+            "wizard/init.py:282-320 — _setup_auto_apply() 检测 shutil.which('claude')，可选 CapSolver key",
+            "config.py:get_tier() — 检测 claude + chrome + npx 时返回 Tier 3"
+          ],
+          "is_optional": true
+        },
+        {
+          "step_id": "STEP-0007",
+          "order": 7,
+          "step_type": "system_output",
+          "user_action": "显示配置完成与 Tier 状态",
+          "description": "向导完成后显示绿色面板，列出当前 Tier 和可解锁的下一 Tier 命令，提示如何升级。",
+          "feature_ids": ["FEAT-0001"],
+          "trigger": "wizard/init.py:run_wizard() 末尾",
+          "preconditions": ["STEP-0001 ~ STEP-0006 完成"],
+          "outcome": "用户了解当前可用功能范围",
+          "status": "confirmed",
+          "evidence": [
+            "wizard/init.py:364-393 — 构建 tier_lines，对每个 Tier 显示 ✓ / → / ✗ 状态",
+            "config.py:187-197 — TIER_LABELS 和 TIER_COMMANDS 定义"
+          ]
+        }
+      ],
+      "open_questions": [
+        "wizard/init.py 的密码字段（password）在哪些流程中实际被使用？apply 阶段的浏览器自动填充？"
+      ]
+    },
+
+    {
+      "journey_id": "JOURNEY-0002",
+      "name": "系统健康诊断",
+      "description": "用户运行 doctor 命令检查当前环境状态。检查项覆盖 Tier 1/2/3 各层级的依赖组件（profile、resume、LLM API key、Claude CLI、Chrome、Node.js 等），最终显示当前 Tier 和下一步解锁建议。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0002"],
+      "cli_entry": "applypilot doctor",
+      "tier_required": 1,
+      "trigger_evidence": "cli.py:doctor() — 无需 init 前置，但需要基本 Python 环境",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:336-453 — doctor() 命令实现，分 Tier 1/2/3 三层检查",
+        "cli.py:352-379 — Tier 1: profile.json, resume.txt, searches.yaml, python-jobspy",
+        "cli.py:381-396 — Tier 2: GEMINI_API_KEY / OPENAI_API_KEY / LLM_URL",
+        "cli.py:398-429 — Tier 3: shutil.which('claude'), get_chrome_path(), shutil.which('npx'), CAPSOLVER_API_KEY (optional)",
+        "cli.py:442-453 — 调用 get_tier() 显示 Tier 状态和解锁路径"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0008",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "运行 doctor 命令",
+          "description": "用户在终端执行 applypilot doctor，触发全面的环境检查。",
+          "feature_ids": ["FEAT-0002"],
+          "trigger": "cli.py:doctor()",
+          "preconditions": ["ApplyPilot 已安装"],
+          "outcome": "按顺序执行 Tier 1/2/3 检查项",
+          "status": "confirmed"
+        },
+        {
+          "step_id": "STEP-0009",
+          "order": 2,
+          "step_type": "system_action",
+          "user_action": "Tier 1 检查",
+          "description": "系统检查 profile.json 是否存在、resume.txt/PDF 是否存在、searches.yaml 是否存在、python-jobspy 库是否安装。",
+          "feature_ids": ["FEAT-0002"],
+          "trigger": "cli.py:352-379",
+          "preconditions": ["STEP-0008 完成"],
+          "outcome": "4 项 Tier 1 组件状态 (OK / MISSING / WARN)",
+          "status": "confirmed",
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0010",
+          "order": 3,
+          "step_type": "system_action",
+          "user_action": "Tier 2 检查",
+          "description": "检查是否配置了 LLM API key（Gemini / OpenAI / Local 三选一）。",
+          "feature_ids": ["FEAT-0002"],
+          "trigger": "cli.py:381-396",
+          "preconditions": ["STEP-0009 完成"],
+          "outcome": "LLM provider 状态显示",
+          "status": "confirmed",
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0011",
+          "order": 4,
+          "step_type": "system_action",
+          "user_action": "Tier 3 检查",
+          "description": "检查 Claude Code CLI、Chrome/Chromium、Node.js/npx 是否可用，CapSolver API key 为可选项。",
+          "feature_ids": ["FEAT-0002"],
+          "trigger": "cli.py:398-429",
+          "preconditions": ["STEP-0010 完成"],
+          "outcome": "4 项 Tier 3 组件状态",
+          "status": "confirmed",
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0012",
+          "order": 5,
+          "step_type": "system_output",
+          "user_action": "显示检查结果与 Tier 总结",
+          "description": "逐项列出检查结果（OK / MISSING / WARN），然后显示当前 Tier 和解锁提示。",
+          "feature_ids": ["FEAT-0002"],
+          "trigger": "cli.py:431-453",
+          "preconditions": ["STEP-0011 完成"],
+          "outcome": "用户知道缺失什么以及如何升级 Tier",
+          "status": "confirmed"
+        }
+      ],
+      "open_questions": []
+    },
+
+    {
+      "journey_id": "JOURNEY-0003",
+      "name": "一键完整流水线",
+      "description": "用户执行 applypilot run（或 run all），系统按 discover → enrich → score → tailor → cover → pdf 顺序执行全部 6 个阶段。每个阶段独立捕获异常，某个阶段失败不阻塞后续阶段。完成后显示 Pipeline Summary 和 DB 最终统计。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0010", "FEAT-0003", "FEAT-0004", "FEAT-0005", "FEAT-0006", "FEAT-0007"],
+      "cli_entry": "applypilot run",
+      "tier_required": 2,
+      "trigger_evidence": "cli.py:run() 默认 stages=None 解析为 ['all']，pipeline.py:_resolve_stages(['all']) 返回 STAGE_ORDER 全部",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:77-143 — run() 命令实现，VALID_STAGES = ('discover','enrich','score','tailor','cover','pdf')",
+        "cli.py:106 — stages 默认 None → stage_list = ['all']",
+        "cli.py:118-121 — score/tailor/cover 阶段需要 Tier 2（check_tier(2)）",
+        "pipeline.py:35 — STAGE_ORDER = ('discover','enrich','score','tailor','cover','pdf')",
+        "pipeline.py:48-55 — _UPSTREAM 依赖链（enrich→discover, score→enrich, tailor→score, cover→tailor, pdf→cover）",
+        "pipeline.py:326-377 — _run_sequential() 顺序执行，catch Exception 标记 stage failed 后继续"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0013",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "运行完整流水线",
+          "description": "用户执行 applypilot run（无参数），或显式指定 applypilot run all。可选参数：--min-score, --workers, --stream, --dry-run, --validation。",
+          "feature_ids": ["FEAT-0010"],
+          "trigger": "cli.py:run() → pipeline.run_pipeline()",
+          "preconditions": [
+            "已完成 init（配置文件存在）",
+            "Tier 2 及以上（完整流水线需要 score/tailor/cover）",
+            "dry-run 模式下无 Tier 限制"
+          ],
+          "outcome": "Pipeline Banner 显示参数，pre-run DB 统计",
+          "status": "confirmed",
+          "evidence": [
+            "cli.py:77-143 — run() 命令签名和参数",
+            "cli.py:102 — _bootstrap() 加载 env、创建目录、init DB",
+            "cli.py:118-121 — llm_stages = {score, tailor, cover}，需要 check_tier(2)",
+            "pipeline.py:474-488 — 显示 Banner + Pre-run DB stats"
+          ]
+        },
+        {
+          "step_id": "STEP-0014",
+          "order": 2,
+          "step_type": "system_action",
+          "user_action": "阶段 1：职位发现",
+          "description": "系统按 JobSpy → Workday → SmartExtract 顺序依次尝试抓取职位。每个来源独立 try/except，单个失败不阻塞其他来源。结果统一写入 SQLite jobs 表。",
+          "feature_ids": ["FEAT-0003"],
+          "trigger": "pipeline.py:_run_discover()",
+          "preconditions": ["STEP-0013 完成"],
+          "outcome": "jobs 表新增 discover 阶段的职位记录",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:62-99 — _run_discover() 内部顺序调用 JobSpy → Workday → SmartExtract",
+            "pipeline.py:67-76 — JobSpy run_discovery() + try/except",
+            "pipeline.py:78-86 — Workday run_workday_discovery(workers=workers) + try/except",
+            "pipeline.py:88-97 — SmartExtract run_smart_extract(workers=workers) + try/except"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0015",
+          "order": 3,
+          "step_type": "system_action",
+          "user_action": "阶段 2：职位详情丰富",
+          "description": "对发现的职位逐条访问详情页，使用三层级联提取（JSON-LD → CSS 选择器 → LLM 兜底），解析薪资、地点等结构化字段。",
+          "feature_ids": ["FEAT-0004"],
+          "trigger": "pipeline.py:_run_enrich()",
+          "preconditions": ["discover 阶段已完成"],
+          "outcome": "jobs.full_description / detail_scraped_at / enriched 字段被填充",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:102-111 — _run_enrich() 调用 enrichment.detail.run_enrichment(workers=workers)",
+            "CAP-0014 — 详情页三层级联提取能力",
+            "_UPSTREAM['enrich'] = 'discover'"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0016",
+          "order": 4,
+          "step_type": "system_action",
+          "user_action": "阶段 3：LLM 评分",
+          "description": "使用 LLM 对已丰富的职位进行 1-10 匹配度评分。这是第一个需要 Tier 2 (LLM API key) 的阶段。",
+          "feature_ids": ["FEAT-0005"],
+          "trigger": "pipeline.py:_run_score()",
+          "preconditions": ["enrich 阶段已完成", "Tier 2 可用"],
+          "outcome": "jobs.fit_score / score_rationale / score_keywords 被填充",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:113-122 — _run_score() 调用 scoring.scorer.run_scoring()",
+            "cli.py:118-121 — llm_stages 包含 score，check_tier(2) 守卫",
+            "_UPSTREAM['score'] = 'enrich'",
+            "CAP-0016 — 职位匹配评分能力"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0017",
+          "order": 5,
+          "step_type": "system_action",
+          "user_action": "阶段 4：简历定制",
+          "description": "对评分 >= min_score 的职位，使用 LLM 生成定制化简历文本，然后通过验证规则引擎检查。",
+          "feature_ids": ["FEAT-0006"],
+          "trigger": "pipeline.py:_run_tailor()",
+          "preconditions": ["score 阶段已完成", "Tier 2 可用"],
+          "outcome": "jobs.tailored_resume_path / tailor_attempts / tailor_validation 被填充",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:124-132 — _run_tailor(min_score, validation_mode) 调用 scoring.tailor.run_tailoring()",
+            "cli.py:118-121 — llm_stages 包含 tailor",
+            "_UPSTREAM['tailor'] = 'score'",
+            "CAP-0017 + CAP-0020 — 简历定制 + 验证规则引擎"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0018",
+          "order": 6,
+          "step_type": "system_action",
+          "user_action": "阶段 5：求职信生成",
+          "description": "对有定制简历的职位，使用 LLM 生成配套求职信文本，同样经过验证规则引擎检查。",
+          "feature_ids": ["FEAT-0007"],
+          "trigger": "pipeline.py:_run_cover()",
+          "preconditions": ["tailor 阶段已完成", "Tier 2 可用"],
+          "outcome": "jobs.cover_letter_path / cover_attempts 被填充",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:135-143 — _run_cover(min_score, validation_mode) 调用 scoring.cover_letter.run_cover_letters()",
+            "cli.py:118-121 — llm_stages 包含 cover",
+            "_UPSTREAM['cover'] = 'tailor'",
+            "CAP-0018 + CAP-0020 — 求职信生成 + 验证"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0019",
+          "order": 7,
+          "step_type": "system_action",
+          "user_action": "阶段 6：PDF 渲染",
+          "description": "将 .txt 格式的定制简历和求职信批量转换为 PDF 文件（使用 Playwright 浏览器渲染 HTML）。",
+          "feature_ids": ["FEAT-0006", "FEAT-0007"],
+          "trigger": "pipeline.py:_run_pdf()",
+          "preconditions": ["cover 阶段已完成"],
+          "outcome": "resume.pdf / cover_letter.pdf 文件生成",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:146-155 — _run_pdf() 调用 scoring.pdf.batch_convert()",
+            "_UPSTREAM['pdf'] = 'cover'",
+            "CAP-0019 — PDF 渲染能力（Playwright）"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0020",
+          "order": 8,
+          "step_type": "system_output",
+          "user_action": "显示 Pipeline Summary",
+          "description": "每个阶段执行完后显示 elapsed 时间和状态（ok / partial / error）。全部阶段完成后显示汇总表格和 DB 最终统计。",
+          "feature_ids": ["FEAT-0010"],
+          "trigger": "pipeline.py:_run_sequential() 末尾",
+          "preconditions": ["STEP-0014 ~ STEP-0019 全部执行"],
+          "outcome": "用户看到每个阶段的成功/失败和总耗时，DB 最终状态统计",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:335-374 — 每个阶段 console.print Banner + Stage 完成行",
+            "pipeline.py:506-526 — Pipeline Summary Table 汇总",
+            "pipeline.py:528-538 — DB Final State 统计"
+          ]
+        }
+      ],
+      "open_questions": [
+        "某个阶段失败后，后续阶段的 DB 查询会自动跳过该阶段没完成的职位吗？还是会报错？",
+        "--dry-run 模式下的行为边界：哪些检查仍然执行，哪些被跳过？"
+      ]
+    },
+
+    {
+      "journey_id": "JOURNEY-0004",
+      "name": "分阶段流水线执行",
+      "description": "用户指定一个或多个特定阶段来运行，而不是完整的 6 阶段流水线。系统会按 STAGE_ORDER 规范排序后执行。常见使用场景：只需跑 discover（Tier 1 用户）、只跑 enrich、或跳过 discover 直接跑 AI 阶段（已缓存职位）。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0010"],
+      "cli_entry": "applypilot run discover | run enrich | run score tailor | ...",
+      "tier_required": 1,
+      "trigger_evidence": "cli.py:run() stages 参数为 list[str]，pipeline.py:_resolve_stages() 过滤并按 STAGE_ORDER 排序",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:78-84 — stages 参数 help 列出所有 6 个 stage 名称",
+        "cli.py:106-115 — 验证 stage name 在 VALID_STAGES 中，否则报错退出",
+        "pipeline.py:172-189 — _resolve_stages() 用 STAGE_ORDER 排序用户指定的 stage",
+        "cli.py:118-121 — 只有当指定了 llm_stages (score/tailor/cover) 时才 check_tier(2)"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0021",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "指定阶段运行",
+          "description": "用户执行 run + stage name(s)。常见场景：Tier 1 用户只用 discover+enrich、Tier 2 用户只想跑 score+tailor+cover（已有缓存职位）、调试单个阶段。",
+          "feature_ids": ["FEAT-0010"],
+          "trigger": "cli.py:run() stages=['discover'] / ['score','tailor'] / ['enrich','score','tailor'] 等",
+          "preconditions": [
+            "已完成 init",
+            "指定的阶段不超出当前 Tier 能力（Tier 1 不能指定 score/tailor/cover/pdf）"
+          ],
+          "outcome": "pipeline 只执行指定阶段，按 STAGE_ORDER 排序",
+          "status": "confirmed",
+          "evidence": [
+            "cli.py:78-84 — stages 参数说明",
+            "cli.py:108-115 — 验证 stage name",
+            "pipeline.py:172-189 — _resolve_stages() 去重 + 规范排序"
+          ],
+          "is_optional_branch": true
+        }
+      ],
+      "open_questions": []
+    },
+
+    {
+      "journey_id": "JOURNEY-0005",
+      "name": "流式并发流水线",
+      "description": "用户使用 --stream 参数运行流水线。与顺序模式不同，6 个阶段会并发启动在各自的线程中，通过 SQLite 作为传送带：上游阶段持续写入 DB，下游阶段轮询 DB 中待处理的记录并处理，直到上游完成且自己的 pending 数为 0 为止。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0010"],
+      "cli_entry": "applypilot run --stream",
+      "tier_required": 2,
+      "trigger_evidence": "cli.py:run() --stream option 传递给 pipeline.run_pipeline(stream=True)",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:88 — --stream option",
+        "pipeline.py:380-441 — _run_streaming() 实现",
+        "pipeline.py:223-244 — _PENDING_SQL 每个阶段的 pending 计数查询 + _STREAM_POLL_INTERVAL = 10",
+        "pipeline.py:258-319 — _run_stage_streaming() 实现轮询循环"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0022",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "流式模式启动",
+          "description": "用户执行 run --stream 或 run all --stream。系统打印 STREAMING MODE banner，然后为每个指定阶段启动一个 daemon 线程。",
+          "feature_ids": ["FEAT-0010"],
+          "trigger": "cli.py:run() --stream → pipeline._run_streaming()",
+          "preconditions": [
+            "Tier 2（如果包含 LLM 阶段）",
+            "Ctrl+C 可停止（第二次 Ctrl+C 强制停止）"
+          ],
+          "outcome": "所有阶段线程并发运行",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:387-389 — STREAMING MODE banner",
+            "pipeline.py:399-409 — 为每个 stage 启动 threading.Thread",
+            "pipeline.py:419-424 — KeyboardInterrupt 处理：stop_event + join timeout"
+          ]
+        },
+        {
+          "step_id": "STEP-0023",
+          "order": 2,
+          "step_type": "system_action",
+          "user_action": "DB 传送带模式",
+          "description": "discover 只跑一次，之后每个阶段循环：等上游开始产出 → 查自己的 pending SQL → 执行 → 等上游完成且自己无 pending → 退出。",
+          "feature_ids": ["FEAT-0010"],
+          "trigger": "pipeline.py:_run_stage_streaming()",
+          "preconditions": ["STEP-0022 已启动所有线程"],
+          "outcome": "DB 中 jobs 表各字段随阶段推进逐步被填充",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:282-290 — discover 特殊处理：只 run 一次，不循环",
+            "pipeline.py:292-319 — 下游阶段的 while 循环逻辑",
+            "pipeline.py:223-241 — 每个阶段独立的 _PENDING_SQL（基于 DB 字段 IS NULL 判断）"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0024",
+          "order": 3,
+          "step_type": "system_output",
+          "user_action": "流式模式完成",
+          "description": "所有阶段线程 join 完成后，构建 Pipeline Summary 和 DB Final State，与顺序模式输出格式一致。",
+          "feature_ids": ["FEAT-0010"],
+          "trigger": "pipeline.py:_run_streaming() 返回后",
+          "preconditions": ["所有 stage 线程结束"],
+          "outcome": "Pipeline Summary + DB 最终统计",
+          "status": "confirmed",
+          "evidence": [
+            "pipeline.py:427-441 — 从 tracker 构建 results dict，后续与顺序模式共享 Summary + Final State 输出（pipeline.py:506-538）"
+          ]
+        }
+      ],
+      "open_questions": [
+        "流式模式下 discover 内部的三个来源是否也变成并发？还是保持顺序？",
+        "_STREAM_POLL_INTERVAL = 10s 是硬编码还是可配置？"
+      ]
+    },
+
+    {
+      "journey_id": "JOURNEY-0006",
+      "name": "自动职位申请",
+      "description": "用户运行 apply 命令启动全自动职位申请。前置条件严格：Tier 3（Claude Code CLI + Chrome + Node.js）、Profile 存在、DB 中有已定制简历的职位。支持 --workers 并行、--continuous 持续轮询、--dry-run 预览、--headless 无头模式。运行时显示实时终端仪表板，Ctrl+C 可跳过当前 job。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0008"],
+      "cli_entry": "applypilot apply",
+      "tier_required": 3,
+      "trigger_evidence": "cli.py:apply() — 前置检查链：check_tier(3) → profile_path.exists() → DB 查询 tailored_resume_path IS NOT NULL AND applied_at IS NULL",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:146-256 — apply() 完整实现",
+        "cli.py:189-190 — check_tier(3, 'auto-apply')",
+        "cli.py:193-198 — Profile exists 检查（PROFILE_PATH.exists()）",
+        "cli.py:201-211 — tailored resumes ready 检查（SQL COUNT WHERE tailored_resume_path IS NOT NULL AND applied_at IS NULL）",
+        "cli.py:213-231 — --gen 模式：生成 prompt 文件手动调试",
+        "cli.py:247-256 — apply_main() 调用 launcher.main()",
+        "launcher.py:653-772 — main() 实现：worker_loop + Live Dashboard + Ctrl+C handler"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0025",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "启动 apply 命令",
+          "description": "用户执行 applypilot apply，带可选参数。默认 limit=1（申请 1 个职位）。",
+          "feature_ids": ["FEAT-0008"],
+          "trigger": "cli.py:apply()",
+          "preconditions": [
+            "Tier 3：Claude Code CLI + Chrome + Node.js 全部安装",
+            "profile.json 存在（已完成 init）",
+            "DB 中有 tailored_resume_path IS NOT NULL 且 applied_at IS NULL 的职位（至少 1 个）"
+          ],
+          "outcome": "通过前置检查后进入 launcher.main()",
+          "status": "confirmed",
+          "evidence": [
+            "cli.py:189-211 — 三道前置检查，失败时 print red message + typer.Exit(code=1)",
+            "cli.py:237-245 — Launching Auto-Apply Banner（Limit, Workers, Model, Headless, Dry run, Target）"
+          ]
+        },
+        {
+          "step_id": "STEP-0026",
+          "order": 2,
+          "step_type": "system_action",
+          "user_action": "Chrome Worker 启动",
+          "description": "为每个 worker 启动独立 Chrome 实例（隔离 profile 目录，CDP 连接），避免 cookie/登录状态污染。",
+          "feature_ids": ["FEAT-0008"],
+          "trigger": "launcher.main() → worker_loop() → chrome.launch_chrome()",
+          "preconditions": ["STEP-0025 通过"],
+          "outcome": "workers 启动，每个有独立 CDP endpoint (localhost:9222+)",
+          "status": "confirmed",
+          "evidence": [
+            "launcher.py:685-686 — for each worker init_worker(i)",
+            "CAP-0024 — Chrome 生命周期管理（隔离 worker profile）",
+            "launcher.py:30-33 — launch_chrome, cleanup_worker, BASE_CDP_PORT 导入"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0027",
+          "order": 3,
+          "step_type": "system_action",
+          "user_action": "Agent 自动执行申请",
+          "description": "每个 worker 循环：从 DB 取一个符合条件的职位 → 构建 MCP config + Agent prompt → 启动 Claude Code 子进程（--permission-mode bypassPermissions）→ Claude 通过 Playwright MCP 连接 Chrome → 浏览职位页面 → 填写表单 → 点击提交。",
+          "feature_ids": ["FEAT-0008"],
+          "trigger": "launcher.py:worker_loop() → 取 job → 启动 claude subprocess",
+          "preconditions": ["STEP-0026 Chrome 启动成功", "DB 中有 ready 的职位"],
+          "outcome": "每个职位申请完成（成功/失败），DB applied_at / apply_status / applied_url 更新",
+          "status": "confirmed",
+          "evidence": [
+            "launcher.py:66-80 — _make_mcp_config() 包含 playwright MCP server + gmail MCP server",
+            "cli.py:219-230 — --gen 模式下打印 claude 命令模板（--permission-mode bypassPermissions）",
+            "CAP-0026 — Apply Agent Prompt Builder（完整 SOP + CapSolver + Playwright）",
+            "CAP-0025 — 多 Worker 自动申请编排"
+          ],
+          "is_system_behaviour": true
+        },
+        {
+          "step_id": "STEP-0028",
+          "order": 4,
+          "step_type": "user_interaction",
+          "user_action": "运行时实时监控与中断",
+          "description": "运行期间显示 Rich Live Dashboard（刷新频率 2s）。用户可以 Ctrl+C 一次跳过当前 job，Ctrl+C 两次完全停止。支持 --continuous 无限循环（空队列时按 poll_interval 轮询 DB）。",
+          "feature_ids": ["FEAT-0008", "FEAT-0009"],
+          "trigger": "launcher.py:717-728 — Live(render_full(), refresh_per_second=2)",
+          "preconditions": ["STEP-0027 正在执行"],
+          "outcome": "用户看到成功/失败计数、worker 状态、实时事件流",
+          "status": "confirmed",
+          "evidence": [
+            "launcher.py:717-728 — Live Dashboard + _refresh thread",
+            "launcher.py:695-715 — _sigint_handler：第一次 Ctrl+C kill claude subprocess，第二次 stop_event + kill_all_chrome()",
+            "cli.py:151 — --continuous 参数",
+            "launcher.py:47 — POLL_INTERVAL from config.DEFAULTS",
+            "CAP-0008 — 终端实时仪表板"
+          ]
+        },
+        {
+          "step_id": "STEP-0029",
+          "order": 5,
+          "step_type": "system_output",
+          "user_action": "清理与结果汇总",
+          "description": "所有 worker 完成后，清理 Chrome 进程，显示成功/失败汇总。DB 中 job 的 applied_at / apply_status / applied_url 字段被更新。",
+          "feature_ids": ["FEAT-0008"],
+          "trigger": "launcher.main() 返回后",
+          "preconditions": ["所有 worker_loop 返回"],
+          "outcome": "Chrome 清理完成，显示 total_applied / total_failed 汇总",
+          "status": "confirmed",
+          "evidence": [
+            "launcher.py:57 — atexit.register(cleanup_on_exit)",
+            "cli.py:256 — apply_main() 返回后 command 正常退出"
+          ]
+        }
+      ],
+      "open_questions": [
+        "--continuous 模式下，discover 阶段也会自动触发吗？还是只轮询已有的 jobs？",
+        "单个 worker 处理职位的失败重试策略：CAP-0025 提到 worker_loop，但具体是立即重试还是标记 failed 后跳过？"
+      ]
+    },
+
+    {
+      "journey_id": "JOURNEY-0007",
+      "name": "手动状态管理",
+      "description": "当自动申请失败或用户需要手动干预时，使用 apply 命令的三个工具模式手动更新 DB 状态：--mark-applied 标记已申请、--mark-failed 标记失败、--reset-failed 重置所有失败的职位以便重试。这些模式不需要 Chrome/Claude，也不消耗 Tier 3 资源。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0008"],
+      "cli_entry": "applypilot apply --mark-applied URL | --mark-failed URL | --reset-failed",
+      "tier_required": 1,
+      "trigger_evidence": "cli.py:169-185 — mark_applied/mark_failed/reset_failed 三个早期 return 分支，在 check_tier(3) 之前执行",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:167-185 — 三个 utility modes 在 Tier 检查之前处理，不需要 Tier 3",
+        "cli.py:169-173 — mark_applied → apply.launcher.mark_job(url, 'applied')",
+        "cli.py:175-179 — mark_failed → mark_job(url, 'failed', reason=fail_reason)",
+        "cli.py:181-185 — reset_failed → reset_failed() 返回 count"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0030",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "手动标记状态",
+          "description": "用户执行 apply --mark-applied <url> / --mark-failed <url> / --reset-failed。",
+          "feature_ids": ["FEAT-0008"],
+          "trigger": "cli.py:169-185 三个独立分支",
+          "preconditions": ["DB 中存在对应的 job URL"],
+          "outcome": "DB applied_at / apply_status 更新，不需要 Chrome/Claude",
+          "status": "confirmed"
+        }
+      ],
+      "open_questions": []
+    },
+
+    {
+      "journey_id": "JOURNEY-0008",
+      "name": "数据状态查看",
+      "description": "用户运行 status 命令查看 DB 中的流水线统计，或运行 dashboard 命令生成并打开 HTML 仪表板。两种入口都不需要 Tier 2/3 资源。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0009"],
+      "cli_entry": "applypilot status | applypilot dashboard",
+      "tier_required": 1,
+      "trigger_evidence": "cli.py:status() 和 cli.py:dashboard() 都从 DB 读数据，无外部依赖",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:260-323 — status() 实现：Rich Table + Score Distribution Bar + By Site",
+        "cli.py:326-333 — dashboard() 实现：view.open_dashboard() 生成 HTML + 浏览器打开",
+        "CAP-0007 — HTML 仪表板生成",
+        "CAP-0003 — SQLite JobsDB 作为数据源"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0031",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "运行 status 查看流水线统计",
+          "description": "用户执行 applypilot status，终端显示 Total jobs discovered / With description / Pending enrichment / Scored / Tailored / Cover letters / Ready to apply / Applied 等统计，外加 Score Distribution 柱状图和 By Site 来源分布。",
+          "feature_ids": ["FEAT-0009"],
+          "trigger": "cli.py:status()",
+          "preconditions": ["DB 已初始化（_bootstrap()）"],
+          "outcome": "三个 Rich Table 输出",
+          "status": "confirmed",
+          "evidence": [
+            "cli.py:266-323 — status() 调用 database.get_stats() → 三个 Table（Pipeline Overview, Score Distribution, Jobs by Source）"
+          ]
+        },
+        {
+          "step_id": "STEP-0032",
+          "order": 2,
+          "step_type": "user_action",
+          "user_action": "运行 dashboard 生成 HTML 仪表板",
+          "description": "用户执行 applypilot dashboard，系统从 DB 读取数据生成自包含的 HTML 文件，然后用默认浏览器打开。",
+          "feature_ids": ["FEAT-0009"],
+          "trigger": "cli.py:dashboard()",
+          "preconditions": ["DB 已初始化"],
+          "outcome": "浏览器打开 HTML 仪表板",
+          "status": "confirmed",
+          "evidence": [
+            "cli.py:326-333 — dashboard() 调用 view.open_dashboard()",
+            "CAP-0007 — HTML DashboardGenerator.generate_html()"
+          ]
+        }
+      ],
+      "open_questions": []
+    },
+
+    {
+      "journey_id": "JOURNEY-0009",
+      "name": "Apply 调试模式",
+      "description": "当自动申请失败需要调试时，用户可以用 apply --gen --url <url> 只生成 Agent prompt 文件（不启动 Chrome/Claude），然后手动用 claude 命令运行这个 prompt 来观察 Agent 行为。这是一个诊断工具，便于用户精细化调试 apply 流程。",
+      "actor_candidates": ["job_seeker"],
+      "feature_ids": ["FEAT-0008"],
+      "cli_entry": "applypilot apply --gen --url <job_url>",
+      "tier_required": 1,
+      "trigger_evidence": "cli.py:213-231 — gen 模式在 Tier 检查之后、full apply 之前处理，需要 DB 中有匹配 URL 的 job",
+      "status": "confirmed",
+      "evidence": [
+        "cli.py:213-231 — gen 模式分支",
+        "cli.py:216-218 — --gen 必须配合 --url",
+        "cli.py:219 — gen_prompt(target, min_score, model) 生成文件",
+        "cli.py:223-230 — 打印手动运行命令模板，包括 --mcp-config 和 --permission-mode bypassPermissions"
+      ],
+      "steps": [
+        {
+          "step_id": "STEP-0033",
+          "order": 1,
+          "step_type": "user_action",
+          "user_action": "生成调试 Prompt",
+          "description": "用户执行 apply --gen --url <url>，系统在 DB 中查找匹配 URL 的职位，生成完整的 Agent prompt 文件和 MCP config。",
+          "feature_ids": ["FEAT-0008"],
+          "trigger": "cli.py:213-231 gen 分支",
+          "preconditions": [
+            "Tier 3 检查通过（gen 模式在 check_tier(3) 之后执行）",
+            "DB 中有 tailored_resume_path IS NOT NULL 且 applied_at IS NULL 的 job（或 --gen+--url 跳过此检查）"
+          ],
+          "outcome": "prompt 文件写入磁盘，打印手动 claude 命令",
+          "status": "confirmed"
+        },
+        {
+          "step_id": "STEP-0034",
+          "order": 2,
+          "step_type": "user_action",
+          "user_action": "手动运行 Agent 调试",
+          "description": "用户复制打印的 claude 命令在终端执行，直接观察 Agent 在 Chrome 中的操作和错误。",
+          "feature_ids": ["FEAT-0008"],
+          "trigger": "cli.py:226-230 打印的命令",
+          "preconditions": [
+            "Chrome 已启动（需要手动准备 CDP endpoint）",
+            "Claude Code CLI 已安装"
+          ],
+          "outcome": "人工观察 Agent 行为，定位问题",
+          "status": "confirmed",
+          "evidence": [
+            "cli.py:226-230 — Run manually: claude --model <model> -p --mcp-config <config> --permission-mode bypassPermissions < prompt_file"
+          ]
+        }
+      ],
+      "open_questions": [
+        "gen 模式下的 Chrome 如何启动？launcher.main() 还是手动？"
+      ]
+    }
+
+  ],
+
+  "global_open_questions": [
+    "pipeline.py 的 discover 内部（JobSpy → Workday → SmartExtract）是顺序执行而非并发——这与 Stage 3 覆盖报告中 F3-Q5 提出的疑问一致，已通过源码确认。三个来源各有独立 try/except，单个失败不阻塞其他来源。",
+    "流式模式中 discover 阶段内部的三个来源是否也变成并发？pipeline.py:282-290 显示 discover 在 streaming 中只 run 一次（与 sequential 模式相同），内部是否并发需进一步确认",
+    "apply --gen 模式的前置条件：cli.py:201-211 显示 `if not (gen and url):` 跳过 tailored_resume 检查，但 Tier 3 检查在 cli.py:189-190 的位置表明 gen 模式仍需要 Tier 3（因为 check_tier 在 gen 检查之前）—— 需确认这是有意设计还是 bug"
+  ],
+
+  "journey_to_feature_mapping": {
+    "JOURNEY-0001": ["FEAT-0001", "FEAT-0010"],
+    "JOURNEY-0002": ["FEAT-0002"],
+    "JOURNEY-0003": ["FEAT-0010", "FEAT-0003", "FEAT-0004", "FEAT-0005", "FEAT-0006", "FEAT-0007"],
+    "JOURNEY-0004": ["FEAT-0010"],
+    "JOURNEY-0005": ["FEAT-0010"],
+    "JOURNEY-0006": ["FEAT-0008"],
+    "JOURNEY-0007": ["FEAT-0008"],
+    "JOURNEY-0008": ["FEAT-0009"],
+    "JOURNEY-0009": ["FEAT-0008"]
+  },
+
+  "coverage_summary": {
+    "journeys_total": 9,
+    "user_action_steps": 15,
+    "system_action_steps": 10,
+    "system_output_steps": 3,
+    "user_interaction_steps": 1,
+    "optional_steps": 2,
+    "branch_journeys": 2,
+    "confirmed_steps": "全部",
+    "feature_coverage": {
+      "FEAT-0001": "covered",
+      "FEAT-0002": "covered",
+      "FEAT-0003": "covered (JOURNEY-0003 STEP-0014)",
+      "FEAT-0004": "covered (JOURNEY-0003 STEP-0015)",
+      "FEAT-0005": "covered (JOURNEY-0003 STEP-0016)",
+      "FEAT-0006": "covered (JOURNEY-0003 STEP-0017, STEP-0019)",
+      "FEAT-0007": "covered (JOURNEY-0003 STEP-0018, STEP-0019)",
+      "FEAT-0008": "covered (JOURNEY-0006, 0007, 0009)",
+      "FEAT-0009": "covered (JOURNEY-0008)",
+      "FEAT-0010": "covered (JOURNEY-0003, 0004, 0005)"
+    },
+    "tier_structure": {
+      "Tier 1 (Discovery)": ["JOURNEY-0001", "JOURNEY-0002", "JOURNEY-0004（discover+enrich）", "JOURNEY-0007", "JOURNEY-0008"],
+      "Tier 2 (AI)": ["JOURNEY-0003", "JOURNEY-0004（score/tailor/cover/pdf）", "JOURNEY-0005"],
+      "Tier 3 (Auto-Apply)": ["JOURNEY-0006", "JOURNEY-0009"]
+    },
+    "cli_commands_covered": ["init", "run", "apply", "status", "dashboard", "doctor"]
+  }
+}

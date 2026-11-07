@@ -1,0 +1,221 @@
+{
+  "schema_version": "stage-5-0.1",
+  "generated_at": "2026-11-07",
+  "project": "applypilot",
+  "role_discovery_summary": {
+    "total_roles": 1,
+    "discovery_method": "evidence_driven_source_code_analysis",
+    "has_multi_role_system": false,
+    "notes": "ApplyPilot is a single-user CLI tool. All code paths trace back to one human actor (the job seeker). Tier 1/2/3 is a capability-gating mechanism (dependency detection), not a role-based access control system. The same user can execute commands from all tiers simply by installing the required dependencies. No authentication, user tables, sessions, or role switching exists anywhere in the codebase."
+  },
+  "roles": [
+    {
+      "role_id": "ROLE-0001",
+      "role_name": "job_seeker",
+      "human_readable": "求职用户",
+      "description": "使用 ApplyPilot CLI 进行职位发现、简历定制、自动申请的单人用户。是唯一的人类交互主体。",
+      "evidence": [
+        {
+          "type": "source_code",
+          "file": "src/applypilot/cli.py",
+          "line_range": "1-260",
+          "detail": "所有 6 个 CLI 命令（init/run/apply/status/dashboard/doctor）都通过 typer @app.command() 定义入口，无任何 user_id/session/role 参数。",
+          "status": "confirmed"
+        },
+        {
+          "type": "source_code",
+          "file": "src/applypilot/config.py",
+          "line_range": "184-223",
+          "detail": "get_tier() 仅检测环境变量（GEMINI_API_KEY）+ shutil.which('claude') + Chrome 路径。无身份认证逻辑。",
+          "status": "confirmed"
+        },
+        {
+          "type": "source_code",
+          "file": "src/applypilot/database.py",
+          "detail": "SQLite DB schema 只有 jobs 表（url/title/company/fit_score/applied_at...）和一个 singleton DB 文件 ~/.applypilot/jobs.db。无 users/roles/sessions 表。",
+          "status": "confirmed"
+        },
+        {
+          "type": "source_code",
+          "file": "src/applypilot/wizard/init.py",
+          "line_range": "1-400",
+          "detail": "wizard 采集个人资料（姓名/邮箱/当前职位/技能）保存为 profile.yaml，用于简历定制和自动申请填写，不是用户认证。",
+          "status": "confirmed"
+        }
+      ],
+      "associated_journeys": [
+        "JOURNEY-0001",
+        "JOURNEY-0002",
+        "JOURNEY-0003",
+        "JOURNEY-0004",
+        "JOURNEY-0005",
+        "JOURNEY-0006",
+        "JOURNEY-0007",
+        "JOURNEY-0008",
+        "JOURNEY-0009"
+      ],
+      "accessible_commands": {
+        "tier_1_base": [
+          "applypilot init",
+          "applypilot doctor",
+          "applypilot run discover",
+          "applypilot run enrich",
+          "applypilot status",
+          "applypilot dashboard"
+        ],
+        "unlock_tier_2_with_llm_api_key": [
+          "applypilot run score",
+          "applypilot run tailor",
+          "applypilot run cover",
+          "applypilot run pdf",
+          "applypilot run (all stages)"
+        ],
+        "unlock_tier_3_with_claude_and_chrome": [
+          "applypilot apply",
+          "applypilot apply --gen --url",
+          "applypilot apply --mark-applied",
+          "applypilot apply --mark-failed",
+          "applypilot apply --reset-failed"
+        ]
+      },
+      "access_boundaries": {
+        "mechanism": "capability_detection_not_role_based",
+        "detector": "config.py:200-223 get_tier()",
+        "boundary_logic": "同一角色(job_seeker)在不同 capability tier 下能执行不同命令子集。升级路径：Tier1→Tier2 需设置 LLM API key 环境变量；Tier2→Tier3 需安装 Claude Code CLI + Chrome。无身份切换，同一人同一身份，不同能力。",
+        "evidence_files": [
+          "src/applypilot/config.py:184-259",
+          "src/applypilot/cli.py:118-121 (run 命令 Tier 2 gate)",
+          "src/applypilot/cli.py:189-190 (apply 命令 Tier 3 gate)",
+          "src/applypilot/wizard/init.py:363-393 (wizard 末尾 tier 展示)"
+        ],
+        "note": "--dry-run 模式在 Tier gate 之前进入 pipeline.run_pipeline() 的 dry_run 分支，所以 Tier 1 用户可以用 'run all --dry-run' 预览完整流水线——这是一个隐含的 tier override。"
+      }
+    }
+  ],
+  "execution_components": [
+    {
+      "component_id": "COMP-0001",
+      "name": "Claude_Code_Agent",
+      "description": "Tier 3 自动申请的执行主体。启动 Chrome 实例、通过 MCP 工具操作浏览器、填写表单、提交申请。",
+      "evidence": [
+        {
+          "file": "src/applypilot/apply/launcher.py",
+          "line_range": "326-333",
+          "detail": "subprocess.run(['claude', '-p', '--mcp-config', ..., '--permission-mode', 'bypassPermissions', prompt_file], capture_output=False)"
+        },
+        {
+          "file": "src/applypilot/apply/launcher.py",
+          "line_range": "60-90",
+          "detail": "_make_mcp_config() 构建 playwright + gmail MCP 配置 JSON"
+        }
+      ],
+      "is_user_role": false,
+      "category": "system_execution_agent"
+    },
+    {
+      "component_id": "COMP-0002",
+      "name": "Playwright_MCP_Server",
+      "description": "Claude Agent 通过 MCP 协议操作浏览器的桥接层，提供 browser_navigate/browser_click/browser_type 等工具。",
+      "evidence": [
+        {
+          "file": "src/applypilot/apply/launcher.py",
+          "line_range": "60-72",
+          "detail": "MCP config 中配置 '@playwright/mcp' server args"
+        }
+      ],
+      "is_user_role": false,
+      "category": "system_tool"
+    },
+    {
+      "component_id": "COMP-0003",
+      "name": "Chrome_Worker",
+      "description": "每个 auto-apply worker 启动的独立 Chrome 实例（独立 profile 目录 + CDP 端口），避免 cookie 污染。",
+      "evidence": [
+        {
+          "file": "src/applypilot/apply/chrome.py",
+          "detail": "launcher.py:390-420 中每个 worker 启动独立 Chrome，profile 目录 = .applypilot/chrome-profiles/w{N}"
+        },
+        {
+          "file": "src/applypilot/apply/launcher.py",
+          "line_range": "290-310",
+          "detail": "多 worker 并发：workers 参数控制并行 Chrome 实例数"
+        }
+      ],
+      "is_user_role": false,
+      "category": "system_isolated_process"
+    },
+    {
+      "component_id": "COMP-0004",
+      "name": "Gmail_MCP_Server",
+      "description": "处理邮件验证码/确认邮件。通过 OAuth 自动认证 Gmail 账户。",
+      "evidence": [
+        {
+          "file": "src/applypilot/apply/launcher.py",
+          "line_range": "76-82",
+          "detail": "args = ['-y', '@gongrzhe/server-gmail-autoauth-mcp']"
+        }
+      ],
+      "is_user_role": false,
+      "category": "system_tool"
+    },
+    {
+      "component_id": "COMP-0005",
+      "name": "JobSpy_Discovery_Engine",
+      "description": "Tier 1 discover 阶段的多源职位爬取引擎，支持 LinkedIn/Indeed/Glassdoor 等。",
+      "evidence": [
+        {
+          "file": "src/applypilot/discovery/jobspy_search.py",
+          "detail": "discover 阶段第一顺序调用来源"
+        }
+      ],
+      "is_user_role": false,
+      "category": "system_data_collector"
+    },
+    {
+      "component_id": "COMP-0006",
+      "name": "Workday_Scraper",
+      "description": "Tier 1 discover 阶段的 Workday 特定 scraper（第二顺序）。",
+      "evidence": [
+        {
+          "file": "src/applypilot/discovery/workday.py",
+          "detail": "pipeline.py _run_discover() 第二调用"
+        }
+      ],
+      "is_user_role": false,
+      "category": "system_data_collector"
+    },
+    {
+      "component_id": "COMP-0007",
+      "name": "SmartExtract_General_Scraper",
+      "description": "Tier 1 discover 阶段的通用职位页面 scraper（第三顺序），自动识别 HTML 结构。",
+      "evidence": [
+        {
+          "file": "src/applypilot/discovery/smartextract.py",
+          "detail": "pipeline.py _run_discover() 第三调用"
+        }
+      ],
+      "is_user_role": false,
+      "category": "system_data_collector"
+    }
+  ],
+  "evidence_summary": {
+    "confirmed_no_multi_role_system": [
+      {
+        "search": "grep -r 'role.*admin\\|user.*login\\|session\\|auth' src/applypilot/ --include='*.py'",
+        "result": "所有匹配均为 LLM API 的 role 字段、HTML DOM 的 role 属性、或 'work_authorization' 字段（wizard 中用户填写的工作许可，不是系统认证）",
+        "status": "confirmed"
+      },
+      {
+        "search": "SQL schema analysis",
+        "result": "database.py 只有 jobs 表，无 users/roles/permissions/sessions 表",
+        "status": "confirmed"
+      },
+      {
+        "search": "CLI entry point analysis",
+        "result": "所有命令无 user_id/role/session 参数，get_tier() 仅检测依赖",
+        "status": "confirmed"
+      }
+    ]
+  },
+  "open_questions": []
+}

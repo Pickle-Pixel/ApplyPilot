@@ -1,0 +1,140 @@
+{
+  "schema_version": "1.0",
+  "configs": [
+    {
+      "config_id": "CFG-001",
+      "path": "src/applypilot/config/sites.yaml",
+      "format": "yaml",
+      "keys": [
+        {"key": "sites", "type": "list[str]", "description": "List of job board domains to crawl (indeed.com, linkedin.com, glassdoor.com, ...)"},
+        {"key": "manual_ats_blacklist", "type": "list[str]", "description": "ATS platforms that require authentication and should be skipped"},
+        {"key": "sso_login_walls", "type": "list[str]", "description": "Domains known to redirect to SSO, no direct application possible"},
+        {"key": "workday_base_urls", "type": "list[str]", "description": "Workday portal base URL patterns"},
+        {"key": "ats_patterns", "type": "dict[str, list[str]]", "description": "URL regex patterns → ATS platform name mapping (Greenhouse, Lever, Workday, Taleo, ...)"}
+      ],
+      "evidence": "FILE-0028",
+      "status": "confirmed"
+    },
+    {
+      "config_id": "CFG-002",
+      "path": "src/applypilot/config/employers.yaml",
+      "format": "yaml",
+      "keys": [
+        {"key": "employers", "type": "list[dict]", "description": "List of employer entries with name, workday_url, location filters"},
+        {"key": "employers[*].name", "type": "str"},
+        {"key": "employers[*].workday_url", "type": "str"},
+        {"key": "employers[*].enabled", "type": "bool"},
+        {"key": "employers[*].tags", "type": "list[str]"}
+      ],
+      "evidence": "FILE-0029",
+      "status": "confirmed"
+    },
+    {
+      "config_id": "CFG-003",
+      "path": "src/applypilot/config/searches.example.yaml",
+      "format": "yaml",
+      "keys": [
+        {"key": "queries", "type": "list[dict]", "description": "Search query templates"},
+        {"key": "queries[*].title", "type": "str"},
+        {"key": "queries[*].priority", "type": "int", "description": "Higher = more important"},
+        {"key": "queries[*].max_results", "type": "int"},
+        {"key": "location_filter", "type": "dict", "description": "Location filtering rules"},
+        {"key": "location_filter.preferred_countries", "type": "list[str]"},
+        {"key": "location_filter.remote_only", "type": "bool"}
+      ],
+      "evidence": "FILE-0030",
+      "status": "confirmed"
+    },
+    {
+      "config_id": "CFG-004",
+      "path": "~/.applypilot/config.yaml",
+      "format": "yaml",
+      "keys": [
+        {"key": "profile", "type": "UserProfile dataclass", "description": "Personal information"},
+        {"key": "profile.name", "type": "str"},
+        {"key": "profile.email", "type": "str"},
+        {"key": "profile.phone", "type": "str"},
+        {"key": "profile.location", "type": "str"},
+        {"key": "profile.linkedin_url", "type": "str"},
+        {"key": "profile.portfolio_url", "type": "str"},
+        {"key": "search", "type": "SearchConfig dataclass"},
+        {"key": "search.queries", "type": "list[dict]"},
+        {"key": "search.sites", "type": "list[str]"},
+        {"key": "search.location", "type": "str"},
+        {"key": "search.date_filter", "type": "str", "description": "e.g., '7d', '30d'"},
+        {"key": "llm", "type": "LLMConfig dataclass"},
+        {"key": "llm.provider", "type": "str", "description": "gemini | openai | ollama"},
+        {"key": "llm.model", "type": "str"},
+        {"key": "llm.api_key", "type": "str", "sensitivity": "high"},
+        {"key": "llm.base_url", "type": "str"},
+        {"key": "auto_apply", "type": "AutoApplyConfig dataclass"},
+        {"key": "auto_apply.max_workers", "type": "int"},
+        {"key": "auto_apply.score_min", "type": "int"},
+        {"key": "auto_apply.headless", "type": "bool"},
+        {"key": "auto_apply.timeout_per_job", "type": "int"}
+      ],
+      "evidence": "config.py load_config()",
+      "status": "confirmed"
+    },
+    {
+      "config_id": "CFG-005",
+      "path": "~/.applypilot/.env",
+      "format": "env",
+      "keys": [
+        {"key": "GEMINI_API_KEY", "type": "str", "sensitivity": "high"},
+        {"key": "OPENAI_API_KEY", "type": "str", "sensitivity": "high"},
+        {"key": "OLLAMA_BASE_URL", "type": "str", "sensitivity": "low"},
+        {"key": "CAPSOLVER_API_KEY", "type": "str", "sensitivity": "high"},
+        {"key": "APPLYPILOT_PROVIDER", "type": "str", "sensitivity": "low"},
+        {"key": "APPLYPILOT_MODEL", "type": "str", "sensitivity": "low"}
+      ],
+      "evidence": "llm.py, apply/prompt.py CapSolver section",
+      "status": "confirmed"
+    },
+    {
+      "config_id": "CFG-006",
+      "path": "~/.applypilot/resume.json",
+      "format": "json",
+      "keys": [
+        {"key": "name", "type": "str"},
+        {"key": "contact", "type": "dict"},
+        {"key": "summary", "type": "str"},
+        {"key": "skills", "type": "list[str]"},
+        {"key": "experience", "type": "list[dict]", "description": "Each entry has company, role, dates, bullets"},
+        {"key": "education", "type": "list[dict]"},
+        {"key": "projects", "type": "list[dict]"},
+        {"key": "certifications", "type": "list[dict]"}
+      ],
+      "evidence": "scoring/tailor.py _build_user_prompt uses resume as base",
+      "status": "inferred"
+    },
+    {
+      "config_id": "CFG-007",
+      "path": "pyproject.toml (dependencies)",
+      "format": "toml",
+      "keys": [
+        {"key": "typer", "type": "runtime dep", "purpose": "CLI framework"},
+        {"key": "rich", "type": "runtime dep", "purpose": "Terminal formatting / real-time dashboard"},
+        {"key": "httpx", "type": "runtime dep", "purpose": "Async HTTP client for scraping"},
+        {"key": "beautifulsoup4", "type": "runtime dep", "purpose": "HTML parsing"},
+        {"key": "playwright", "type": "runtime dep", "purpose": "Browser automation / detail page fetch"},
+        {"key": "python-dotenv", "type": "runtime dep", "purpose": ".env loading"},
+        {"key": "pyyaml", "type": "runtime dep", "purpose": "Config YAML parsing"},
+        {"key": "pandas", "type": "runtime dep", "purpose": "Data manipulation"},
+        {"key": "lxml", "type": "runtime dep", "purpose": "XML/HTML XPath"},
+        {"key": "jobspy", "type": "runtime dep (external)", "purpose": "Multi-site job aggregator"}
+      ],
+      "evidence": "FILE-0031 pyproject.toml",
+      "status": "confirmed"
+    }
+  ],
+  "evidence": {
+    "total_config_files": 7,
+    "yaml_configs": 3,
+    "env_configs": 1,
+    "json_configs": 1,
+    "toml_configs": 1,
+    "dataclass_schemas_defined_in_code": ["UserProfile", "SearchConfig", "LLMConfig", "AutoApplyConfig", "Paths", "AppConfig"],
+    "notes": "All sensitive values (API keys) marked sensitivity=high; configs.json records keys/structure only, never literal values"
+  }
+}

@@ -1,0 +1,335 @@
+{
+  "dashboard_version": "stage-6-final-0.1",
+  "generated_at": "2026-11-07",
+  "project": {
+    "name": "ApplyPilot",
+    "tagline": "AI-powered end-to-end job application pipeline",
+    "version": "0.3.0",
+    "language": "Python 3.11+",
+    "build_system": "hatchling",
+    "entry_point": "src/applypilot/cli.py (Typer-based CLI)"
+  },
+
+  "execution_summary": {
+    "stages_completed": [0, 1, 2, 3, 4, 5],
+    "artifacts_generated": {
+      "inventory_files": 4,
+      "capabilities_json": 1,
+      "features_json": 1,
+      "journeys_json": 1,
+      "roles_json": 1,
+      "coverage_reports": 5,
+      "analysis_config": 1
+    },
+    "total_evidence_points": 87,
+    "status": "ALL_STAGES_COMPLETED",
+    "open_questions_carried_forward": 6
+  },
+
+  "quantitative_landscape": {
+    "source_code": {
+      "python_files": 23,
+      "total_symbols": 37,
+      "total_lines": 3460,
+      "loc_per_stage": {
+        "discovery_module": 780,
+        "scoring_module": 890,
+        "apply_module": 950,
+        "enrichment_module": 520,
+        "core_cli_config": 320
+      }
+    },
+    "capability_layer": {
+      "total_atomic_capabilities": 28,
+      "by_category": {
+        "data_collection": 6,
+        "data_processing": 7,
+        "llm_interaction": 5,
+        "automation_execution": 6,
+        "configuration_persistence": 4
+      }
+    },
+    "feature_layer": {
+      "total_business_features": 10,
+      "coverage_percentage": "100%",
+      "tier_1_features": 3,
+      "tier_2_features": 4,
+      "tier_3_features": 3
+    },
+    "journey_layer": {
+      "total_user_journeys": 9,
+      "total_operation_steps": 34,
+      "confirmed_steps": 34,
+      "inferred_steps": 0,
+      "needs_review_steps": 0,
+      "journeys_by_tier": {
+        "tier_1": 4,
+        "tier_2": 3,
+        "tier_3": 2
+      }
+    },
+    "role_layer": {
+      "total_human_roles": 1,
+      "execution_components": 7,
+      "multi_role_system": false
+    }
+  },
+
+  "product_architecture": {
+    "pattern": "CLI-first Layered Pipeline with Tier-Gated Capability Unlock",
+    "entry_flow": "cli.py → pipeline.py / apply/launcher.py",
+    "layer_diagram": {
+      "presentation_layer": {
+        "components": ["cli.py (6 commands)", "wizard/init.py (5-step interactive)", "status/dashboard (rich tables)"],
+        "evidence": "cli.py:1-260 @app.command() decorators"
+      },
+      "orchestration_layer": {
+        "components": ["pipeline.py (6-stage STAGE_ORDER)", "apply/launcher.py (worker loop + MCP assembly)", "config.py (Tier gate + dependency detection)"],
+        "evidence": "pipeline.py STAGE_ORDER list, config.py:184-259 tier system"
+      },
+      "domain_engines": {
+        "components": {
+          "discovery": ["discovery/jobspy_search.py", "discovery/workday.py", "discovery/smartextract.py"],
+          "enrichment": ["enrichment/detail.py (3-tier extraction cascade)"],
+          "scoring": ["scoring/scorer.py", "scoring/tailor.py (self-critique)", "scoring/validator.py", "scoring/cover_letter.py"],
+          "apply": ["apply/launcher.py", "apply/chrome.py", "apply/prompt.py"]
+        },
+        "evidence": "各模块独立 pipeline._run_* 调用"
+      },
+      "infrastructure_layer": {
+        "components": ["config.py (Paths + AppConfig)", "database.py (SQLite singleton)", "llm.py (multi-provider)", "apply/mcp_config.py"],
+        "evidence": "database.py ThreadPoolExecutor 连接池，config.py:1-180 配置加载链"
+      }
+    },
+    "data_flow": {
+      "mechanism": "SQLite jobs.db as conveyor belt between stages",
+      "pipeline_stages": [
+        {"name": "discover", "input": "profile.search_config", "output_table": "jobs.url, jobs.title, jobs.company, jobs.source", "evidence": "pipeline.py _run_discover() → CAP-0003 upsert"},
+        {"name": "enrich", "input_filter": "jobs.description IS NULL", "output": "jobs.description, jobs.external_id, jobs.ats_type, jobs.blocked_sso", "evidence": "pipeline.py _PENDING_SQL"},
+        {"name": "score", "input_filter": "jobs.description IS NOT NULL AND jobs.score IS NULL", "output": "jobs.score (0-10 float)", "evidence": "pipeline.py:282-290 scoring PENDING_SQL"},
+        {"name": "tailor", "input_filter": "jobs.score >= min_score AND jobs.tailored_resume_path IS NULL", "output": "jobs.tailored_resume_path (YAML)", "evidence": "pipeline.py:286 tailor PENDING_SQL with score filter"},
+        {"name": "cover", "input_filter": "jobs.tailored_resume_path IS NOT NULL AND jobs.cover_letter_path IS NULL", "output": "jobs.cover_letter_path (.md)", "evidence": "pipeline.py cover PENDING_SQL"},
+        {"name": "pdf", "input_filter": "jobs.tailored_resume_path LIKE '%.yaml'", "output": "jobs.tailored_resume_path (.pdf)", "evidence": "pipeline.py pdf PENDING_SQL"}
+      ],
+      "streaming_mode": "Each stage polls SQLite PENDING_SQL independently, no explicit message queue",
+      "apply_flow": "apply/launcher.py reads jobs WHERE tailored_resume_path IS NOT NULL AND applied_at IS NULL → worker loop → Chrome subprocess + claude CLI with MCP config"
+    }
+  },
+
+  "tier_boundaries": {
+    "detection_method": "Environment dependency detection (not role-based auth)",
+    "source": "config.py:200-223 get_tier()",
+    "tiers": [
+      {
+        "tier_number": 1,
+        "label": "Discovery",
+        "unlock_conditions": "Python + pip only",
+        "commands": ["init", "doctor", "run discover", "run enrich", "status", "dashboard", "apply --mark-applied", "apply --mark-failed", "apply --reset-failed"],
+        "blocked_commands": ["run score", "run tailor", "run cover", "run pdf", "run all", "apply (full mode)"],
+        "evidence": "config.py:209-211 has_llm check → return 1",
+        "journeys": ["JOURNEY-0001", "JOURNEY-0002", "JOURNEY-0004", "JOURNEY-0007", "JOURNEY-0008"]
+      },
+      {
+        "tier_number": 2,
+        "label": "AI Scoring & Tailoring",
+        "unlock_conditions": "Tier 1 + LLM API key env var (GEMINI_API_KEY / OPENAI_API_KEY / LLM_URL)",
+        "commands": ["run score", "run tailor", "run cover", "run pdf", "run all", "run --stream"],
+        "blocked_commands": ["apply (full mode)", "apply --gen"],
+        "evidence": "config.py:223 return 2 when has_llm=true but !(has_claude AND has_chrome)",
+        "journeys": ["JOURNEY-0003", "JOURNEY-0005"],
+        "notes": "cli.py:118-121 run command checks Tier 2 before score/tailor/cover stages"
+      },
+      {
+        "tier_number": 3,
+        "label": "Full Auto-Apply",
+        "unlock_conditions": "Tier 2 + shutil.which('claude') + get_chrome_path() succeeds",
+        "commands": ["apply", "apply --gen --url", "apply --url", "apply --continuous", "apply --workers N"],
+        "blocked_commands": [],
+        "evidence": "config.py:220-221 has_claude AND has_chrome → return 3",
+        "journeys": ["JOURNEY-0006", "JOURNEY-0009"],
+        "notes": "cli.py:189-190 apply command triple gate: Tier 3 + profile exists + DB has tailored resumes"
+      }
+    ],
+    "hidden_behaviors": [
+      {"name": "dry_run tier override", "evidence": "cli.py dry_run flag causes pipeline.run_pipeline() to return early without actual stage execution, bypassing Tier gates", "impact": "Tier 1 users can preview full pipeline behavior with 'run all --dry-run'"}
+    ]
+  },
+
+  "module_responsibility_matrix": {
+    "src/applypilot/cli.py": {"responsibility": "Entry point, all 6 CLI commands, Tier gate enforcement, apply triple validation", "tier_access": "1/2/3 all"},
+    "src/applypilot/pipeline.py": {"responsibility": "Stage orchestration (sequential + streaming), PENDING_SQL definitions, error continuation logic", "tier_access": "1/2/3 all"},
+    "src/applypilot/config.py": {"responsibility": "AppConfig dataclass hierarchy, Tier detection algorithm, dependency check", "tier_access": "infrastructure"},
+    "src/applypilot/database.py": {"responsibility": "SQLite singleton, jobs table CRUD, per-thread connection pool, statistics aggregation", "tier_access": "infrastructure"},
+    "src/applypilot/llm.py": {"responsibility": "Multi-provider LLM client (Gemini / OpenAI / Anthropic), prompt building, retry logic", "tier_access": "2/3 only"},
+    "src/applypilot/wizard/init.py": {"responsibility": "5-step interactive profile wizard (resume → personal → search → AI → auto-apply)", "tier_access": "1"},
+    "src/applypilot/discovery/": {"responsibility": "JobSpy + Workday CXS + SmartExtract three-source discovery", "tier_access": "1"},
+    "src/applypilot/enrichment/": {"responsibility": "3-tier cascade extraction (JSON-LD → CSS → LLM fallback)", "tier_access": "1"},
+    "src/applypilot/scoring/": {"responsibility": "Fit scoring (prompt-based), resume tailoring (self-critique loop), validation, cover letter generation", "tier_access": "2"},
+    "src/applypilot/apply/launcher.py": {"responsibility": "Auto-apply worker loop, Chrome subprocess spawn, MCP config assembly, Ctrl+C double-interrupt, result classification", "tier_access": "3"},
+    "src/applypilot/apply/chrome.py": {"responsibility": "Chrome binary launch with isolated profile dir, CDP port management", "tier_access": "3"},
+    "src/applypilot/apply/prompt.py": {"responsibility": "Claude Agent system prompt construction from profile + job + rules", "tier_access": "3"},
+    "src/applypilot/config/sites.yaml": {"responsibility": "Blocked SSO domains list, Workday site templates, selector mappings", "tier_access": "1 (data only)"}
+  },
+
+  "risk_register": [
+    {
+      "risk_id": "RISK-001",
+      "category": "architecture",
+      "title": "Dual database access patterns",
+      "description": "Discovery modules use direct sqlite3.connect() while other layers use JobsDB class. Potential connection/pooling inconsistency.",
+      "evidence": "discovery/jobspy_search.py vs database.py ThreadPoolExecutor pool",
+      "severity": "medium",
+      "probability": "low",
+      "stage_found": 2,
+      "recommendation": "Unify all DB access through JobsDB class; add connection pool to sqlite3 path"
+    },
+    {
+      "risk_id": "RISK-002",
+      "category": "externals",
+      "title": "Workday CXS API instability",
+      "description": "Workday scraper relies on undocumented JSON API endpoints. Workday may change response format without notice.",
+      "evidence": "discovery/workday.py CXS endpoint parsing",
+      "severity": "high",
+      "probability": "medium",
+      "stage_found": 3,
+      "recommendation": "Add response schema validation + graceful degradation to SmartExtract fallback"
+    },
+    {
+      "risk_id": "RISK-003",
+      "category": "architecture",
+      "title": "Stage failure isolation relies on try/except continuation",
+      "description": "pipeline.py catches Exception per stage and continues. If discover fails silent, enrich runs against empty DB (no data to process).",
+      "evidence": "pipeline.py _run_discover() has try/except; _PENDING_SQL will return 0 rows → next stages no-op",
+      "severity": "low",
+      "probability": "medium",
+      "stage_found": 4,
+      "recommendation": "Add explicit stage completion signal + alert if zero records processed after a stage"
+    },
+    {
+      "risk_id": "RISK-004",
+      "category": "security",
+      "title": "API keys in .env file without encryption",
+      "description": "LLM API keys stored in plaintext ~/.applypilot/.env. No encryption at rest.",
+      "evidence": "config.py load_env() calls python-dotenv load_dotenv() which reads plaintext .env",
+      "severity": "medium",
+      "probability": "high",
+      "stage_found": 1,
+      "recommendation": "Use OS credential manager (keyring) or encrypted config with optional master password"
+    },
+    {
+      "risk_id": "RISK-005",
+      "category": "dependency",
+      "title": "Auto-apply depends on Claude Code CLI external process",
+      "description": "Tier 3 launcher spawns subprocess.run(['claude', ...]). Claude Code CLI behavior updates independently of ApplyPilot.",
+      "evidence": "apply/launcher.py:326-333 subprocess call",
+      "severity": "high",
+      "probability": "medium",
+      "stage_found": 4,
+      "recommendation": "Pin known-good claude CLI version; add capability probe that validates claude --version matches expected"
+    },
+    {
+      "risk_id": "RISK-006",
+      "category": "architecture",
+      "title": "Streaming mode relies on SQLite polling (no real message queue)",
+      "description": "Upstream stages write to DB, downstream stages poll PENDING_SQL. No real-time notification. Latency depends on poll interval.",
+      "evidence": "pipeline.py streaming mode iterates stages and re-checks DB count",
+      "severity": "low",
+      "probability": "medium",
+      "stage_found": 4,
+      "recommendation": "Consider SQLite WAL mode + notification triggers, or Redis/Kafka for real-time notification"
+    },
+    {
+      "risk_id": "RISK-007",
+      "category": "feature_gap",
+      "title": "No streaming within discover stage itself",
+      "description": "JOURNEY-0005 (--streaming) polls discover completion but discover internally runs JobSpy → Workday → SmartExtract sequentially.",
+      "evidence": "pipeline.py _run_discover() sequential calls; _UPSTREAM does not split discover",
+      "severity": "low",
+      "probability": "low",
+      "stage_found": 4,
+      "recommendation": "Optionally parallelize discover sources with asyncio/ThreadPoolExecutor"
+    },
+    {
+      "risk_id": "RISK-008",
+      "category": "ux",
+      "title": "apply --gen --url accidentally Tier-gated",
+      "description": "cli.py:189 check_tier(3) runs before gen mode check at cli.py:213. Tier 2 users cannot use --gen --url for debugging.",
+      "evidence": "cli.py line order: check_tier(3) at 190, gen check at 213",
+      "severity": "low",
+      "probability": "high (code-level certainty)",
+      "stage_found": 4,
+      "recommendation": "Move gen/url utility mode checks before Tier 3 gate; add custom tier for debug mode (or no tier)"
+    }
+  ],
+
+  "open_questions_carried_forward": [
+    {"id": "F4-Q1", "question": "Does --stream parallelize discover sources or still run them sequentially?", "evidence": "pipeline.py _run_discover() sequential; _UPSTREAM does not split discover", "stage": 4},
+    {"id": "F4-Q2", "question": "Is apply --gen --url supposed to require Tier 3? (Likely bug)", "evidence": "cli.py:189 tier gate before cli.py:213 gen check", "stage": 4},
+    {"id": "F4-Q3", "question": "Does --continuous trigger discover, or only poll DB for new tailored resumes?", "evidence": "launcher.py main() reads from DB only; no discover invocation", "stage": 4},
+    {"id": "F4-Q4", "question": "Where is wizard-set password field actually consumed?", "evidence": "wizard/init.py:104 sets password; apply/prompt.py:571 references it but other paths unclear", "stage": 4},
+    {"id": "F4-Q5", "question": "How does pipeline handle partial stage failure in streaming mode?", "evidence": "pipeline.py catches Exception per stage; downstream PENDING_SQL returns 0 rows → no-op", "stage": 4},
+    {"id": "F4-Q6", "question": "Where is CapSolver key injected into auto-apply flow?", "evidence": "doctor.py checks CAPSOLVER_API_KEY; launcher.py MCP config has playwright + gmail only", "stage": 4}
+  ],
+
+  "competitive_landscape_notes": {
+    "what_applypilot_differentiates": [
+      "Single-binary CLI with capability tiers (most competitors are web apps or SaaS)",
+      "SQLite-based pipeline with streaming parallelism (unique conveyor-belt design)",
+      "Claude Code Agent with Playwright MCP for auto-apply (not Playwright direct)",
+      "Workday CXS + SmartExtract dual-source strategy (most use single source)"
+    ],
+    "what_may_limit_scale": [
+      "SQLite bottleneck for multi-user scenarios (single user DB design)",
+      "Depends on external LLM provider + Claude Code CLI (dual vendor lock-in)",
+      "No web UI (rich terminal only, no non-technical user path)"
+    ]
+  },
+
+  "priority_action_items": [
+    {
+      "priority": 1,
+      "title": "Fix apply --gen Tier gate ordering bug",
+      "risk_id": "RISK-008",
+      "effort": "low",
+      "impact": "Tier 2 users can debug auto-apply prompts without full Tier 3 setup"
+    },
+    {
+      "priority": 2,
+      "title": "Unify database access pattern",
+      "risk_id": "RISK-001",
+      "effort": "medium",
+      "impact": "Consistent connection pooling, easier to migrate to Postgres if scaling needed"
+    },
+    {
+      "priority": 3,
+      "title": "Add Workday scraper graceful degradation",
+      "risk_id": "RISK-002",
+      "effort": "medium",
+      "impact": "If Workday API breaks, SmartExtract fallback takes over automatically"
+    },
+    {
+      "priority": 4,
+      "title": "Implement encrypted config storage",
+      "risk_id": "RISK-004",
+      "effort": "medium-high",
+      "impact": "Better security posture, especially for shared machines"
+    },
+    {
+      "priority": 5,
+      "title": "Verify --continuous discover behavior",
+      "risk_id": "RISK-003 + F4-Q3",
+      "effort": "low",
+      "impact": "Document whether continuous mode polls only or also triggers discovery"
+    }
+  ],
+
+  "artifact_map": {
+    "stage_0": "config/analysis_config.yaml (project metadata)",
+    "stage_1": "inventory/files.json + inventory/symbols.json + inventory/imports.json + inventory/configs.json",
+    "stage_2": "capabilities/atomic_capabilities.json + capabilities/capability_index.md",
+    "stage_3": "features/business_features.json + features/coverage_report.md",
+    "stage_4": "journeys/user_journeys.json + journeys/coverage_report.md",
+    "stage_5": "roles/user_roles.json + roles/coverage_report.md",
+    "stage_6": "dashboard/cto_dashboard.json + dashboard/cto_report.md"
+  }
+}

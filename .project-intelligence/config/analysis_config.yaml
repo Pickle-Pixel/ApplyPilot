@@ -1,0 +1,50 @@
+project:
+  name: applypilot
+  version: "0.3.0"
+  root: d:\obsidian\4_项目\2025逃跑计划\ApplyPilot
+  description: "AI-powered end-to-end job application pipeline"
+
+scan:
+  primary_languages:
+    - python
+  source_roots:
+    - src/applypilot
+  test_roots: []
+  doc_roots:
+    - .
+  config_roots:
+    - src/applypilot/config
+
+entry_points:
+  cli:
+    - module: applypilot.cli
+      function: app
+      mechanism: typer
+  package:
+    - module: applypilot.__main__
+      mechanism: python -m applypilot
+
+build_system: hatchling
+requires_python: ">=3.11"
+
+dependencies:
+  core:
+    - typer>=0.9.0
+    - rich>=13.0
+    - httpx>=0.24
+    - beautifulsoup4>=4.12
+    - playwright>=1.40
+    - python-dotenv>=1.0
+    - pyyaml>=6.0
+    - pandas>=2.0
+  dev:
+    - pytest>=7.0
+    - ruff>=0.1
+
+analysis:
+  playbook_version: "0.1"
+  current_stage: 6
+  stages_completed: [0, 1, 2, 3, 4, 5, 6]
+  generated_at: "2026-11-07"
+  pipeline_status: "ALL_STAGES_COMPLETED"
+  notes: "tests/ directory referenced in ci.yml but not in snapshot (pending verification). Stage 6 completed: CTO Dashboard generated. Key findings: (1) run != apply — pipeline STAGE_ORDER excludes apply command; (2) Tier system is capability detection (config.py:200-223) not role-based auth; (3) SQLite jobs.db acts as conveyor belt between stages; (4) discovered 8 risks + 6 open questions; (5) RISK-008 is code-level deterministic bug (apply --gen Tier gate ordering). Total artifacts: 17 files, 87 evidence points."

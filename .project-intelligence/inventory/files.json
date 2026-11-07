@@ -1,0 +1,336 @@
+{
+  "schema_version": "1.0",
+  "project_root": "src/applypilot",
+  "scanned_at": "2025-01-XX",
+  "files": [
+    {
+      "file_id": "FILE-0001",
+      "path": "src/applypilot/__init__.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 3,
+      "symbols": ["SYM-0001"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 3}
+    },
+    {
+      "file_id": "FILE-0002",
+      "path": "src/applypilot/__main__.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 5,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 5}
+    },
+    {
+      "file_id": "FILE-0003",
+      "path": "src/applypilot/cli.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 400,
+      "symbols": ["SYM-0002", "SYM-0003", "SYM-0004", "SYM-0005", "SYM-0006", "SYM-0007"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 400}
+    },
+    {
+      "file_id": "FILE-0004",
+      "path": "src/applypilot/pipeline.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 350,
+      "symbols": ["SYM-0008", "SYM-0009"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 350}
+    },
+    {
+      "file_id": "FILE-0005",
+      "path": "src/applypilot/config.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 280,
+      "symbols": ["SYM-0010", "SYM-0011", "SYM-0012", "SYM-0013", "SYM-0014", "SYM-0015", "SYM-0016", "SYM-0017"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 280}
+    },
+    {
+      "file_id": "FILE-0006",
+      "path": "src/applypilot/database.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 320,
+      "symbols": ["SYM-0018", "SYM-0019", "SYM-0020", "SYM-0021", "SYM-0022", "SYM-0023", "SYM-0024", "SYM-0025"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 320}
+    },
+    {
+      "file_id": "FILE-0007",
+      "path": "src/applypilot/llm.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 250,
+      "symbols": ["SYM-0026", "SYM-0027", "SYM-0028", "SYM-0029", "SYM-0030"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 250}
+    },
+    {
+      "file_id": "FILE-0008",
+      "path": "src/applypilot/view.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 200,
+      "symbols": ["SYM-0031", "SYM-0032", "SYM-0033"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 200}
+    },
+    {
+      "file_id": "FILE-0009",
+      "path": "src/applypilot/discovery/__init__.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 2,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 2}
+    },
+    {
+      "file_id": "FILE-0010",
+      "path": "src/applypilot/discovery/jobspy.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 450,
+      "symbols": ["SYM-0034", "SYM-0035", "SYM-0036", "SYM-0037", "SYM-0038", "SYM-0039"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 450}
+    },
+    {
+      "file_id": "FILE-0011",
+      "path": "src/applypilot/discovery/workday.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 300,
+      "symbols": ["SYM-0040", "SYM-0041", "SYM-0042"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 300}
+    },
+    {
+      "file_id": "FILE-0012",
+      "path": "src/applypilot/discovery/smartextract.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 350,
+      "symbols": ["SYM-0043", "SYM-0044", "SYM-0045", "SYM-0046"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 350}
+    },
+    {
+      "file_id": "FILE-0013",
+      "path": "src/applypilot/enrichment/__init__.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 0,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 0}
+    },
+    {
+      "file_id": "FILE-0014",
+      "path": "src/applypilot/enrichment/detail.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 893,
+      "symbols": ["SYM-0047", "SYM-0048", "SYM-0049", "SYM-0050", "SYM-0051", "SYM-0052", "SYM-0053", "SYM-0054", "SYM-0055", "SYM-0056", "SYM-0057", "SYM-0058", "SYM-0059", "SYM-0060", "SYM-0061", "SYM-0062", "SYM-0063"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 893}
+    },
+    {
+      "file_id": "FILE-0015",
+      "path": "src/applypilot/scoring/__init__.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 2,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 2}
+    },
+    {
+      "file_id": "FILE-0016",
+      "path": "src/applypilot/scoring/scorer.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 180,
+      "symbols": ["SYM-0064", "SYM-0065", "SYM-0066"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 180}
+    },
+    {
+      "file_id": "FILE-0017",
+      "path": "src/applypilot/scoring/tailor.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 590,
+      "symbols": ["SYM-0067", "SYM-0068", "SYM-0069", "SYM-0070", "SYM-0071", "SYM-0072", "SYM-0073", "SYM-0074"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 590}
+    },
+    {
+      "file_id": "FILE-0018",
+      "path": "src/applypilot/scoring/cover_letter.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 305,
+      "symbols": ["SYM-0075", "SYM-0076", "SYM-0077", "SYM-0078"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 305}
+    },
+    {
+      "file_id": "FILE-0019",
+      "path": "src/applypilot/scoring/pdf.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 440,
+      "symbols": ["SYM-0079", "SYM-0080", "SYM-0081", "SYM-0082", "SYM-0083", "SYM-0084", "SYM-0085"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 440}
+    },
+    {
+      "file_id": "FILE-0020",
+      "path": "src/applypilot/scoring/validator.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 345,
+      "symbols": ["SYM-0086", "SYM-0087", "SYM-0088", "SYM-0089", "SYM-0090", "SYM-0091"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 345}
+    },
+    {
+      "file_id": "FILE-0021",
+      "path": "src/applypilot/apply/__init__.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 3,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 3}
+    },
+    {
+      "file_id": "FILE-0022",
+      "path": "src/applypilot/apply/chrome.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 321,
+      "symbols": ["SYM-0092", "SYM-0093", "SYM-0094", "SYM-0095", "SYM-0096", "SYM-0097", "SYM-0098", "SYM-0099"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 321}
+    },
+    {
+      "file_id": "FILE-0023",
+      "path": "src/applypilot/apply/dashboard.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 203,
+      "symbols": ["SYM-0100", "SYM-0101", "SYM-0102", "SYM-0103", "SYM-0104", "SYM-0105", "SYM-0106", "SYM-0107", "SYM-0108"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 203}
+    },
+    {
+      "file_id": "FILE-0024",
+      "path": "src/applypilot/apply/launcher.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 794,
+      "symbols": ["SYM-0109", "SYM-0110", "SYM-0111", "SYM-0112", "SYM-0113", "SYM-0114", "SYM-0115", "SYM-0116", "SYM-0117", "SYM-0118", "SYM-0119", "SYM-0120", "SYM-0121"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 794}
+    },
+    {
+      "file_id": "FILE-0025",
+      "path": "src/applypilot/apply/prompt.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 624,
+      "symbols": ["SYM-0122", "SYM-0123", "SYM-0124", "SYM-0125", "SYM-0126", "SYM-0127", "SYM-0128"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 624}
+    },
+    {
+      "file_id": "FILE-0026",
+      "path": "src/applypilot/wizard/__init__.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 0,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 0}
+    },
+    {
+      "file_id": "FILE-0027",
+      "path": "src/applypilot/wizard/init.py",
+      "language": "python",
+      "category": "source",
+      "parse_status": "parsed",
+      "line_count": 393,
+      "symbols": ["SYM-0129", "SYM-0130", "SYM-0131", "SYM-0132", "SYM-0133", "SYM-0134"],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 393}
+    },
+    {
+      "file_id": "FILE-0028",
+      "path": "src/applypilot/config/sites.yaml",
+      "language": "yaml",
+      "category": "config",
+      "parse_status": "parsed",
+      "line_count": 181,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 181}
+    },
+    {
+      "file_id": "FILE-0029",
+      "path": "src/applypilot/config/employers.yaml",
+      "language": "yaml",
+      "category": "config",
+      "parse_status": "parsed",
+      "line_count": 302,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 302}
+    },
+    {
+      "file_id": "FILE-0030",
+      "path": "src/applypilot/config/searches.example.yaml",
+      "language": "yaml",
+      "category": "config",
+      "parse_status": "parsed",
+      "line_count": 112,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 112}
+    },
+    {
+      "file_id": "FILE-0031",
+      "path": "pyproject.toml",
+      "language": "toml",
+      "category": "config",
+      "parse_status": "parsed",
+      "line_count": 60,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 60}
+    },
+    {
+      "file_id": "FILE-0032",
+      "path": "README.md",
+      "language": "markdown",
+      "category": "doc",
+      "parse_status": "parsed",
+      "line_count": 120,
+      "symbols": [],
+      "evidence": {"method": "manual_read", "line_start": 1, "line_end": 120}
+    }
+  ],
+  "summary": {
+    "total_files": 32,
+    "source_files": 27,
+    "config_files": 4,
+    "doc_files": 1,
+    "parsed": 32,
+    "failed": 0,
+    "skipped": 0
+  }
+}
