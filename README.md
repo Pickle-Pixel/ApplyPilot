@@ -182,6 +182,94 @@ applypilot dashboard                    # Open HTML results dashboard
 
 ---
 
+## Development Setup: Editable Installation
+
+### Why is this necessary?
+
+ApplyPilot uses a `src` layout, with its Python package located at:
+
+```text
+src/applypilot/
+```
+
+When ApplyPilot is installed using a regular installation (`pip install .`), Python may execute the installed copy in `site-packages` rather than the source files in the project directory.
+
+This can cause a confusing situation:
+
+- You modify a source file such as `src/applypilot/llm.py`.
+- You run `applypilot run score`.
+- Your changes appear to have no effect.
+
+The reason is that the CLI may be importing a different installed copy of ApplyPilot.
+
+### Step 1: Install in Editable Mode
+
+From the project root directory, activate your intended Python environment and run:
+
+```powershell
+python -m pip install -e .
+```
+
+The `-e` (editable) option installs the project in editable mode.
+
+Instead of copying the package into `site-packages`, Python uses the source code directly from the project directory.
+
+This means changes to Python source files take effect immediately without reinstalling the package each time.
+
+### Step 2: Verify the Installation
+
+Run:
+
+```powershell
+python -c "import applypilot.llm as l; print(l.__file__)"
+```
+
+The output should point to your local project source:
+
+```text
+<project-root>/src/applypilot/llm.py
+```
+
+For example:
+
+```text
+D:\Projects\ApplyPilot\src\applypilot\llm.py
+```
+
+**Important:** If the output points to:
+
+```text
+...\Lib\site-packages\applypilot\llm.py
+```
+
+Python is still importing the installed copy rather than the intended local source.
+
+### Step 3: Verify the CLI Environment
+
+On Windows PowerShell, check which executable is being used:
+
+```powershell
+where.exe applypilot
+```
+
+Also verify the Python interpreter:
+
+```powershell
+python -c "import sys; print(sys.executable)"
+```
+
+Make sure the CLI and Python environment correspond to the environment where ApplyPilot was installed in editable mode.
+
+### When should this be done?
+
+Run the editable installation once when setting up the development environment.
+
+If you switch to another Python environment, install ApplyPilot in that environment as well.
+
+Afterward, you can modify files under `src/applypilot/` and run the CLI to test your changes without reinstalling the project.
+
+---
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and PR guidelines.

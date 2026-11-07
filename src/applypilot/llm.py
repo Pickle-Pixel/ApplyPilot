@@ -35,7 +35,6 @@ def _detect_provider() -> tuple[str, str, str]:
     gemini_base_url = os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
     openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
 
-
     if gemini_key and not local_url:
         return (
             f"{gemini_base_url}/openai",
