@@ -32,16 +32,20 @@ def _detect_provider() -> tuple[str, str, str]:
     local_url = os.environ.get("LLM_URL", "")
     model_override = os.environ.get("LLM_MODEL", "")
 
+    gemini_base_url = os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
+    openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
+
+
     if gemini_key and not local_url:
         return (
-            "https://generativelanguage.googleapis.com/v1beta/openai",
+            f"{gemini_base_url}/openai",
             model_override or "gemini-2.0-flash",
             gemini_key,
         )
 
     if openai_key and not local_url:
         return (
-            "https://api.openai.com/v1",
+            f"{openai_base_url}/v1",
             model_override or "gpt-4o-mini",
             openai_key,
         )
